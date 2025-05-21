@@ -77,7 +77,7 @@ class TransientParams:
     :param fp2: second pole frequency of the CTLE.
     :param n_perUI_intrp: number of points per UI in interpolated SBR data.
     :param f_trunc: data of frequencies > f_trunc will be removed.
-    :param smp_path_20: port impedance of path of s1p file (smp_path).
+    :param snp_path_z0: port impedance of path of s1p file (smp_path).
     :param t_stop_divided_by_UI_dur: t stop / duration of an UI (should be integer); time points of single bit response are { 0, t_step, ..., (t_num - 1)*t_step = t_stop }.
     :param UI_dur_divided_by_t_step: duration of an_UI / t_step (should be integer) (At least one of t_stop_divided_by_UI_dur and UI_dur_divided_by_t_step should be even.).
     :param t_rise_p_divided_by_UI_dur: (rise time of the pulse in seconds) / duration of an_UI.
@@ -96,14 +96,14 @@ class TransientParams:
     fp2: float = None
     n_perUI_intrp: int = 1000
     f_trunc: float = 1e12
-    smp_path_20: float = 50
+    snp_path_z0: float = 50
     t_stop_divided_by_UI_dur: int = 100
     UI_dur_divided_by_t_step: int = 100
     t_rise_p_divided_by_UI_dur: float = 0.1
     t_start_p_divided_by_UI_dur: float = 0.5
     UI_dur: float = field(init=False)
     t_step_intrp: float = field(init=False)
-    vref_dflt: float = field(init=False)
+    vref_dfl: float = field(init=False)
     time_axis_sbr: Axis = field(init=False)
     pulse: TrapezoidalPulse = field(init=False)
 
@@ -114,7 +114,7 @@ class TransientParams:
         self.t_step_intrp = self.UI_dur / self.n_perUI_intrp
 
         # default vref (used when the normal procedure can't determine vref and det_vref == 'auto')
-        self.vref_dflt = 0.005 * round((self.pulse_amplitude * (self.R_RX / (self.R_tx + self.R_rx)) / 2) / 0.005)
+        self.vref_dfl = 0.005 * round((self.pulse_amplitude * (self.R_rx / (self.R_tx + self.R_rx)) / 2) / 0.005)
         self.t_num = self.t_stop_divided_by_UI_dur * self.UI_dur_divided_by_t_step + 1
         self.t_stop = self.t_stop_divided_by_UI_dur * self.UI_dur
         self.t_step = self.UI_dur
@@ -161,11 +161,10 @@ def nudge_eig_torch(mat: torch.Tensor, cond: float = 1e-9, min_eig: float = 1e-1
         eigv.append(eigv_freq)
     eigw = np.array(eigw)
     eigv = np.array(eigv)
-
     eigw = torch.from_numpy(eigw).to(mat.device)
     eigv = torch.from_numpy(eigv).to(mat.device)
 
-    max_eig = torch.amax(eigw, dim=-1)
+    max_eig = torch.amax(torch.abs(eigw), dim=1)
     mask = (torch.abs(eigw) < cond * max_eig.unsqueeze(-1)) | (torch.abs(eigw) < min_eig)
     if not mask.any():
         return mat
@@ -176,12 +175,11 @@ def nudge_eig_torch(mat: torch.Tensor, cond: float = 1e-9, min_eig: float = 1e-1
 
     e = torch.zeros_like(mat)
     e.diagonal(dim1=-2, dim2=-1).copy_(eigw)
-    return rsolve_torch(eigv, e @ eigv)
-
+    return rsolve_torch(eigv, eigv @ e)
 
 def nudge_svd(mat: torch.Tensor, cond: float = 1e-9, min_svd: float = 1e-12) -> torch.Tensor:
     U, S, Vh = torch.linalg.svd(mat)
-    max_svd = torch.amax(S, dim=-1)
+    max_svd = torch.amax(S, dim=1)
     mask = (S < cond * max_svd[:, None]) | (S < min_svd)
     if not mask.any():
         return mat
@@ -190,9 +188,9 @@ def nudge_svd(mat: torch.Tensor, cond: float = 1e-9, min_svd: float = 1e-12) -> 
     mask_min = min_svd * torch.ones_like(mask_cond)
     S[mask] = torch.maximum(mask_cond, mask_min)
 
-    S = torch.zeros_like(mat)
-    S.diagonal(dim1=2, dim2=1).copy_(S)
-    return torch.einsum('...ij,...jk,...k...i->...il', U, S, Vh)
+    new_S = torch.zeros_like(mat)
+    new_S.diagonal(dim1=-2, dim2=-1).copy_(S)
+    return torch.einsum('...ij,...jk,...lk->...il', U, new_S, Vh)
 
 
 def s2z_torch(s: torch.Tensor, z0: torch.Tensor) -> torch.Tensor:
@@ -203,22 +201,18 @@ def s2z_torch(s: torch.Tensor, z0: torch.Tensor) -> torch.Tensor:
     Id = torch.eye(nports, dtype=s.dtype, device=s.device).expand(nfreqs, -1, -1)
     F = torch.zeros_like(s)
     G = torch.zeros_like(s)
-    F.diagonal(dim1=-2, dim2=-1).copy_(1j / (2 * torch.sqrt(z0.real)))
-    G.diagonal(dim1=-2, dim2=-1).copy_(1j * z0)
+    F.diagonal(dim1=-2, dim2=-1).copy_(1.0 / (2 * torch.sqrt(z0.real)))
+    G.diagonal(dim1=-2, dim2=-1).copy_(z0)
     z = torch.linalg.solve(nudge_eig_torch((Id - s) @ F), (s @ G + G.conj()) @ F)
     return z
-
 
 def z2s_torch(z: torch.Tensor, z0: torch.Tensor) -> torch.Tensor:
     """Convert impedance parameters to scattering parameters using PyTorch."""
     # Power-waves. Eq (18) from [Kurokawa et al.]
-    nfreqs, nports, _ = z.shape
-
-    Id = torch.eye(nports, dtype=z.dtype, device=z.device).expand(nfreqs, -1, -1)
     F = torch.zeros_like(z)
     G = torch.zeros_like(z)
-    F.diagonal(dim1=-2, dim2=-1).copy_(1j / (2 * torch.sqrt(z0.real)))
-    G.diagonal(dim1=-2, dim2=-1).copy_(1j * z0)
+    F.diagonal(dim1=-2, dim2=-1).copy_(1.0 / (2 * torch.sqrt(z0.real)))
+    G.diagonal(dim1=-2, dim2=-1).copy_(z0)
     s = rsolve_torch(F @ (z + G), F @ (z - G.conj()))
     return s
 
@@ -230,7 +224,7 @@ def s2y_torch(s: torch.Tensor, z0: torch.Tensor) -> torch.Tensor:
 
     F = torch.zeros_like(s)
     G = torch.zeros_like(s)
-    F.diagonal(dim1=-2, dim2=-1).copy_(1j / (2 * torch.sqrt(z0.real)))
+    F.diagonal(dim1=-2, dim2=-1).copy_(1.0 / (2 * torch.sqrt(z0.real)))
     G.diagonal(dim1=-2, dim2=-1).copy_(z0)
     y = rsolve_torch((s @ G + G.conj()) @ F, (Id - s) @ F)
     return y
@@ -246,7 +240,7 @@ def y2s_torch(y: torch.Tensor, z0: torch.Tensor, epsilon=1e-4) -> torch.Tensor:
 
     F = torch.zeros_like(y)
     G = torch.zeros_like(y)
-    F.diagonal(dim1=-2, dim2=-1).copy_(1j / (2 * torch.sqrt(z0.real)))
+    F.diagonal(dim1=-2, dim2=-1).copy_(1.0 / (2 * torch.sqrt(z0.real)))
     G.diagonal(dim1=-2, dim2=-1).copy_(z0)
     s = rsolve_torch(F @ (Id + G @ y), F @ (Id - G.conj() @ y))
     return s

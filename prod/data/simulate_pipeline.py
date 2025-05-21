@@ -127,7 +127,7 @@ class EyeWidthSimulatePipeline:
                     executor.shutdown(wait=False, cancel_futures=True)
                     sys.exit(1)
         else:
-            for i, snp_file in enumerate(snp_files):
+            for i, snp_file in tqdm(enumerate(snp_files), total=len(snp_files), desc="Processing SNP files"):
                 snp_key, result = self.simulate_eye_width(snp_file, i % num_gpus)
                 self.simulation_results[snp_key] = result
 
