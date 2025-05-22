@@ -97,7 +97,7 @@ def inverse_continuous_ft(f_data, f_ax):
     M = f_data.shape[0]
     f_data_ext = np.zeros((2 * M - 1, ), dtype=np.cdouble)
     f_data_ext[:M] = f_data
-    f_data_ext[M:] = np.conj(np.flip(f_data)[:M - 1])
+    f_data_ext[M:] = np.conj(np.flip(f_data))[:M - 1]
     return np.real((2 * f_ax.num - 1) * f_ax.step * np.fft.ifft(f_data_ext))
 
 def continuous_ft(time_axis, t_data):
@@ -534,25 +534,26 @@ if __name__ == '__main__':
     from bound_param import LinearParameter, LogParameter, ParameterSet, SampleResult
 
     def main(device=None):            
-        snp_horiz = "/Users/willychan/Documents/work/EyeDiagramNet/test_data/transmission_lines_48lines_seed0.s96p"
-        snp_tx = "/Users/willychan/Documents/work/EyeDiagramNet/test_data/vertical/tx_snp.s96p"
-        snp_rx = "/Users/willychan/Documents/work/EyeDiagramNet/test_data/vertical/rx_snp.s96p"
+        snp_horiz = "../../test_data/tlines48_seed0.s96p"
+        snp_tx = "../../test_data/tlines48_seed1.s96p"
+        snp_rx = "../../test_data/tlines48_seed2.s96p"
         snp_file = (snp_horiz, snp_tx, snp_rx)
 
         config_dict = {
-            "R_tx": 32,
+            "R_tx": 10,
             "R_rx": 1.0e9,
             "C_tx": 4e-13,
             "C_rx": 2e-13,
             "L_tx": 2e-10,
             "L_rx": 1.6e-9,
-            "pulse_amplitude": 0.55,
+            "pulse_amplitude": 0.8,
             "bits_per_sec": 1.3e10,
-            "vmask": 0.03
+            "vmask": 0.05
         }
         config = SampleResult(**config_dict)
+        directions = [1] * 12 + [0] * 12 + [1] * 12 + [0] * 12
 
-        line_ew, directions = snp_eyewidth_simulation(config, snp_file, directions=None, device=device)
+        line_ew, directions = snp_eyewidth_simulation(config, snp_file, directions, device=device)
         print(line_ew)
 
     lp = LineProfiler()
