@@ -131,24 +131,18 @@ class EyeWidthSimulatePipeline:
                 snp_key, result = self.simulate_eye_width(snp_file, i % num_gpus)
                 self.simulation_results[snp_key] = result
 
-    def write_results(self):
+    def write_results(self, snp_index_path=None):
         """Write results to CSV file."""
-        snp_index_path = Path("../test_data/snp_index.csv")
-        if not snp_index_path.exists():
-            print("Error: snp_index.csv not found in test_data.")
-            sys.exit(1)
-
-        snp_index_df = pd.read_csv(snp_index_path)
-        snp_to_index = dict(zip(snp_index_df['snp_file_name'], snp_index_df['index']))
-
         ew_results = []
-        for snp_file in self.parse_snps(Path(self.infer_cfg.data_dirs[0])):
-            snp_key = snp_file.stem
-            if snp_key in self.simulation_results:
-                result = self.simulation_results[snp_key]
-                line_ews = result['line_ews']
-                index = snp_to_index.get(snp_file.name, -1)
-                ew_results.append({'index': index, **{f'line_{i}': ew for i, ew in enumerate(line_ews)}})
+        for i, (snp_file, result) in enumerate(self.simulation_results.items()):
+            line_ews = result['line_ews']
+            if snp_index_path and snp_index_path.exists():
+                snp_index_df = pd.read_csv(snp_index_path)
+                snp_to_index = dict(zip(snp_index_df['snp_file_name'], snp_index_df['index']))
+                index = snp_to_index.get(snp_file, i)
+            else:
+                index = i
+            ew_results.append({'index': index, **{i: ew for i, ew in enumerate(line_ews)}})
 
         ew_results_df = pd.DataFrame(ew_results)
         ew_results_df.to_csv(self.infer_yaml_path.parent / "ew_results.csv", index=False)
@@ -173,6 +167,10 @@ def main():
         '--proc_per_gpu', type=int, default=1,
         help="Number of processes per GPU"
     )
+    parser.add_argument(
+        '--snp_index', type=Path,
+        help="Path to snp_index.csv file. If not provided, indices will be sequential."
+    )
     args = parser.parse_args()
 
     simulator = EyeWidthSimulatePipeline(
@@ -182,7 +180,7 @@ def main():
         proc_per_gpu=args.proc_per_gpu
     )
     simulator.process_snp_files()
-    simulator.write_results()
+    simulator.write_results(args.snp_index)
 
 if __name__ == "__main__":
     main() 
