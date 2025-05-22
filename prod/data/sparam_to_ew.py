@@ -82,7 +82,7 @@ def time_axis_to_frequency_axis(time_axis):
     """Inverse function of f2t."""
     if not (time_axis.start == 0 and time_axis.endpoint == True):
         raise RuntimeError('time_axis.start == 0 and time_axis.endpoint == True should be true.')
-    if (time_axis.num - 1) % 2 != 0:
+    if time_axis.num % 2 != 1:
         raise RuntimeError('time_axis.num should be an odd number.')
 
     f_num = (time_axis.num + 1) // 2
@@ -97,7 +97,7 @@ def inverse_continuous_ft(f_data, f_ax):
     M = f_data.shape[0]
     f_data_ext = np.zeros((2 * M - 1, ), dtype=np.cdouble)
     f_data_ext[:M] = f_data
-    f_data_ext[M:] = np.conj(np.flip(f_data)[:-1])
+    f_data_ext[M:] = np.conj(np.flip(f_data)[:M - 1])
     return np.real((2 * f_ax.num - 1) * f_ax.step * np.fft.ifft(f_data_ext))
 
 def continuous_ft(time_axis, t_data):
@@ -116,7 +116,7 @@ def conv(time_axis_1, t_data_1, time_axis_2, t_data_2):
         raise RuntimeError('time_axis_1.step == time_axis_2.step should be true.')
 
     t_data_conv = time_axis_1.step * np.convolve(t_data_1, t_data_2, mode='full')
-    assert t_data_conv.shape[0] == t_data_1.shape[0] + t_data_2.shape[0] - 1
+    assert t_data_conv.shape[0] == t_data_1.shape[0] + t_data_2.shape[0] - 1 == time_axis_1.num + time_axis_2.num - 1
     time_axis_conv = Axis(start=0, stop=time_axis_1.step * (t_data_conv.shape[0] - 1), num=t_data_conv.shape[0], endpoint=True)
 
     return time_axis_conv, t_data_conv
@@ -133,7 +133,7 @@ def interp_s_mat(ntwk, n_line, f_ax_sp_new):
     """Interpolate 1/4 of the S-matrix with causal enforcement."""
     s_param_interp = np.zeros((f_ax_sp_new.num, n_line, n_line), dtype=np.cdouble)
     for idx_output_line, idx_input_line in np.ndindex(n_line, n_line):
-        s_data = ntwk.s[:, idx_output_line, idx_input_line]
+        s_data = ntwk.s[:, idx_output_line + n_line, idx_input_line]
         s_param_interp[:, idx_output_line, idx_input_line] = interp_s_param(s_data, f_ax_sp_new, ntwk.f)
     return s_param_interp
 
@@ -159,7 +159,7 @@ def get_line_sbr(ntwk, time_axis_sbr, pulse):
 
     s_param_interp = interp_s_mat(ntwk, n_line, f_ax_sp_new)
 
-    # Vectorized operation to obtain SBR in frequency domain -
+    # Vectorized operation to obtain SBR in frequency domain
     pulse_f_wave_at_port = pulse_f_wave_at_port[:, np.newaxis, np.newaxis]
     sbr_f_dom = pulse_f_wave_at_port * s_param_interp * np.sqrt(R_rx)
 
@@ -224,9 +224,7 @@ def find_main_cursor(Pmatrix_intrp, nrow_intrp, n_perUI_intrp, idx_line):
     ISI_intrp = Pmatrix_intrp[:, idx_line].copy().reshape((nrow_intrp, 1))
     ind_ISI_max_intrp = np.argmax(ISI_intrp)
     ind_MCr_intrp = ind_ISI_max_intrp
-
-    ind_MCr_intrp = ind_ISI_max_intrp + n_perUI_intrp
-    while ISI_intrp[ind_MCr_intrp - n_perUI_intrp, 0] >= ISI_intrp[ind_MCr_intrp, 0]:
+    while ISI_intrp[ind_MCr_intrp, 0] > ISI_intrp[ind_MCr_intrp - n_perUI_intrp, 0]:
         ind_MCr_intrp += 1
 
     return ind_MCr_intrp
@@ -363,10 +361,10 @@ def get_vref_eyewidth(params, half_steady, pda_eye, vref_num=11):
     if np.min(eye_width_test, axis=1)[argmax_idx_v] == -1:
         vref = vref_dfl
         eyewidth = calculate_eye_width(vref)
-    elif 0 <= argmax_idx_v < vref_num:
+    elif 0 < argmax_idx_v < 10:
         vref, eyewidth = vref_test[argmax_idx_v], eye_width_test[argmax_idx_v]
     else:
-        p_or_n = 1 if argmax_idx_v <= 10 else -1
+        p_or_m_one = 1 if argmax_idx_v == 10 else -1
         vref_old = vref_test[argmax_idx_v]
         found_vref = False
         count_while_loop = 0
@@ -374,9 +372,9 @@ def get_vref_eyewidth(params, half_steady, pda_eye, vref_num=11):
             if count_while_loop > 10000:
                 raise RuntimeError('Cannot find vref')
             count_while_loop += 1
-            vref_new = vref_old + p_or_n * 0.005
+            vref_new = vref_old + p_or_m_one * 0.005
             eye_width_new = calculate_eye_width(vref_new)
-            if np.min(eye_width_new) >= np.min(eye_width_test[argmax_idx_v]):
+            if np.min(eye_width_new) > np.min(eye_width_test[argmax_idx_v]):
                 found_vref = True
                 vref, eyewidth = vref_old, eye_width_test[argmax_idx_v]
             else:
@@ -396,7 +394,7 @@ def generate_pattern(nline):
     five1_9b = np.array([1, 0, 1, 0, 1, 0, 1, 0, 1])
     five11_18b = np.array([1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1])
 
-    WSI_V_ODD = np.hstack((one1_9b, one11_10b, three1_6b, three11_12b, inv(one11_18b), inv(one11_10b)))
+    WSI_V_ODD = np.hstack((one1_9b, one11_10b, three1_6b, three11_12b, inv(one1_9b), inv(one11_10b)))
     WSI_A_ODD = inv(WSI_V_ODD)
     WSI_V_ISI = WSI_V_ODD
     WSI_A_ISI = np.zeros_like(WSI_V_ISI)
@@ -407,31 +405,31 @@ def generate_pattern(nline):
     WSI_A = np.hstack((WSI_A_ODD, WSI_A_ISI, WSI_A_XTALK))
     SSO = np.hstack((inv(three1_6b), inv(three1_6b), inv(three11_12b), inv(three11_12b)))
 
-    DOQ_pattern = np.hstack((SSO, WSI_V, np.tile(WSI_A, 8), SSO))
-    test_pattern = np.zeros((nline, DOQ_pattern.size))
+    DQO_pattern = np.hstack((SSO, WSI_V, np.tile(WSI_A, 8), SSO))
+    test_pattern = np.zeros((nline, DQO_pattern.size))
 
     for i in range(nline):
         remainder = i % 9
         test_pattern[i, :] = np.hstack((SSO, np.tile(WSI_A, remainder), WSI_V, np.tile(WSI_A, 8 - remainder), SSO))
 
-    return np.broadcast_to(test_pattern, (nline, nline, DOQ_pattern.size))
+    return np.broadcast_to(test_pattern, (nline, nline, DQO_pattern.size))
 
-def get_waveform(test_patt_lines, n_perUI_intrp, Pmatrix_tprs_lines, nLine):
-    for ind_output_line in range(nLine):
+def get_waveform(test_patt_lines, n_perUI_intrp, Pmatrix_tprs_lines, nline):
+    for ind_output_line in range(nline):
         # waves to be added together
         waves_to_add = np.zeros((n_perUI_intrp,
                                  np.convolve(test_patt_lines[ind_output_line, 0, :], Pmatrix_tprs_lines[ind_output_line, 0, :, 0]).shape[0],
-                                 nLine))
+                                 nline))
 
         for pt in range(n_perUI_intrp):
-            for ind_input_line in range(nLine):
+            for ind_input_line in range(nline):
                 waves_to_add[pt, :, ind_input_line] = np.convolve(test_patt_lines[ind_output_line, ind_input_line, :], Pmatrix_tprs_lines[ind_output_line, ind_input_line, :, pt])
 
         # waveform of eye diagram (0th axis: index of position in UI, 1st axis: index of UI, 2nd axis: index of line)
         if ind_output_line == 0:
             wave = np.zeros((n_perUI_intrp,
                              np.convolve(test_patt_lines[0, 0, :], Pmatrix_tprs_lines[ind_output_line, 0, :, 0]).shape[0],
-                             nLine))
+                             nline))
         wave[:, :, ind_output_line] = np.sum(waves_to_add, axis=2)
 
     return wave
@@ -465,7 +463,7 @@ def get_waveform2(test_patt_lines, Pmatrix_tprs_lines):
 
     return wave.numpy()
 
-def sparam_to_eyediwtch(config, ntwk, device='cuda'):
+def sparam_to_eyewidth(config, ntwk, device='cuda'):
     try:
         params = TransientParams.from_config(config)
         line_sbrs = sparam_to_pulse(params, ntwk, device)
@@ -501,20 +499,20 @@ def assign_tx_rx_directions(ntwk, directions=None):
         result.append(num)
         return result
 
-    nLines = ntwk.s.shape[1] // 2
+    nlines = ntwk.s.shape[1] // 2
 
-    if not directions:
-        block_size = np.random.choice(divide_until_odd(nLines), 1)[0]
-        nBlocks = nLines // block_size
-        blocks = [0] * (nBlocks // 2) + [1] * (nBlocks // 2)
+    if directions is None:
+        block_size = np.random.choice(divide_until_odd(nlines), 1)[0]
+        nblocks = nlines // block_size
+        blocks = [0] * (nblocks // 2) + [1] * (nblocks // 2)
         np.random.shuffle(blocks)
         directions = np.repeat(blocks, block_size)
     else:
         directions = np.array(directions)
     mask = directions.astype(bool)
 
-    front_ports = np.arange(0, nLines)
-    back_ports = front_ports + nLines
+    front_ports = np.arange(0, nlines)
+    back_ports = front_ports + nlines
     curr_ports = np.dstack([front_ports, back_ports]).reshape(-1)
 
     front_ports[mask], back_ports[mask] = back_ports[mask], front_ports[mask]
@@ -527,7 +525,7 @@ def snp_eyewidth_simulation(config, snp_file, directions=None, device='cuda'):
     snp_horiz, snp_tx, snp_rx = snp_file
     ntwk = read_and_cascade_snps(snp_horiz, snp_tx, snp_rx, config, device)
     ntwk, directions = assign_tx_rx_directions(ntwk, directions)
-    line_ew = sparam_to_eyediwtch(config.to_dict(), ntwk, device)
+    line_ew = sparam_to_eyewidth(config.to_dict(), ntwk, device)
     return line_ew, directions
 
 if __name__ == '__main__':
@@ -564,5 +562,4 @@ if __name__ == '__main__':
     # Run without specifying device to use auto-detection
     lp.run('main()')
     # lp.run('main("cuda")')
-    # lp.run('main("mps")')
     lp.print_stats()

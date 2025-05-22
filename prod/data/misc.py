@@ -35,7 +35,7 @@ class TrapezoidalPulse:
 
         factor1 = np.exp(-1j * 2 * np.pi * (b + L / 2) * f_array) * A * L * np.sinc(L * f_array)
         factor2 = np.exp(-1j * 2 * np.pi * (bp + Lp / 2) * f_array) * Ap * Lp * np.sinc(Lp * f_array)
-        F_tra = factor1 + factor2
+        F_tra = factor1 * factor2
 
         return F_tra
 
@@ -100,7 +100,7 @@ class TransientParams:
     t_stop_divided_by_UI_dur: int = 100
     UI_dur_divided_by_t_step: int = 100
     t_rise_p_divided_by_UI_dur: float = 0.1
-    t_start_p_divided_by_UI_dur: float = 0.5
+    t_start_p_divided_by_UI_dur: float = 1
     UI_dur: float = field(init=False)
     t_step_intrp: float = field(init=False)
     vref_dfl: float = field(init=False)
@@ -117,7 +117,6 @@ class TransientParams:
         self.vref_dfl = 0.005 * round((self.pulse_amplitude * (self.R_rx / (self.R_tx + self.R_rx)) / 2) / 0.005)
         self.t_num = self.t_stop_divided_by_UI_dur * self.UI_dur_divided_by_t_step + 1
         self.t_stop = self.t_stop_divided_by_UI_dur * self.UI_dur
-        self.t_step = self.UI_dur
 
         # time axis of single bit response
         self.time_axis_sbr = Axis(start=0, stop=self.t_stop, num=self.t_num, endpoint=True)
@@ -178,19 +177,19 @@ def nudge_eig_torch(mat: torch.Tensor, cond: float = 1e-9, min_eig: float = 1e-1
     return rsolve_torch(eigv, eigv @ e)
 
 def nudge_svd(mat: torch.Tensor, cond: float = 1e-9, min_svd: float = 1e-12) -> torch.Tensor:
-    U, S, Vh = torch.linalg.svd(mat)
-    max_svd = torch.amax(S, dim=1)
-    mask = (S < cond * max_svd[:, None]) | (S < min_svd)
+    U, s, Vh = torch.linalg.svd(mat)
+    max_svd = torch.amax(s, dim=1)
+    mask = (s < cond * max_svd[:, None]) | (s < min_svd)
     if not mask.any():
         return mat
 
     mask_cond = cond * max_svd[:, None].repeat(1, mat.shape[-1])[mask]
     mask_min = min_svd * torch.ones_like(mask_cond)
-    S[mask] = torch.maximum(mask_cond, mask_min)
+    s[mask] = torch.maximum(mask_cond, mask_min)
 
-    new_S = torch.zeros_like(mat)
-    new_S.diagonal(dim1=-2, dim2=-1).copy_(S)
-    return torch.einsum('...ij,...jk,...lk->...il', U, new_S, Vh)
+    S = torch.zeros_like(mat)
+    S.diagonal(dim1=-2, dim2=-1).copy_(s)
+    return torch.einsum('...ij,...jk,...lk->...il', U, S, Vh)
 
 
 def s2z_torch(s: torch.Tensor, z0: torch.Tensor) -> torch.Tensor:
@@ -308,9 +307,9 @@ def add_inductance_torch(ntwk, L_tx, L_rx, device='cuda'):
     z_tensor = s2z_torch(s_tensor, torch.from_numpy(ntwk.z0).to(device))
 
     # Add inductive impedance to the diagonal elements of the Z matrix
-    idx = torch.arange(num_ports // 2)
+    in_idx = torch.arange(num_ports // 2)
     out_idx = torch.arange(num_ports // 2, num_ports)
-    z_tensor[:, idx, idx] += zL_in_tensor
+    z_tensor[:, in_idx, in_idx] += zL_in_tensor
     z_tensor[:, out_idx, out_idx] += zL_out_tensor
 
     # Convert back to S-parameters using PyTorch
@@ -339,7 +338,7 @@ def add_ctle(ntwk, DC_gain, AC_gain, fp1, fp2, eps=0):
 
     # Calculate the frequency response
     _, TF = scipy.signal.freqs(system.num, system.den, worN=ntwk.f)
-    TF = TF[:None]
+    TF = TF[:, None]
 
     # Create 2D arrays of all input/output port indices
     n = ntwk.nports
