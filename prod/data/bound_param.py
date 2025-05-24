@@ -256,11 +256,10 @@ MIX_PARAMS = ParameterSet(
 # CTLE Parameters
 CTLE_PARAMS = RandomToggledParameterSet(
     toggle_probability=0.5,
-    DC_gain=LinearParameter(low=0.0, high=3.0, step=0.3),
-    AC_gain=LinearParameter(low=0, high=0.5, step=0.25),
-    fp1=LinearParameter(low=3, high=6.5, step=0.5),
-    fp2=LinearParameter(low=5, high=10, step=0.5),
-    fs=LinearParameter(low=8, high=12, step=0.5)
+    AC_gain=LinearParameter(low=0, high=5, step=0.25),
+    DC_gain=LinearParameter(low=0.3, high=3, step=0.3),
+    fp1=LinearParameter(low=5, high=50, scaler=1e9),
+    fp2=LinearParameter(low=5, high=50, scaler=1e9)
 )
 
 def constraint_fp2_ge_fp1(sample):
