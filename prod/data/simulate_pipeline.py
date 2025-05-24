@@ -1,24 +1,21 @@
-import os
-import csv
 import sys
-import time
 import yaml
 import json
 import torch
 import signal
-import random
 import numpy as np
 import argparse
 import multiprocessing
 import concurrent.futures
+import re
 from tqdm import tqdm
 from pathlib import Path
 from types import SimpleNamespace
 import pandas as pd
 
 import bound_param
-from bound_param import SampleResult, ParameterSet
-from sparam_to_ew import snp_eyewidth_simulation
+from bound_param import ParameterSet
+from eye_width_simulator import snp_eyewidth_simulation
 
 class EyeWidthSimulatePipeline:
     def __init__(self, infer_yaml_path, device="cuda", debug=False, proc_per_gpu=1):
@@ -59,12 +56,22 @@ class EyeWidthSimulatePipeline:
         suffix = '*.s*p'
         if len(list(snp_dir.glob("*.npz"))):
             suffix = '*.npz'
-        return list(snp_dir.glob(suffix))
+        
+        files = list(snp_dir.glob(suffix))
+        
+        # Sort by the last number in the filename before the extension
+        def extract_number(filepath):
+            stem = filepath.stem
+            match = re.search(r'(\d+)(?!.*\d)', stem)
+            return int(match.group(1)) if match else 0
+        
+        return sorted(files, key=extract_number)
 
     def simulate_eye_width(self, snp_file, id_gpu):
         """Simulate eye width for a single SNP file."""
         snp_horiz, snp_tx, snp_rx = snp_file
         snp_key = snp_horiz.stem
+        directions = self.directions
 
         # Generate random config from parameter space
         config = None
@@ -75,9 +82,12 @@ class EyeWidthSimulatePipeline:
             print("\n", config.to_dict())
 
         # Simulate eye width
-        n_lines = int(snp_horiz.suffix[2:-1]) // 2
-        line_ew = np.random.uniform(0, 99.9, size=n_lines)
-        directions = np.random.randint(0, 2, size=n_lines) if self.directions is None else self.directions
+        line_ew = snp_eyewidth_simulation(
+            config,
+            snp_file,
+            directions,
+            device=f"cuda:{id_gpu}" if self.device == "cuda" else "cpu"
+        )
         line_ew[line_ew >= 99.9] = -0.1
 
         # Return results instead of storing in instance variable
