@@ -5,6 +5,7 @@ pandas
 scipy>=1.12.0
 future==0.18.2
 scikit-rf==1.5.0
+line_profiler
 jsonargparse[signatures]
 
 # plotting
