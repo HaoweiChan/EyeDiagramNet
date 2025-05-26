@@ -206,27 +206,30 @@ class EyeWidthSimulator:
     
     def __init__(self, config, snp_files=None, directions=None):
         """Initialize the EyeWidthSimulator."""
+        # Convert config to dictionary format
         if isinstance(config, dict):
-            self.params = TransientParams.from_config(config)
+            config_dict = config.copy()
         else:
             if hasattr(config, 'to_dict'):
-                self.params = TransientParams.from_config(config.to_dict())
+                config_dict = config.to_dict()
             else:
                 config_dict = {attr: getattr(config, attr) for attr in dir(config) if not attr.startswith('_')}
-                self.params = TransientParams.from_config(config_dict)
         
         # Handle snp_files if passed separately (for backward compatibility)
         if snp_files is not None:
             if isinstance(snp_files, (tuple, list)) and len(snp_files) >= 3:
-                self.params.snp_horiz = snp_files[0]
-                self.params.snp_tx = snp_files[1]
-                self.params.snp_rx = snp_files[2]
+                config_dict['snp_horiz'] = snp_files[0]
+                config_dict['snp_tx'] = snp_files[1]
+                config_dict['snp_rx'] = snp_files[2]
             elif isinstance(snp_files, str):
-                self.params.snp_horiz = snp_files
+                config_dict['snp_horiz'] = snp_files
         
         # Handle directions if passed separately
         if directions is not None:
-            self.params.directions = directions
+            config_dict['directions'] = directions
+        
+        # Create TransientParams from the updated config
+        self.params = TransientParams.from_config(config_dict)
         
         self.ntwk = self._load_and_cascade_networks()
         self.ntwk, self.directions = self._assign_tx_rx_directions()
