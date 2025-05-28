@@ -141,12 +141,34 @@ class TraceEWModule(LightningModule):
         return (self.current_epoch * max_batches, max_batches - 1)
 
     def augment_input_sequence(self, seq):
-        insert_len = torch.randint(0, seq.size(1) // 10, (1,)).item()
-        insert_idx = torch.randperm(seq.size(1) + insert_len)[:insert_len]
-        orig_idx = torch.sort(insert_idx)[1].values
-        extended_seq = (-1) * torch.ones(seq.size(0), seq.size(1) + insert_len, seq.size(-1), device=seq.device, dtype=seq.dtype)
-        orig_idx = torch.arange(seq.size(1) + insert_len)
-        extended_seq[:, orig_idx[torch.isin(orig_idx, insert_idx)], :] = seq
+        batch_size, seq_len, feat_dim = seq.shape
+        max_insert_len = seq_len // 10
+        
+        if max_insert_len == 0:
+            return seq
+        
+        # Use a fixed augmentation strategy for better performance
+        # Insert a random number of padding tokens at random intervals
+        insert_len = torch.randint(1, max_insert_len + 1, (1,), device=seq.device).item()
+        
+        if insert_len == 0:
+            return seq
+        
+        new_seq_len = seq_len + insert_len
+        
+        # Create augmented sequence more efficiently
+        # Use advanced indexing to avoid loops
+        extended_seq = torch.full(
+            (batch_size, new_seq_len, feat_dim),
+            -1.0, device=seq.device, dtype=seq.dtype
+        )
+        
+        # Generate random positions for original sequence (same for all batch items for efficiency)
+        keep_positions = torch.sort(torch.randperm(new_seq_len, device=seq.device)[:seq_len])[0]
+        
+        # Place original sequence at keep positions for all batch items at once
+        extended_seq[:, keep_positions] = seq
+        
         return extended_seq
 
     def step(self, batch, batch_idx, stage, dataloader_idx):
@@ -165,11 +187,9 @@ class TraceEWModule(LightningModule):
             if stage == "train":
                 trace_seq = self.augment_input_sequence(trace_seq)
 
-            # Make the true probability for non-closed eye
-            true_prob = true_ew.clone()
-            true_prob[true_prob > 0] = 1
-            weight_prob = true_prob.clone()
-            weight_prob[weight_prob == 0] = 10
+            # Make the true probability for non-closed eye (optimized)
+            true_prob = (true_ew > 0).float()  # More efficient than clone + assignment
+            weight_prob = torch.where(true_prob == 0, 10.0, 1.0)  # Avoid clone + assignment
             weight_prob = weight_prob / weight_prob.sum()
 
             # Use Monte Carlo inference for validation if enabled
@@ -239,21 +259,42 @@ class TraceEWModule(LightningModule):
         pred_sigma: torch.Tensor
     ):
         stage = self.convert_metric_name(stage)
+        
+        # Pre-compute common values to avoid redundant operations
         mask = true_prob.bool()
+        pred_prob_flat = pred_prob.flatten()
+        true_prob_flat = true_prob.flatten()
+        
+        # Only compute masked values once for regression metrics
+        if mask.any():
+            pred_ew_masked = pred_ew[mask].flatten()
+            true_ew_masked = true_ew[mask].flatten()
+        else:
+            pred_ew_masked = torch.empty(0, device=pred_ew.device)
+            true_ew_masked = torch.empty(0, device=true_ew.device)
+        
+        # Pre-compute coverage metrics to avoid redundant calculations
+        coverage_metrics = {}
+        if mask.any():
+            for key in self.metrics[stage].keys():
+                if 'cov' in key:
+                    sigma_multiplier = 1.0 if '1s' in key else 2.0
+                    lower = pred_ew - sigma_multiplier * pred_sigma
+                    upper = pred_ew + sigma_multiplier * pred_sigma
+                    in_range_mask = ((true_ew >= lower) & (true_ew <= upper)).float()
+                    coverage_metrics[key] = (in_range_mask[mask].flatten(), torch.ones_like(in_range_mask[mask]).flatten())
+        
+        # Update all metrics efficiently
         for key, metric in self.metrics[stage].items():
             if 'loss' in key:
                 metric.update(loss)
             elif 'f1' in key or 'accuracy' in key:
-                metric.update(pred_prob.flatten(), true_prob.flatten())
-            elif 'cov' in key:
-                sigma_multiplier = 1.0 if '1s' in key else 2.0
-                lower = pred_ew - sigma_multiplier * pred_sigma
-                upper = pred_ew + sigma_multiplier * pred_sigma
-                in_range_mask = ((true_ew >= lower) & (true_ew <= upper)).float()
-                true_mask = torch.ones_like(in_range_mask)
-                metric.update(in_range_mask[mask].flatten(), true_mask[mask].flatten())
-            else:
-                metric.update(pred_ew[mask].flatten(), true_ew[mask].flatten())
+                metric.update(pred_prob_flat, true_prob_flat)
+            elif 'cov' in key and key in coverage_metrics:
+                in_range_flat, true_mask_flat = coverage_metrics[key]
+                metric.update(in_range_flat, true_mask_flat)
+            elif pred_ew_masked.numel() > 0:  # Only update if we have valid masked data
+                metric.update(pred_ew_masked, true_ew_masked)
 
     def compute_metrics(self, stage):
         stage = self.convert_metric_name(stage)
