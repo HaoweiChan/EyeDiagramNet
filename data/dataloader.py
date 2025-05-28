@@ -17,10 +17,10 @@ from common.utils import log_info, parse_snps, read_snp
 class CSVProcessor:
     def __init__(self, patterns: List[str] = None, padding_value: int = -1):
         self.patterns = patterns or [
-            "input for AI*.csv",
-            "*AI input data*.csv",
-            "*AI input.csv",
-            "*Real.csv",
+            "input_for_AI*.csv",
+            "*AI_input_data*.csv",
+            "*AI_input*.csv",
+            "*ai*.csv",
         ]
         self.padding = padding_value
 
