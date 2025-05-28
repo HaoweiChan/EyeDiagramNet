@@ -16,7 +16,6 @@ class TraceEWModule(LightningModule):
         model: nn.Module,
         ckpt_path: str = None,
         strict: bool = False,
-        bce_weight: int = 10,
         ew_scaler: int = 50,
         ew_threshold: float = 0.3,
         mc_samples: int = 50,
