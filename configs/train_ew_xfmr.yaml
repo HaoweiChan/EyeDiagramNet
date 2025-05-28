@@ -42,7 +42,7 @@ trainer:
     - class_path: lightning.pytorch.loggers.TensorBoardLogger
       init_args:
         save_dir: ./saved
-        name: ew_transformer
+        name: ew_xfmr
   callbacks:
     - class_path: lightning.pytorch.callbacks.ModelSummary
       init_args:
@@ -52,7 +52,7 @@ trainer:
         logging_interval: epoch
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
-        filename: 'ew-transformer-epoch{epoch}-mae{hp_metric:.2f}'
+        filename: 'ew-xfmr-epoch{epoch}-mae{hp_metric:.2f}'
         auto_insert_metric_name: false
         monitor: hp_metric
         mode: min
@@ -65,7 +65,7 @@ model:
     bc_weight: 10
     ew_scaler: 50
     ew_threshold: 0.1
-    ckpt_path: ./saved/ew_transformer/version_111/checkpoints/last.ckpt
+    ckpt_path: ./saved/ew_xfmr/version_111/checkpoints/last.ckpt
     strict: false
     model:
       class_path: models.eye_width_model.EyeWidthRegressor
