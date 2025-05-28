@@ -29,8 +29,8 @@ class TraceEWModule(LightningModule):
         self.val_step_outputs = {}
 
         self.metrics = nn.ModuleDict({
-            'train': self.metrics_factory(),
-            'val': self.metrics_factory(),
+            "train_": self.metrics_factory(),
+            "val": self.metrics_factory(),
         })
         self.ew_scaler = torch.tensor(self.hparams.ew_scaler)
         # self.weighted_loss = UncertaintyWeightedLoss(['nll', 'bce'])
@@ -72,16 +72,16 @@ class TraceEWModule(LightningModule):
     ############################ TRAIN & VALIDATION ############################
 
     def training_step(self, batch, batch_idx, dataloader_idx=0):
-        return self.step(batch, batch_idx, "train", dataloader_idx)
+        return self.step(batch, batch_idx, "train_", dataloader_idx)
 
     def validation_step(self, batch, batch_idx, dataloader_idx=0):
         return self.step(batch, batch_idx, "val", dataloader_idx)
 
     def on_train_epoch_end(self):
-        log_metrics = self.compute_metrics("train")
+        log_metrics = self.compute_metrics("train_")
         if self.current_epoch % self.trainer.check_val_every_n_epoch == 0:
             for dataloader_idx in self.train_step_outputs.keys():
-                self.plot_sparam_curve("train", log_metrics, self.train_step_outputs[dataloader_idx][0], dataloader_idx)
+                self.plot_sparam_curve("train_", log_metrics, self.train_step_outputs[dataloader_idx][0], dataloader_idx)
         self.train_step_outputs.clear()
 
     def on_validation_epoch_end(self):
@@ -109,8 +109,8 @@ class TraceEWModule(LightningModule):
     ############################ PRIVATE METHODS ############################
 
     def convert_metric_name(self, stage):
-        if stage == "train":
-            return "train"
+        if stage == "train_":
+            return "train_"
         return stage
 
     def metrics_factory(self):
@@ -133,7 +133,7 @@ class TraceEWModule(LightningModule):
         return metrics_dict
 
     def get_output_steps(self, stage):
-        if stage == "train":
+        if stage == "train_":
             max_batches = self.trainer.num_training_batches
         else:
             max_batches = getattr(self.trainer, f'num_{stage}_batches')[0]
@@ -183,7 +183,7 @@ class TraceEWModule(LightningModule):
             trace_seq, direction, boundary, snp_vert, true_ew = batch_one
             true_ew = true_ew / self.ew_scaler
 
-            if stage == "train":
+            if stage == "train_":
                 trace_seq = self.augment_input_sequence(trace_seq)
 
             # Make the true probability for non-closed eye (optimized)
@@ -236,12 +236,12 @@ class TraceEWModule(LightningModule):
                     'true_prob': true_prob[idx],
                     'pred_sigma': pred_sigma[idx]
                 }
-                if stage == "train":
+                if stage == "train_":
                     self.train_step_outputs.setdefault(name, []).append(step_output)
                 else:
                     self.val_step_outputs.setdefault(name, []).append(step_output)
 
-        prog_bar = True if stage == "train" else False
+        prog_bar = True if stage == "train_" else False
         loss = loss / len(batch)
         self.log("loss", loss, on_step=True, prog_bar=prog_bar, logger=False, sync_dist=True)
 
@@ -301,16 +301,16 @@ class TraceEWModule(LightningModule):
         for key, metric in self.metrics[stage].items():
             log_metrics[f'{stage}/{key}'] = metric.compute()
             metric.reset()
-        if stage in ('train', 'val') and self.logger is not None:
+        if stage in ("train_", "val") and self.logger is not None:
             self.logger.log_metrics(log_metrics, self.current_epoch)
 
-        if stage in ('val', 'test'):
+        if stage in ("val", "test"):
             self.log(
                 'hp_metric', log_metrics[f'{stage}/mae'],
                 prog_bar=True, on_epoch=True, on_step=False, sync_dist=True
             )
 
-        if stage == 'test':
+        if stage == "test":
             for key, metric in log_metrics.items():
                 self.log(key, metric, sync_dist=True)
 
