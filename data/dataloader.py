@@ -81,17 +81,17 @@ class CSVProcessor:
 
         # x coordinate: cumulative widths (shifted by 1)
         cum_x = np.r_[0, widths.cumsum()[:-1]]
-        x_dim = cum_x = np.repeat(cum_x[layer_change], layer_count)
+        x_dim = np.repeat(cum_x[layer_change], layer_count)
         # z coordinate: bottom height of each layer
         cum_h = heights[layer_change].cumsum()
         z_dim = np.roll(cum_h, 1)
         z_dim[0] = 0
-        z_dim = np.repeat(cum_h, layer_count)
+        z_dim = np.repeat(z_dim, layer_count)
         # original feature block
-        feat_dim = np.flatnonzero(layer_mask)
-        data_col = case.values.reshape(-1, feat_dim)
+        feat_indices = np.flatnonzero(layer_mask)
+        data_col = case.values[feat_indices]
 
-        return np.hstack([data_col, x_dim[:, None], z_dim[:, None]])
+        return np.hstack([data_col[:, None], x_dim[:, None], z_dim[:, None]])
 
 class TraceSeqEWDataloader(pl.LightningDataModule):
     def __init__(

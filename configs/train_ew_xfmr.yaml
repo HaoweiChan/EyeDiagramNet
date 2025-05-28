@@ -104,7 +104,7 @@ optimizer:
 #     gamma: 0.995
 
 lr_scheduler:
-  class_path: common.lr_scheduler.CosineAnnealingWarmRestartsWithWarmupDecay
+  class_path: common.lr_schedulers.CosineAnnealingWarmRestartsWithWarmupDecay
   init_args:
     T_0: 20
     T_mult: 2
