@@ -1,9 +1,10 @@
+import os
+import argparse
+import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import numpy as np
-import argparse
+from tqdm import tqdm
 from pathlib import Path
-import os
 
 def plot_eye_width_comparison(pred_csv_path, true_csv_path, output_dir):
     """
@@ -23,11 +24,11 @@ def plot_eye_width_comparison(pred_csv_path, true_csv_path, output_dir):
     output_dir.mkdir(parents=True, exist_ok=True)
     
     # Get line columns (excluding 'index' column)
-    line_columns = [col for col in pred_df.columns if col.startswith('line_')]
-    line_numbers = [int(col.split('_')[1]) for col in line_columns]
+    line_columns = [col for col in pred_df.columns]
+    line_numbers = [int(col) for col in line_columns]
     
     # Plot comparison for each row (sample)
-    for idx in range(len(pred_df)):
+    for idx in tqdm(range(len(pred_df)), desc="Creating individual plots"):
         if idx >= len(true_df):
             print(f"Warning: True data has fewer rows than predicted data. Stopping at row {idx}")
             break
@@ -46,25 +47,22 @@ def plot_eye_width_comparison(pred_csv_path, true_csv_path, output_dir):
         # Customize the plot
         plt.xlabel('Line Number')
         plt.ylabel('Eye Width')
-        plt.title(f'Eye Width Comparison - Sample {pred_df.iloc[idx]["index"]}')
+        plt.title(f'Eye Width Comparison - Sample {pred_df.index[idx]}')
         plt.legend()
         plt.grid(True, alpha=0.3)
         
-        # Add some statistics
-        mse = np.mean((np.array(pred_values) - np.array(true_values))**2)
+        # Add MAE statistics
         mae = np.mean(np.abs(np.array(pred_values) - np.array(true_values)))
-        plt.text(0.02, 0.98, f'MSE: {mse:.2f}\nMAE: {mae:.2f}', 
+        plt.text(0.02, 0.98, f'MAE: {mae:.2f}', 
                 transform=plt.gca().transAxes, verticalalignment='top',
                 bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
         
         # Save the plot
-        sample_idx = pred_df.iloc[idx]["index"]
-        output_path = output_dir / f'eye_width_comparison_sample_{sample_idx}.png'
+        sample_idx = pred_df.index[idx]
+        output_path = output_dir / f'sample_{sample_idx}.png'
         plt.savefig(output_path, dpi=300, bbox_inches='tight')
         plt.close()
         
-        print(f"Saved plot for sample {sample_idx}: {output_path}")
-    
     # Create a summary plot showing all samples
     plt.figure(figsize=(15, 10))
     
@@ -108,9 +106,9 @@ def plot_eye_width_comparison(pred_csv_path, true_csv_path, output_dir):
     plt.title('Distribution of Residuals')
     plt.grid(True, alpha=0.3)
     
-    # Sample-wise MSE
+    # Sample-wise MAE
     plt.subplot(2, 2, 4)
-    sample_mses = []
+    sample_maes = []
     unique_samples = sorted(pred_df['index'].unique())
     
     for sample_idx in unique_samples:
@@ -121,30 +119,27 @@ def plot_eye_width_comparison(pred_csv_path, true_csv_path, output_dir):
             pred_vals = [pred_row[col] for col in line_columns]
             true_vals = [true_row[col] for col in line_columns]
             
-            mse = np.mean((np.array(pred_vals) - np.array(true_vals))**2)
-            sample_mses.append(mse)
+            mae = np.mean(np.abs(np.array(pred_vals) - np.array(true_vals)))
+            sample_maes.append(mae)
     
-    plt.bar(range(len(sample_mses)), sample_mses)
+    plt.bar(range(len(sample_maes)), sample_maes)
     plt.xlabel('Sample Index')
-    plt.ylabel('MSE')
-    plt.title('MSE per Sample')
+    plt.ylabel('MAE')
+    plt.title('MAE per Sample')
     plt.xticks(range(len(unique_samples)), unique_samples)
     plt.grid(True, alpha=0.3)
     
     plt.tight_layout()
-    summary_path = output_dir / 'eye_width_comparison_summary.png'
+    summary_path = output_dir / 'comparison_summary.png'
     plt.savefig(summary_path, dpi=300, bbox_inches='tight')
     plt.close()
     
     print(f"Saved summary plot: {summary_path}")
     
     # Print overall statistics
-    overall_mse = np.mean(residuals**2)
     overall_mae = np.mean(np.abs(residuals))
     print(f"\nOverall Statistics:")
-    print(f"MSE: {overall_mse:.4f}")
     print(f"MAE: {overall_mae:.4f}")
-    print(f"RMSE: {np.sqrt(overall_mse):.4f}")
     print(f"Number of samples compared: {min(len(pred_df), len(true_df))}")
 
 def main():
