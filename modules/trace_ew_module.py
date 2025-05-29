@@ -46,9 +46,14 @@ class TraceEWModule(LightningModule):
         
         dummy_batch = next(iter(loader))
         if stage in ('fit', None):
-            key = next(iter(dummy_batch.keys()))
-            inputs = dummy_batch[key]
-            forward_args = inputs[:-1]
+            # Check if dummy_batch is a dictionary (from CombinedLoader)
+            if isinstance(dummy_batch, dict):
+                key = next(iter(dummy_batch.keys()))
+                inputs = dummy_batch[key]
+                forward_args = inputs[:-1]
+            else:
+                # Handle case where batch is directly a tuple/list
+                forward_args = dummy_batch[:-1]
         else:
             forward_args = dummy_batch
 

@@ -105,7 +105,7 @@ class TraceEWDataset(Dataset):
         if self.train and random.random() > 0.5:
             trace_seq, direction, eye_width, vert_snp = \
                 self.augment(trace_seq, direction, eye_width, vert_snp)
-        return trace_seq, seq_index, direction, boundary, vert_snp, eye_width
+        return trace_seq, direction, boundary, vert_snp, eye_width
 
     def transform(self, seq_scaler, fix_scaler):
         """Apply scaling transformations using semantic feature access."""
