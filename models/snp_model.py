@@ -33,48 +33,42 @@ class SNPEmbedding(nn.Module):
 
     def forward(self, snp_vert):
         """Encoder of snp for encoding vertical frequency responses"""
-        b, d, f, p = snp_vert.size()
+        b, d, f, p1, p2 = snp_vert.size()
         
         # Input validation moved to top for early exit
         if d != 2:
             raise ValueError("Invalid input shape: snp_vert must have 2 snp tensors (tx and rx) in dimension 1.")
+        
+        if p1 != p2:
+            raise ValueError("SNP matrix must be square (P x P)")
 
+        # Extract diagonal elements from the S-parameter matrix
+        # We focus on the diagonal elements which represent reflection coefficients
+        snp_diag = torch.diagonal(snp_vert, dim1=-2, dim2=-1)  # (B, D, F, P)
+        
         # Optimized: Combine view_as_real and transform in single operation
-        snp_vert = torch.view_as_real(snp_vert)
-        snp_vert = self.snp_transform(snp_vert)
+        snp_diag = torch.view_as_real(snp_diag)  # (B, D, F, P, 2)
+        snp_diag = self.snp_transform(snp_diag)  # (B, D, F, P, 2)
 
-        # Optimized: Reduce number of rearrange operations
-        # Original: multiple rearranges, now combined where possible
-        snp_vert = rearrange(snp_vert, "b d pl p2 ri -> (b d pl p2) ri f")
+        # Reshape for interpolation: combine real/imaginary and prepare for frequency interpolation
+        snp_diag = rearrange(snp_diag, "b d f p ri -> (b d p) (ri f)")
         
-        # Use more efficient interpolation mode for better performance
-        snp_vert = F.interpolate(snp_vert, size=self.freq_length, mode='linear', align_corners=False)
+        # Interpolate frequency dimension
+        snp_diag = F.interpolate(snp_diag.unsqueeze(1), size=self.freq_length * 2, mode='linear', align_corners=False)
+        snp_diag = snp_diag.squeeze(1)  # (b*d*p, freq_length*2)
         
-        # Optimized: Combine reshape and projection operations
-        snp_vert = rearrange(snp_vert, "(b d pl p2) ri f -> (b d) pl (p2 ri)", b=b, d=d, pl=p, p2=p)
-        snp_vert = self.snp_proj(snp_vert)
-
-        # Optimized: More efficient interleaving using advanced indexing
-        # Instead of stack + rearrange, use direct tensor operations
-        half_p = p // 2
-        tx_part = snp_vert[:, :half_p]  # First half
-        rx_part = snp_vert[:, half_p:]  # Second half
-        
-        # Create interleaved tensor more efficiently
-        interleaved = torch.empty(b * d, p, self.freq_length, device=snp_vert.device, dtype=snp_vert.dtype)
-        interleaved[:, 0::2] = tx_part
-        interleaved[:, 1::2] = rx_part
-        
-        # Reshape for encoder input
-        snp_vert = rearrange(interleaved, "(b d) p f -> (b d p) f", b=b, d=d)
+        # Apply projection
+        snp_diag = self.snp_proj(snp_diag)  # (b*d*p, freq_length)
 
         # Forward to conditional embedding
-        hidden_states_snp = self.snp_encoder(snp_vert)
-        hidden_states_snp = rearrange(hidden_states_snp, "(b d p) e -> b d p e", b=b, d=d, p=half_p)
+        hidden_states_snp = self.snp_encoder(snp_diag)  # (b*d*p, model_dim)
         
-        # Optimized: In-place addition for tokens
-        hidden_states_snp[:, 0].add_(self.tx_token.squeeze(0))
-        hidden_states_snp[:, 1].add_(self.rx_token.squeeze(0))
+        # Reshape back to desired format
+        hidden_states_snp = rearrange(hidden_states_snp, "(b d p) e -> b d p e", b=b, d=d, p=p1)
+        
+        # Add learnable tokens for tx/rx distinction
+        hidden_states_snp[:, 0].add_(self.tx_token.squeeze(0))  # Add tx token to first dimension
+        hidden_states_snp[:, 1].add_(self.rx_token.squeeze(0))  # Add rx token to second dimension
         
         return hidden_states_snp
 
@@ -117,20 +111,23 @@ class OptimizedSNPEmbedding(nn.Module):
 
     def _process_snp_chunk(self, snp_chunk, b, d, p):
         """Process SNP data in chunks for memory efficiency"""
+        # Extract diagonal elements from the S-parameter matrix
+        snp_chunk = torch.diagonal(snp_chunk, dim1=-2, dim2=-1)  # (B, D, F, P)
+        
         # Convert to real and apply transform
-        snp_chunk = torch.view_as_real(snp_chunk)
-        snp_chunk = self.snp_transform(snp_chunk)
+        snp_chunk = torch.view_as_real(snp_chunk)  # (B, D, F, P, 2)
+        snp_chunk = self.snp_transform(snp_chunk)  # (B, D, F, P, 2)
         
         # Efficient reshape and interpolation
-        snp_chunk = rearrange(snp_chunk, "b d pl p2 ri -> (b d pl p2) ri f")
-        snp_chunk = F.interpolate(snp_chunk, size=self.freq_length, mode='linear', align_corners=False)
-        snp_chunk = rearrange(snp_chunk, "(b d pl p2) ri f -> (b d) pl (p2 ri)", b=b, d=d, pl=p, p2=p)
+        snp_chunk = rearrange(snp_chunk, "b d f p ri -> (b d p) (ri f)")
+        snp_chunk = F.interpolate(snp_chunk.unsqueeze(1), size=self.freq_length * 2, mode='linear', align_corners=False)
+        snp_chunk = snp_chunk.squeeze(1)  # (b*d*p, freq_length*2)
         
         return self.snp_proj(snp_chunk)
 
     def forward(self, snp_vert):
         """Memory-optimized forward pass with optional gradient checkpointing"""
-        b, d, f, p = snp_vert.size()
+        b, d, f, p1, p2 = snp_vert.size()
         
         if d != 2:
             raise ValueError("Invalid input shape: snp_vert must have 2 snp tensors (tx and rx) in dimension 1.")
@@ -138,29 +135,16 @@ class OptimizedSNPEmbedding(nn.Module):
         # Use gradient checkpointing for memory efficiency during training
         if self.use_checkpointing and self.training:
             snp_vert = torch.utils.checkpoint.checkpoint(
-                self._process_snp_chunk, snp_vert, b, d, p, use_reentrant=False
+                self._process_snp_chunk, snp_vert, b, d, p1, use_reentrant=False
             )
         else:
-            snp_vert = self._process_snp_chunk(snp_vert, b, d, p)
-
-        # Efficient interleaving
-        half_p = p // 2
-        tx_indices = torch.arange(0, half_p, device=snp_vert.device)
-        rx_indices = torch.arange(half_p, p, device=snp_vert.device)
-        
-        # Create interleaved pattern more efficiently
-        interleaved_indices = torch.empty(p, dtype=torch.long, device=snp_vert.device)
-        interleaved_indices[0::2] = tx_indices
-        interleaved_indices[1::2] = rx_indices
-        
-        snp_vert = snp_vert[:, interleaved_indices]
-        snp_vert = rearrange(snp_vert, "(b d) p f -> (b d p) f", b=b, d=d)
+            snp_vert = self._process_snp_chunk(snp_vert, b, d, p1)
 
         # Forward through encoder with mixed precision
         with torch.cuda.amp.autocast(enabled=self.use_mixed_precision):
             hidden_states_snp = self.snp_encoder(snp_vert)
         
-        hidden_states_snp = rearrange(hidden_states_snp, "(b d p) e -> b d p e", b=b, d=d, p=half_p)
+        hidden_states_snp = rearrange(hidden_states_snp, "(b d p) e -> b d p e", b=b, d=d, p=p1)
         
         # In-place token addition
         hidden_states_snp[:, 0].add_(self.tx_token.view(1, -1))

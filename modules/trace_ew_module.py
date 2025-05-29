@@ -44,16 +44,11 @@ class TraceEWModule(LightningModule):
         else:
             loader = self.trainer.datamodule.predict_dataloader()
         
-        dummy_batch = next(iter(loader))
+        dummy_batch, *_ = next(iter(loader))
         if stage in ('fit', None):
-            # Check if dummy_batch is a dictionary (from CombinedLoader)
-            if isinstance(dummy_batch, dict):
-                key = next(iter(dummy_batch.keys()))
-                inputs = dummy_batch[key]
-                forward_args = inputs[:-1]
-            else:
-                # Handle case where batch is directly a tuple/list
-                forward_args = dummy_batch[:-1]
+            key = next(iter(dummy_batch.keys()))
+            inputs = dummy_batch[key]
+            forward_args = inputs[:-1]
         else:
             forward_args = dummy_batch
 
@@ -61,13 +56,13 @@ class TraceEWModule(LightningModule):
             with torch.no_grad():
                 self(*forward_args)
         except (ValueError, RuntimeError) as e:
-            self.utils.log.info(traceback.format_exc())
+            utils.log_info(traceback.format_exc())
             raise
         self.apply(init_weights('xavier'))
 
         # load model checkpoint
         if self.hparams.ckpt_path is not None:
-            self.utils.log.info(f'Loading model checkpoint: {self.hparams.ckpt_path}')
+            utils.log_info(f'Loading model checkpoint: {self.hparams.ckpt_path}')
             ckpt = torch.load(self.hparams.ckpt_path, map_location=self.device)
             self.load_state_dict(ckpt['state_dict'], strict=self.hparams.strict)
 
