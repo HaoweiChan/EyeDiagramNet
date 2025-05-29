@@ -145,13 +145,13 @@ class TraceSeqEWDataloader(pl.LightningDataModule):
                     loaded = pickle.load(f)
                 snp_file = Path(loaded["snp_horiz"]).stem.replace("-", "_")
                 snp_vert = tuple(zip(loaded["snp_txs"], loaded["snp_rxs"]))
-                key = (snp_file.split("_")[-1].split(".")[0])
-                labels[key] = {
+                key = int(snp_file.split("_")[-1].split(".")[0])
+                labels[key] = (
                     loaded["configs"],
                     loaded["directions"],
                     loaded["line_ews"],
                     snp_vert,
-                }
+                )
 
             # keep only indices present in labels
             label_keys = set(labels.keys())

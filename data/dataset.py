@@ -118,12 +118,12 @@ class TraceEWDataset(Dataset):
         scaled_feats = seq_scaler.transform(scalable_feats_flat).reshape(feat_shape)
         
         # Update only the scalable portion of the sequence
-        self.trace_seqs[:, :, TraceSequenceProcessor.get_scalable_slice()] = torch.from_numpy(scaled_feats).float()
+        self.trace_seqs[:, :, TraceSequenceProcessor.get_scalable_slice()] = scaled_feats.float()
 
         # Scale boundary features  
         bound_dim = self.boundaries.size(-1)
         scaled_boundary = fix_scaler.transform(self.boundaries).reshape(num, -1, bound_dim)
-        self.boundaries = torch.from_numpy(scaled_boundary).float()
+        self.boundaries = scaled_boundary.float()
         
         return self
 
@@ -213,12 +213,12 @@ class InferenceTraceEWDataset(Dataset):
         scaled_feats = seq_scaler.transform(scalable_feats_flat).reshape(feat_shape)
         
         # Update only the scalable portion of the sequence
-        self.trace_seqs[:, :, TraceSequenceProcessor.get_scalable_slice()] = torch.from_numpy(scaled_feats).float()
+        self.trace_seqs[:, :, TraceSequenceProcessor.get_scalable_slice()] = scaled_feats.float()
 
         # Scale boundary features  
         bound_dim = self.boundary.size(-1)
         scaled_boundary = fix_scaler.transform(self.boundary).reshape(num, -1, bound_dim)
-        self.boundary = torch.from_numpy(scaled_boundary).float()
+        self.boundary = scaled_boundary.float()
         
         return self
 
@@ -278,7 +278,7 @@ class TraceDataset(Dataset):
         scalable_feats_flat = scalable_feats.reshape(-1, feat_shape[-1])
         scaled_feats = scaler.transform(scalable_feats_flat).reshape(feat_shape)
         
-        self.trace_seqs[:, :, 2:] = torch.from_numpy(scaled_feats).float()
+        self.trace_seqs[:, :, 2:] = scaled_feats.float()
         
         # Optionally add noise for data augmentation
         # if add_noise:
@@ -389,5 +389,5 @@ class InferenceTraceDataset(Dataset):
         scalable_feats_flat = scalable_feats.reshape(-1, feat_shape[-1])
         scaled_feats = scaler.transform(scalable_feats_flat).reshape(feat_shape)
         
-        self.trace_seqs[:, :, 2:] = torch.from_numpy(scaled_feats).float()
+        self.trace_seqs[:, :, 2:] = scaled_feats.float()
         return self
