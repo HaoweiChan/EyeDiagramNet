@@ -6,6 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .layers import positional_encoding_1d, cont_positional_encoding, RotaryTransformerEncoder
+from common.trace_processor import TraceSequenceProcessor
 
 class TraceSeqTransformer(nn.Module):
     def __init__(
@@ -59,8 +60,8 @@ class TraceSeqTransformer(nn.Module):
         null_mask = (seq_input == -1).any(-1)
         seq_input[null_mask] = 0 # prevent error for embeddings
 
-        # Split sequence to extract layer (0), type (1), x_dim (-2), z_dim (-1) information
-        layers, types, feats, spatials = torch.split(seq_input, [1, 1, seq_input.size(-1) - 4, 2], dim=-1)
+        # Split sequence using semantic processor
+        layers, types, feats, spatials = TraceSequenceProcessor.split_for_model(seq_input)
         layers, types = layers.long(), types.long() # (B, L, 1)
 
         # Get embedding for layer, type, and feature info
@@ -68,10 +69,11 @@ class TraceSeqTransformer(nn.Module):
         type_embeds = self.type_projection(types.view(-1, 1)).view(*feats.size()[:-1], -1)    # (B, L, E)
         feat_embeds = self.input_projection(feats)
 
-        # Make continuous positional embedding (still used even with RoPE for spatial info)
-        emb_spatials = cont_positional_encoding(spatials[:, :, 0], self.model_dim // 2)
-        z_embeds = cont_positional_encoding(spatials[:, :, 1], self.model_dim // 2)
-        pos_embeds = torch.cat([emb_spatials, z_embeds], dim=-1)
+        # Make continuous positional embedding for spatial coordinates
+        x_coords, z_coords = spatials.chunk(2, dim=-1)
+        x_embeds = cont_positional_encoding(x_coords.squeeze(-1), self.model_dim // 2)
+        z_embeds = cont_positional_encoding(z_coords.squeeze(-1), self.model_dim // 2)
+        pos_embeds = torch.cat([x_embeds, z_embeds], dim=-1)
 
         # Sum all the embeddings and mask those with null type
         valid_embeds = layer_embeds + type_embeds + feat_embeds + pos_embeds

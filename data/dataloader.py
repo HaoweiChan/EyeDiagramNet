@@ -13,6 +13,7 @@ from .dataset import TraceDataset, TraceEWDataset, InferenceTraceDataset, Infere
 from .bound_param import SampleResult
 from common.scaler import MinMaxScaler
 from common.utils import log_info, parse_snps, read_snp
+from common.trace_processor import TraceSequenceProcessor
 
 class CSVProcessor:
     def __init__(self, patterns: List[str] = None, padding_value: int = -1):
@@ -69,7 +70,7 @@ class CSVProcessor:
     def _spatial_feats(self, case: pd.Series) -> np.ndarray:
         idx = case.index
         layer_mask = idx.str.contains("Layer_")
-        width_mask = idx.str.contains("W")
+        width_mask = idx.str.contains("W_")
         height_mask = idx.str.contains("H_")
 
         layers = case[layer_mask].astype(int).values
@@ -92,7 +93,7 @@ class CSVProcessor:
 
         # original feature block
         layer_idx = np.flatnonzero(layer_mask)
-        feat_dim = layer_idx[l] - layer_idx[0]
+        feat_dim = layer_idx[1] - layer_idx[0]
         data_col = case.values.reshape(-1, feat_dim)
         
         return np.hstack([data_col, x_dim[:, None], z_dim[:, None]])
@@ -185,9 +186,13 @@ class TraceSeqEWDataloader(pl.LightningDataModule):
 
             # fit scalers once on training data
             if fit_scaler:
-                seq_feats = x_seq_tr[:, :, 2:-2].reshape(-1, input_arr.shape[-1] - 4)
-                self.seq_scaler.partial_fit(seq_feats)
-                self.fix_scaler.partial_fit(x_fix_tr.reshape(-1, x_fix_tr.shape[-1]))
+                # Use semantic processor to get scalable features for fitting
+                scalable_feats = TraceSequenceProcessor.get_scalable_features(x_seq_tr)
+                seq_feats_flat = scalable_feats.reshape(-1, scalable_feats.shape[-1])
+                self.seq_scaler.partial_fit(seq_feats_flat)
+                
+                fix_feats_flat = x_fix_tr.reshape(-1, x_fix_tr.shape[-1])
+                self.fix_scaler.partial_fit(fix_feats_flat)
 
             # build datasets
             self.train_dataset[name] = TraceEWDataset(
@@ -271,7 +276,8 @@ class InferenceTraceSeqEWDataloader(pl.LightningDataModule):
         for csv_path in csv_paths:
             case_id, input_arr = processor.parse(csv_path)
             log_info(f"Input array: {input_arr.shape}")
-            ds = InferenceTraceEWDataset(input_arr, directions, self.boundary.to_array(), tx, rx)
+            # Use structured boundary array for the new processor
+            ds = InferenceTraceEWDataset(input_arr, directions, self.boundary.to_structured_array(), tx, rx)
             self.predict_dataset.append(ds.transform(*scalers))
 
     def predict_dataloader(self):
@@ -424,7 +430,11 @@ class TraceSeqDataLoader(pl.LightningDataModule):
             x_train, x_val = train_test_split(input_arr, snps, test_size=self.test_size, shuffle=False)
             # scale input but ignore layer and type features
             if fit_scaler:
-                self.seq_scaler.partial_fit(x_train[:, :, 2:].reshape(-1, input_arr.shape[-1] - 2))
+                # For TraceSeqDataLoader, we scale all features except layer and type 
+                # (this dataset doesn't include spatial coordinates)
+                scalable_feats = input_arr[:, :, 2:]  # Skip layer and type
+                seq_feats_flat = scalable_feats.reshape(-1, scalable_feats.shape[-1])
+                self.seq_scaler.partial_fit(seq_feats_flat)
 
             # store dataset
             self.train_dataset[name] = TraceDataset(x_train, y_train, self.max_ports)

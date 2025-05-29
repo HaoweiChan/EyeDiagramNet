@@ -10,6 +10,7 @@ import torch.multiprocessing as mp
 from torch.utils.data import Dataset, DataLoader
 
 from common.utils import log_info, read_snp, flip_snp, renumber_snp, greedy_covering_design
+from common.trace_processor import TraceSequenceProcessor
 
 def collate_fn(batch, pad_token=-1):
     sequences, labels, sel_ports = zip(*batch)
@@ -107,13 +108,23 @@ class TraceEWDataset(Dataset):
         return trace_seq, seq_index, direction, boundary, vert_snp, eye_width
 
     def transform(self, seq_scaler, fix_scaler):
+        """Apply scaling transformations using semantic feature access."""
         num = len(self.trace_seqs)
 
-        feat_dim = self.trace_seqs.size(-1) - 4
-        self.trace_seqs[:, :, 2:-2] = seq_scaler.transform(self.trace_seqs[:, :, 2:-2].reshape(-1, feat_dim)).reshape(num, -1, feat_dim)
+        # Scale only the scalable features (geometry + additional features)
+        scalable_feats = TraceSequenceProcessor.get_scalable_features(self.trace_seqs)
+        feat_shape = scalable_feats.shape
+        scalable_feats_flat = scalable_feats.reshape(-1, feat_shape[-1])
+        scaled_feats = seq_scaler.transform(scalable_feats_flat).reshape(feat_shape)
+        
+        # Update only the scalable portion of the sequence
+        self.trace_seqs[:, :, TraceSequenceProcessor.get_scalable_slice()] = torch.from_numpy(scaled_feats).float()
 
+        # Scale boundary features  
         bound_dim = self.boundaries.size(-1)
-        self.boundaries = fix_scaler.transform(self.boundaries.reshape(-1, bound_dim)).reshape(num, -1, bound_dim).float()
+        scaled_boundary = fix_scaler.transform(self.boundaries).reshape(num, -1, bound_dim)
+        self.boundaries = torch.from_numpy(scaled_boundary).float()
+        
         return self
 
     def load_snp(self, snp_file):
@@ -161,6 +172,10 @@ class TraceEWDataset(Dataset):
 
         return trace_seq, direction, eye_width, vert_snp
 
+    def vert_snp(self, snp_file):
+        """Load and cache vertical SNP data."""
+        return self.load_snp(snp_file)
+
 class InferenceTraceEWDataset(Dataset):
     def __init__(
         self,
@@ -188,13 +203,23 @@ class InferenceTraceEWDataset(Dataset):
         return trace_seq, self.direction, self.boundary, self.vert_snp
 
     def transform(self, seq_scaler, fix_scaler):
+        """Apply scaling transformations using semantic feature access."""
         num = len(self.trace_seqs)
-        feat_dim = self.trace_seqs.size(-1) - 4
-        feat = self.trace_seqs[:, :, 2:-2].reshape(-1, feat_dim)
-        self.trace_seqs[:, :, 2:-2] = seq_scaler.transform(feat).reshape(num, -1, feat_dim)
+        
+        # Scale only the scalable features (geometry + additional features)
+        scalable_feats = TraceSequenceProcessor.get_scalable_features(self.trace_seqs)
+        feat_shape = scalable_feats.shape
+        scalable_feats_flat = scalable_feats.reshape(-1, feat_shape[-1])
+        scaled_feats = seq_scaler.transform(scalable_feats_flat).reshape(feat_shape)
+        
+        # Update only the scalable portion of the sequence
+        self.trace_seqs[:, :, TraceSequenceProcessor.get_scalable_slice()] = torch.from_numpy(scaled_feats).float()
 
+        # Scale boundary features  
         bound_dim = self.boundary.size(-1)
-        self.boundary = fix_scaler.transform(self.boundary).reshape(num, -1, bound_dim).float()
+        scaled_boundary = fix_scaler.transform(self.boundary).reshape(num, -1, bound_dim)
+        self.boundary = torch.from_numpy(scaled_boundary).float()
+        
         return self
 
 class TraceDataset(Dataset):
@@ -245,10 +270,18 @@ class TraceDataset(Dataset):
         return self.augment(trace_seq, snp, sel_ports)
 
     def transform(self, scaler, add_noise=False):
-        feature_dim = self.trace_seqs.size(-1) - 2
-        feat = self.trace_seqs[:, :, 2:].reshape(-1, feature_dim)
-        self.trace_seqs[:, :, 2:] = scaler.transform(feat).reshape(self.trace_seqs.size(0), -1, feature_dim)
-        # if add noise:
+        """Apply scaling transformations. Note: TraceDataset excludes spatial features."""
+        # For TraceDataset, we scale everything except layer and type (exclude first 2 cols)
+        # This dataset doesn't include spatial coordinates
+        scalable_feats = self.trace_seqs[:, :, 2:]  # All features except layer and type
+        feat_shape = scalable_feats.shape
+        scalable_feats_flat = scalable_feats.reshape(-1, feat_shape[-1])
+        scaled_feats = scaler.transform(scalable_feats_flat).reshape(feat_shape)
+        
+        self.trace_seqs[:, :, 2:] = torch.from_numpy(scaled_feats).float()
+        
+        # Optionally add noise for data augmentation
+        # if add_noise:
         #     mean, std = 0., 0.1
         #     noise = torch.rand_like(self.trace_seqs[:, :, 2:]) * std + mean
         #     self.trace_seqs[:, :, 2:] += noise
@@ -349,7 +382,12 @@ class InferenceTraceDataset(Dataset):
         return trace_seq, sel_ports
 
     def transform(self, scaler):
-        feature_dim = self.trace_seqs.size(-1) - 2
-        feat = self.trace_seqs[:, :, 2:].reshape(-1, feature_dim)
-        self.trace_seqs[:, :, 2:] = scaler.transform(feat).reshape(self.trace_seqs.size(0), -1, feature_dim)
+        """Apply scaling transformations. Note: InferenceTraceDataset excludes spatial features."""
+        # For InferenceTraceDataset, we scale everything except layer and type
+        scalable_feats = self.trace_seqs[:, :, 2:]  # All features except layer and type
+        feat_shape = scalable_feats.shape
+        scalable_feats_flat = scalable_feats.reshape(-1, feat_shape[-1])
+        scaled_feats = scaler.transform(scalable_feats_flat).reshape(feat_shape)
+        
+        self.trace_seqs[:, :, 2:] = torch.from_numpy(scaled_feats).float()
         return self
