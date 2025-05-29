@@ -359,3 +359,80 @@ class GradNormLossBalancer(nn.Module):
             total_loss += weights[i] * loss
         
         return total_loss
+
+class StructuredGatedBoundaryProcessor(nn.Module):
+    """
+    Structured processor for boundary conditions with separate MLPs for different parameter types.
+    
+    Boundary condition structure:
+    - Electrical (RLC): R_tx, R_rx, C_tx, C_rx, L_tx, L_rx (6 params)
+    - Signal: pulse_amplitude, bits_per_sec, vmask (3 params)  
+    - CTLE (optional): AC_gain, DC_gain, fp1, fp2 (4 params, may contain NaNs)
+    """
+    
+    def __init__(self, model_dim, electrical_dim=6, signal_dim=3, ctle_dim=4):
+        super().__init__()
+        
+        self.electrical_dim = electrical_dim
+        self.signal_dim = signal_dim
+        self.ctle_dim = ctle_dim
+        
+        # Separate MLPs for different parameter types
+        self.electrical_mlp = nn.Sequential(
+            nn.Linear(electrical_dim, model_dim // 2),
+            nn.GELU(),
+            nn.Linear(model_dim // 2, model_dim // 2)
+        )
+        
+        self.signal_mlp = nn.Sequential(
+            nn.Linear(signal_dim, model_dim // 4),
+            nn.GELU(),
+            nn.Linear(model_dim // 4, model_dim // 4)
+        )
+        
+        self.ctle_mlp = nn.Sequential(
+            nn.Linear(ctle_dim, model_dim // 4),
+            nn.GELU(),
+            nn.Linear(model_dim // 4, model_dim // 4)
+        )
+        
+        # Final fusion layer
+        self.fusion = nn.Sequential(
+            nn.Linear(model_dim, model_dim),
+            nn.GELU(),
+            nn.Linear(model_dim, model_dim)
+        )
+        
+    def forward(self, boundary_conditions):
+        """
+        Args:
+            boundary_conditions: Tensor of shape (B, 13) 
+                                Expected order: [electrical(6), signal(3), ctle(4)]
+        
+        Returns:
+            Processed boundary features of shape (B, model_dim)
+        """
+        # Split boundary conditions into components
+        electrical = boundary_conditions[:, :self.electrical_dim]  # (B, 6)
+        signal = boundary_conditions[:, self.electrical_dim:self.electrical_dim + self.signal_dim]  # (B, 3) 
+        ctle = boundary_conditions[:, -self.ctle_dim:]  # (B, 4)
+        
+        # Simple NaN handling: replace with zeros (CTLE MLP learns that zeros = no CTLE)
+        ctle = torch.nan_to_num(ctle, nan=0.0)
+        
+        # Process each component through its dedicated MLP
+        electrical_feat = self.electrical_mlp(electrical)  # (B, model_dim // 2)
+        signal_feat = self.signal_mlp(signal)  # (B, model_dim // 4)
+        ctle_feat = self.ctle_mlp(ctle)  # (B, model_dim // 4)
+        
+        # Concatenate all features
+        combined_feat = torch.cat([
+            electrical_feat, 
+            signal_feat, 
+            ctle_feat
+        ], dim=-1)  # (B, model_dim)
+        
+        # Final fusion
+        output = self.fusion(combined_feat)  # (B, model_dim)
+        
+        return output

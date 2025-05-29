@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from einops import rearrange
 
-from .layers import RMSNorm, positional_encoding_1d, MCDropout, RotaryTransformerEncoder
+from .layers import RMSNorm, positional_encoding_1d, MCDropout, RotaryTransformerEncoder, StructuredGatedBoundaryProcessor
 from .snp_model import SNPEmbedding
 from .trace_model import TraceSeqTransformer
 
@@ -64,12 +64,8 @@ class EyeWidthRegressor(nn.Module):
         # Direction embedding (0 for Tx, 1 for Rx)
         self.dir_projection = nn.Embedding(2, model_dim)
 
-        # MLP for boundary conditions
-        self.fix_mlp = nn.Sequential(
-            nn.LazyLinear(model_dim),
-            nn.GELU(),
-            nn.Linear(model_dim, model_dim)
-        )
+        # Structured boundary condition processor with CTLE gating
+        self.boundary_processor = StructuredGatedBoundaryProcessor(model_dim)
         self.fix_token = nn.Parameter(torch.zeros(1, 1, self.model_dim))
 
         # SNP encoder
@@ -130,8 +126,8 @@ class EyeWidthRegressor(nn.Module):
         # Process trace sequence
         hidden_states_seq = self.trace_encoder(trace_seq)  # (B, P, M)
 
-        # Process boundary
-        hidden_states_fix = self.fix_mlp(boundary).unsqueeze(1) # (B, 1, M)
+        # Process boundary conditions with structured processor
+        hidden_states_fix = self.boundary_processor(boundary).unsqueeze(1) # (B, 1, M)
 
         # Process snp into hidden states
         hidden_states_vert = self.snp_encoder(snp_vert) # (B, D, P, M)
