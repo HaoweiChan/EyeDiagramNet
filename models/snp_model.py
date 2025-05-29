@@ -27,7 +27,7 @@ class SNPEmbedding(nn.Module):
         # Cache for power transformation to avoid recomputation
         self.register_buffer('_power_inv', torch.tensor(1.0 / 4.0))
 
-    def snp_transform(self, x):
+    def _snp_transform(self, x):
         """Optimized power transformation using fused operations"""
         return x.sign() * torch.pow(x.abs(), self._power_inv)
 
@@ -42,47 +42,31 @@ class SNPEmbedding(nn.Module):
         if p1 != p2:
             raise ValueError("SNP matrix must be square (P x P)")
 
-        # Extract diagonal elements from the S-parameter matrix
-        # We focus on the diagonal elements which represent reflection coefficients
-        snp_diag = torch.diagonal(snp_vert, dim1=-2, dim2=-1)  # (B, D, F, P)
-        
-        # Optimized: Combine view_as_real and transform in single operation
-        snp_diag = torch.view_as_real(snp_diag)  # (B, D, F, P, 2)
-        snp_diag = self.snp_transform(snp_diag)  # (B, D, F, P, 2)
+        # Convert to real and apply power transformation
+        snp_vert = torch.view_as_real(snp_vert)  # (B, D, F, P1, P2, 2)
+        snp_vert = self._snp_transform(snp_vert)
 
-        # Reshape for interpolation: combine real/imaginary and prepare for frequency interpolation
-        snp_diag = rearrange(snp_diag, "b d f p ri -> (b d p) (ri f)")
-        
-        # Interpolate frequency dimension
-        snp_diag = F.interpolate(snp_diag.unsqueeze(1), size=self.freq_length * 2, mode='linear', align_corners=False)
-        snp_diag = snp_diag.squeeze(1)  # (b*d*p, freq_length*2)
-        
-        # Apply projection
-        snp_diag = self.snp_proj(snp_diag)  # (b*d*p, freq_length)
-        
-        # Add sequence dimension for AttentionPooling (expects 3D input)
-        # Split freq_length into seq_len chunks to create sequence dimension
-        seq_len = min(self.freq_length, 32)  # Use manageable sequence length
-        chunk_size = self.freq_length // seq_len
-        if chunk_size * seq_len < self.freq_length:
-            # Pad to make it divisible
-            padding_size = seq_len * chunk_size + chunk_size - self.freq_length
-            snp_diag = F.pad(snp_diag, (0, padding_size))
-            chunk_size = (self.freq_length + padding_size) // seq_len
-        
-        # Reshape to add sequence dimension
-        snp_diag = snp_diag.view(-1, seq_len, chunk_size)  # (b*d*p, seq_len, chunk_size)
+        # Reshape snp_vert to prepare for linear interpolation
+        snp_vert = rearrange(snp_vert, "b d f p1 p2 ri -> (b d p1 p2) ri f")
+        snp_vert = F.interpolate(snp_vert, size=self.freq_length, mode='linear', align_corners=False)
 
-        # Forward to conditional embedding
-        hidden_states_snp = self.snp_encoder(snp_diag)  # (b*d*p, model_dim)
-        
-        # Reshape back to desired format
-        hidden_states_snp = rearrange(hidden_states_snp, "(b d p) e -> b d p e", b=b, d=d, p=p1)
-        
-        # Add learnable tokens for tx/rx distinction
-        hidden_states_snp[:, 0].add_(self.tx_token.squeeze(0))  # Add tx token to first dimension
-        hidden_states_snp[:, 1].add_(self.rx_token.squeeze(0))  # Add rx token to second dimension
-        
+        # Linearly project snp_vert from complex space to hidden space
+        snp_vert = self.snp_proj(snp_vert.flatten(1))
+        snp_vert = rearrange(snp_vert, "(b d p1 p2) e -> (b d) p1 (p2 e)", b=b, d=d, p1=p1, p2=p2)
+
+        # Interleave in/out port information of a signal trace
+        half_p = p1 // 2
+        interleaved = torch.stack([snp_vert[:, :half_p], snp_vert[:, half_p:]], dim=2)
+        snp_vert = rearrange(interleaved, "b p1 d (p2 e) -> (b p1) (d p2) e", p1=half_p, d=2, p2=half_p)
+
+        # Forward snp_vert to conditional embedding to condense port interaction information
+        hidden_states_snp = self.snp_encoder(snp_vert)
+        hidden_states_snp = rearrange(hidden_states_snp, "(b p) e -> b d p e", b=b, d=d, p=half_p)
+
+        # Add tx and rx tokens
+        hidden_states_snp[:, 0].add_(self.tx_token)
+        hidden_states_snp[:, 1].add_(self.rx_token)
+
         return hidden_states_snp
 
 
@@ -117,36 +101,24 @@ class OptimizedSNPEmbedding(nn.Module):
         # Pre-computed constants
         self.register_buffer('_power_inv', torch.tensor(0.25))
 
-    def snp_transform(self, x):
+    def _snp_transform(self, x):
         """Optimized power transformation"""
         with torch.cuda.amp.autocast(enabled=self.use_mixed_precision):
             return x.sign() * torch.pow(x.abs() + 1e-8, self._power_inv)
 
     def _process_snp_chunk(self, snp_chunk, b, d, p):
         """Process SNP data in chunks for memory efficiency"""
-        # Extract diagonal elements from the S-parameter matrix
-        snp_chunk = torch.diagonal(snp_chunk, dim1=-2, dim2=-1)  # (B, D, F, P)
+        # Convert to real and apply power transformation
+        snp_chunk = torch.view_as_real(snp_chunk)
+        snp_chunk = self._snp_transform(snp_chunk)
         
-        # Convert to real and apply transform
-        snp_chunk = torch.view_as_real(snp_chunk)  # (B, D, F, P, 2)
-        snp_chunk = self.snp_transform(snp_chunk)  # (B, D, F, P, 2)
+        # Reshape for linear interpolation
+        snp_chunk = rearrange(snp_chunk, "b d f p1 p2 ri -> (b d p1 p2) ri f")
+        snp_chunk = F.interpolate(snp_chunk, size=self.freq_length, mode='linear', align_corners=False)
         
-        # Efficient reshape and interpolation
-        snp_chunk = rearrange(snp_chunk, "b d f p ri -> (b d p) (ri f)")
-        snp_chunk = F.interpolate(snp_chunk.unsqueeze(1), size=self.freq_length * 2, mode='linear', align_corners=False)
-        snp_chunk = snp_chunk.squeeze(1)  # (b*d*p, freq_length*2)
-        
-        snp_chunk = self.snp_proj(snp_chunk)
-        
-        # Add sequence dimension for AttentionPooling
-        seq_len = min(self.freq_length, 32)
-        chunk_size = self.freq_length // seq_len
-        if chunk_size * seq_len < self.freq_length:
-            padding_size = seq_len * chunk_size + chunk_size - self.freq_length
-            snp_chunk = F.pad(snp_chunk, (0, padding_size))
-            chunk_size = (self.freq_length + padding_size) // seq_len
-        
-        snp_chunk = snp_chunk.view(-1, seq_len, chunk_size)
+        # Project from complex space to hidden space
+        snp_chunk = self.snp_proj(snp_chunk.flatten(1))
+        snp_chunk = rearrange(snp_chunk, "(b d p1 p2) e -> (b d) p1 (p2 e)", b=b, d=d, p1=p, p2=p)
         
         return snp_chunk
 
@@ -156,6 +128,9 @@ class OptimizedSNPEmbedding(nn.Module):
         
         if d != 2:
             raise ValueError("Invalid input shape: snp_vert must have 2 snp tensors (tx and rx) in dimension 1.")
+        
+        if p1 != p2:
+            raise ValueError("SNP matrix must be square (P x P)")
 
         # Use gradient checkpointing for memory efficiency during training
         if self.use_checkpointing and self.training:
@@ -165,14 +140,19 @@ class OptimizedSNPEmbedding(nn.Module):
         else:
             snp_vert = self._process_snp_chunk(snp_vert, b, d, p1)
 
+        # Interleave in/out port information of a signal trace
+        half_p = p1 // 2
+        interleaved = torch.stack([snp_vert[:, :half_p], snp_vert[:, half_p:]], dim=2)
+        snp_vert = rearrange(interleaved, "b p1 d (p2 e) -> (b p1) (d p2) e", p1=half_p, d=2, p2=half_p)
+
         # Forward through encoder with mixed precision
         with torch.cuda.amp.autocast(enabled=self.use_mixed_precision):
             hidden_states_snp = self.snp_encoder(snp_vert)
         
-        hidden_states_snp = rearrange(hidden_states_snp, "(b d p) e -> b d p e", b=b, d=d, p=p1)
+        hidden_states_snp = rearrange(hidden_states_snp, "(b p) e -> b d p e", b=b, d=d, p=half_p)
         
-        # In-place token addition
-        hidden_states_snp[:, 0].add_(self.tx_token.view(1, -1))
-        hidden_states_snp[:, 1].add_(self.rx_token.view(1, -1))
+        # Add tx and rx tokens (consistent with SNPEmbedding)
+        hidden_states_snp[:, 0].add_(self.tx_token)
+        hidden_states_snp[:, 1].add_(self.rx_token)
         
         return hidden_states_snp
