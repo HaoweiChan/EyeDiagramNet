@@ -69,29 +69,33 @@ class CSVProcessor:
     def _spatial_feats(self, case: pd.Series) -> np.ndarray:
         idx = case.index
         layer_mask = idx.str.contains("Layer_")
-        width_mask = idx.str.contains("W_")
+        width_mask = idx.str.contains("W")
         height_mask = idx.str.contains("H_")
 
-        # per-trace fields
         layers = case[layer_mask].astype(int).values
         widths = case[width_mask].values
         heights = case[height_mask].values
+
+        # per-trace fields
         layer_change = np.r_[True, np.diff(layers) != 0]
         _, layer_count = np.unique(layers, return_counts=True)
 
         # x coordinate: cumulative widths (shifted by 1)
         cum_x = np.r_[0, widths.cumsum()[:-1]]
-        x_dim = np.repeat(cum_x[layer_change], layer_count)
+        x_dim = cum_x - np.repeat(cum_x[layer_change], layer_count)
+
         # z coordinate: bottom height of each layer
         cum_h = heights[layer_change].cumsum()
-        z_dim = np.roll(cum_h, 1)
-        z_dim[0] = 0
-        z_dim = np.repeat(z_dim, layer_count)
-        # original feature block
-        feat_indices = np.flatnonzero(layer_mask)
-        data_col = case.values[feat_indices]
+        cum_h = np.roll(cum_h, 1)
+        cum_h[0] = 0
+        z_dim = np.repeat(cum_h, layer_count)
 
-        return np.hstack([data_col[:, None], x_dim[:, None], z_dim[:, None]])
+        # original feature block
+        layer_idx = np.flatnonzero(layer_mask)
+        feat_dim = layer_idx[l] - layer_idx[0]
+        data_col = case.values.reshape(-1, feat_dim)
+        
+        return np.hstack([data_col, x_dim[:, None], z_dim[:, None]])
 
 class TraceSeqEWDataloader(pl.LightningDataModule):
     def __init__(
@@ -123,7 +127,7 @@ class TraceSeqEWDataloader(pl.LightningDataModule):
         except (FileNotFoundError, AttributeError):
             self.seq_scaler = MinMaxScaler(ignore_value=padding_value)
             self.fix_scaler = MinMaxScaler(ignore_value=padding_value)
-            log_info("Creating new scalers (B none found on disk.)")
+            log_info("Could not find scalers on disk, creating new ones.")
 
         # locate every CSV once via processor
         processor = CSVProcessor()
@@ -138,7 +142,7 @@ class TraceSeqEWDataloader(pl.LightningDataModule):
             for pkl_file in Path(self.label_dir, name).glob("*.pkl"):
                 with open(pkl_file, "rb") as f:
                     loaded = pickle.load(f)
-                snp_file = Path(loaded["snp_horiz"].stem.replace("-", "_"))
+                snp_file = Path(loaded["snp_horiz"]).stem.replace("-", "_")
                 snp_vert = tuple(zip(loaded["snp_txs"], loaded["snp_rxs"]))
                 key = (snp_file.split("_")[-1].split(".")[0])
                 labels[key] = {
@@ -181,7 +185,7 @@ class TraceSeqEWDataloader(pl.LightningDataModule):
 
             # fit scalers once on training data
             if fit_scaler:
-                seq_feats = x_seq_tr[:, :, -2:].reshape(-1, x_seq_tr.shape[-1] - 4)
+                seq_feats = x_seq_tr[:, :, 2:-2].reshape(-1, input_arr.shape[-1] - 4)
                 self.seq_scaler.partial_fit(seq_feats)
                 self.fix_scaler.partial_fit(x_fix_tr.reshape(-1, x_fix_tr.shape[-1]))
 
