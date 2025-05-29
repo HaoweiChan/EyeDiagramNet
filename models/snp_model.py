@@ -59,6 +59,19 @@ class SNPEmbedding(nn.Module):
         
         # Apply projection
         snp_diag = self.snp_proj(snp_diag)  # (b*d*p, freq_length)
+        
+        # Add sequence dimension for AttentionPooling (expects 3D input)
+        # Split freq_length into seq_len chunks to create sequence dimension
+        seq_len = min(self.freq_length, 32)  # Use manageable sequence length
+        chunk_size = self.freq_length // seq_len
+        if chunk_size * seq_len < self.freq_length:
+            # Pad to make it divisible
+            padding_size = seq_len * chunk_size + chunk_size - self.freq_length
+            snp_diag = F.pad(snp_diag, (0, padding_size))
+            chunk_size = (self.freq_length + padding_size) // seq_len
+        
+        # Reshape to add sequence dimension
+        snp_diag = snp_diag.view(-1, seq_len, chunk_size)  # (b*d*p, seq_len, chunk_size)
 
         # Forward to conditional embedding
         hidden_states_snp = self.snp_encoder(snp_diag)  # (b*d*p, model_dim)
@@ -123,7 +136,19 @@ class OptimizedSNPEmbedding(nn.Module):
         snp_chunk = F.interpolate(snp_chunk.unsqueeze(1), size=self.freq_length * 2, mode='linear', align_corners=False)
         snp_chunk = snp_chunk.squeeze(1)  # (b*d*p, freq_length*2)
         
-        return self.snp_proj(snp_chunk)
+        snp_chunk = self.snp_proj(snp_chunk)
+        
+        # Add sequence dimension for AttentionPooling
+        seq_len = min(self.freq_length, 32)
+        chunk_size = self.freq_length // seq_len
+        if chunk_size * seq_len < self.freq_length:
+            padding_size = seq_len * chunk_size + chunk_size - self.freq_length
+            snp_chunk = F.pad(snp_chunk, (0, padding_size))
+            chunk_size = (self.freq_length + padding_size) // seq_len
+        
+        snp_chunk = snp_chunk.view(-1, seq_len, chunk_size)
+        
+        return snp_chunk
 
     def forward(self, snp_vert):
         """Memory-optimized forward pass with optional gradient checkpointing"""
