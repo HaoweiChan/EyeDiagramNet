@@ -3,6 +3,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+# =============================================================================
+# Utility Functions
+# =============================================================================
+
 def positional_encoding_1d(dims: int, max_len: int):
     position = torch.arange(max_len).unsqueeze(1)
     
@@ -27,6 +31,10 @@ def cont_positional_encoding(positions: torch.Tensor, embed_dim: int):
     
     return pos_encoding
 
+# =============================================================================
+# Basic Building Blocks
+# =============================================================================
+
 class RMSNorm(nn.Module):
     def __init__(self, dim: int, eps: float = 1e-8):
         super().__init__()
@@ -49,7 +57,10 @@ class MCDropout(nn.Module):
     def forward(self, x):
         return F.dropout(x, p=self.p, training=True)
 
-# Fallback RoPE implementation if torchtune is not available
+# =============================================================================
+# Positional Embedding Modules
+# =============================================================================
+
 class RotaryPositionalEmbeddings(nn.Module):
     """Rotary Positional Embeddings implementation"""
     def __init__(self, dim: int, max_seq_len: int = 2048, base: int = 10000):
@@ -116,6 +127,10 @@ try:
     RoPE = TorchtuneRoPE
 except ImportError:
     RoPE = RotaryPositionalEmbeddings
+
+# =============================================================================
+# Transformer Modules
+# =============================================================================
 
 class RotaryTransformerLayer(nn.Module):
     """Transformer layer with Rotary Positional Embeddings"""
@@ -200,6 +215,68 @@ class RotaryTransformerEncoder(nn.Module):
             x = layer(x)
         return x
 
+# =============================================================================
+# Attention Modules
+# =============================================================================
+
+class AttentionPooling(nn.Module):
+    # Copied from https://github.com/deep-floyd/IF/blob/2f91391f27dd3c468bf174be5805b4cc92980c0b/deepfloyd_if/model/nn.py#L54
+    def __init__(self, num_heads, embed_dim, dtype=None):
+        super().__init__()
+        self.dtype = dtype
+        self.positional_embedding = nn.Parameter(torch.randn(1, embed_dim) / embed_dim**0.5)
+        self.k_proj = nn.Linear(embed_dim, embed_dim, dtype=self.dtype)
+        self.q_proj = nn.Linear(embed_dim, embed_dim, dtype=self.dtype)
+        self.v_proj = nn.Linear(embed_dim, embed_dim, dtype=self.dtype)
+        self.num_heads = num_heads
+        self.dim_per_head = embed_dim // self.num_heads
+        
+    def forward(self, x):
+        bs, length, width = x.size()
+        
+        def shape(x):
+            # (bs, length, width) --> (bs, length, n heads, dim per head)
+            x = x.view(bs, -1, self.num_heads, self.dim_per_head)
+            x = x.transpose(1, 2)
+            x = x.reshape(bs * self.num_heads, -1, self.dim_per_head)
+            x = x.transpose(1, 2)
+            return x
+        
+        class_token = x.mean(dim=1, keepdim=True) + self.positional_embedding.to(x.dtype)
+        x = torch.cat([class_token, x], dim=1)  # (bs, length+1, width)
+
+        q = shape(self.q_proj(class_token))
+        k = shape(self.k_proj(x))
+        v = shape(self.v_proj(x))
+
+        scale = 1 / math.sqrt(math.sqrt(self.dim_per_head))
+        weight = torch.einsum("bct,bcs->bts", q * scale, k * scale)  # More stable with f16 than dividing afterwards
+        weight = torch.softmax(weight.float(), dim=-1).type(weight.dtype)
+        
+        a = torch.einsum("bts,bcs->bct", weight, v)
+        a = a.reshape(bs, -1, 1).transpose(1, 2)
+        
+        return a[:, 0, :]  # cls token
+
+class ConditionEmbedding(nn.Module):
+    def __init__(self, encoder_dim: int, embed_dim: int, num_heads: int = 64):
+        super().__init__()
+        self.norm1 = nn.LayerNorm(encoder_dim)
+        self.pool = AttentionPooling(num_heads, encoder_dim)
+        self.proj = nn.Linear(encoder_dim, embed_dim)
+        self.norm2 = nn.LayerNorm(embed_dim)
+
+    def forward(self, hidden_states):
+        hidden_states = self.norm1(hidden_states)
+        hidden_states = self.pool(hidden_states)
+        hidden_states = self.proj(hidden_states)
+        hidden_states = self.norm2(hidden_states)
+        return hidden_states
+
+# =============================================================================
+# Uncertainty Quantification Modules
+# =============================================================================
+
 class DeepEnsemble(nn.Module):
     """Deep Ensemble wrapper for uncertainty quantification"""
     def __init__(self, model_class, model_args, n_models=5):
@@ -251,58 +328,9 @@ class DeepEnsemble(nn.Module):
         
         return mean_values, total_var, aleatoric_var, epistemic_var, mean_logits
 
-class AttentionPooling(nn.Module):
-    # Copied from https://github.com/deep-floyd/IF/blob/2f91391f27dd3c468bf174be5805b4cc92980c0b/deepfloyd_if/model/nn.py#L54
-    def __init__(self, num_heads, embed_dim, dtype=None):
-        super().__init__()
-        self.dtype = dtype
-        self.positional_embedding = nn.Parameter(torch.randn(1, embed_dim) / embed_dim**0.5)
-        self.proj = nn.Linear(embed_dim, embed_dim, dtype=self.dtype)
-        self.v_proj = nn.Linear(embed_dim, embed_dim, dtype=self.dtype)
-        self.q_proj = nn.Linear(embed_dim, embed_dim, dtype=self.dtype)
-        self.num_heads = num_heads
-        self.dim_per_head = embed_dim // self.num_heads
-        
-    def forward(self, x):
-        bs, length, width = x.size()
-        
-        def shape(x):
-            # (bs, length, width) --> (bs, n heads, length, dim per head)
-            x = x.view(bs, length, self.num_heads, self.dim_per_head)
-            x = x.permute(0, 2, 1, 3)
-            return x
-        
-        class_token = x.mean(dim=1, keepdim=True) + self.positional_embedding.to(x.dtype)
-        x = torch.cat([class_token, x], dim=1)  # (bs, length+1, width)
-
-        q = shape(self.q_proj(class_token))
-        k = shape(self.proj(x))
-        v = shape(self.v_proj(x))
-
-        scale = 1 / math.sqrt(self.dim_per_head)
-        weight = torch.einsum("bhfc,bhsc->bhfs", q * scale, k * scale)  # More stable with f16 than dividing afterwards
-        weight = torch.softmax(weight, dim=-1).type(weight.dtype)
-        
-        a = torch.einsum("bhts,bhsc->bhst", weight, v)
-        a = a.reshape(bs, -1, 1).transpose(1, 2)
-        
-        return a[:, 0, :]  # cls token
-
-# Refer to huggingface.diffusers.models.embeddings.TextTimeEmbedding
-class ConditionEmbedding(nn.Module):
-    def __init__(self, encoder_dim: int, embed_dim: int, num_heads: int = 64):
-        super().__init__()
-        self.norm1 = nn.LayerNorm(encoder_dim)
-        self.pool = AttentionPooling(num_heads, encoder_dim)
-        self.proj = nn.Linear(encoder_dim, embed_dim)
-        self.norm2 = nn.LayerNorm(embed_dim)
-
-    def forward(self, hidden_states):
-        hidden_states = self.norm1(hidden_states)
-        hidden_states = self.pool(hidden_states)
-        hidden_states = self.proj(hidden_states)
-        hidden_states = self.norm2(hidden_states)
-        return hidden_states
+# =============================================================================
+# Loss Balancing Modules
+# =============================================================================
 
 class UncertaintyWeightedLoss(nn.Module):
     """Learnable uncertainty weighting for multi-task learning"""
@@ -359,6 +387,10 @@ class GradNormLossBalancer(nn.Module):
             total_loss += weights[i] * loss
         
         return total_loss
+
+# =============================================================================
+# Specialized Processing Modules
+# =============================================================================
 
 class StructuredGatedBoundaryProcessor(nn.Module):
     """
