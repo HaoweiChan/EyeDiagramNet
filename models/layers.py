@@ -82,7 +82,8 @@ class RotaryPositionalEmbeddings(nn.Module):
         if seq_len > self._seq_len_cached:
             self._seq_len_cached = seq_len
             t = torch.arange(seq_len, device=device, dtype=dtype)
-            freqs = torch.outer(t, self.inv_freq)
+            inv_freq = self.inv_freq.to(device=device, dtype=dtype)
+            freqs = torch.outer(t, inv_freq)
             emb = torch.cat((freqs, freqs), dim=-1)
             self._cos_cached = emb.cos()
             self._sin_cached = emb.sin()
@@ -101,9 +102,9 @@ class RotaryPositionalEmbeddings(nn.Module):
         
         self._update_cos_sin_cache(seq_len, x.device, x.dtype)
         
-        # Get cos and sin for current sequence length
-        cos = self._cos_cached[:seq_len, :head_dim]  # [seq_len, head_dim]
-        sin = self._sin_cached[:seq_len, :head_dim]  # [seq_len, head_dim]
+        # Get cos and sin for current sequence length and ensure they're on the right device
+        cos = self._cos_cached[:seq_len, :head_dim].to(device=x.device, dtype=x.dtype)
+        sin = self._sin_cached[:seq_len, :head_dim].to(device=x.device, dtype=x.dtype)
         
         # Reshape for broadcasting
         cos = cos.unsqueeze(0).unsqueeze(2)  # [1, seq_len, 1, head_dim]
