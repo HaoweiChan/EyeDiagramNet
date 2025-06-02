@@ -367,25 +367,56 @@ class GradNormLossBalancer(nn.Module):
         super().__init__()
         self.task_names = task_names
         self.alpha = alpha
-        self.weights = nn.Parameter(torch.ones(len(task_names)))
+        self.log_weights = nn.Parameter(torch.zeros(len(task_names)))
+        self.initial_losses = None
 
     def forward(self, losses, hidden_states=None):
-        if hidden_states is None:
-            # Fallback to simple weighted sum
-            weights = F.softmax(self.weights, dim=0) * len(self.weights)
-            total_loss = 0
-            for i, (task_name, loss) in enumerate(losses.items()):
-                total_loss += weights[i] * loss
+        # Convert losses dict to match expected format
+        loss_dict = losses
+        shared_rep = hidden_states
+        
+        weights = torch.softmax(self.log_weights, dim=0)
+        total_loss = sum(weights[i] * loss_dict[name] for i, name in enumerate(self.task_names))
+
+        # If no shared representation or in no_grad context, skip GradNorm logic
+        if (shared_rep is None or 
+            not shared_rep.requires_grad or 
+            any(not loss.requires_grad for loss in loss_dict.values())):
             return total_loss
 
-        # Compute gradients for each task
-        task_losses = list(losses.values())
-        weights = F.softmax(self.weights, dim=0) * len(self.weights)
+        # Compute gradient norms
+        grads = []
+        for i, name in enumerate(self.task_names):
+            g = torch.autograd.grad(
+                loss_dict[name], shared_rep, 
+                retain_graph=True, create_graph=True
+            )[0]
+            grads.append(g.norm())
+
+        # Initialize initial loss values on first forward pass
+        if self.initial_losses is None:
+            self.initial_losses = [loss_dict[name].detach() for name in self.task_names]
+
+        # Compute target norms based on relative loss progress
+        loss_ratios = [
+            loss_dict[name].detach() / self.initial_losses[i] 
+            for i, name in enumerate(self.task_names)
+        ]
+        mean_ratio = sum(loss_ratios) / len(loss_ratios)
+        target_grads = [
+            g.detach() * (r / mean_ratio) ** self.alpha 
+            for g, r in zip(grads, loss_ratios)
+        ]
+
+        # Compute gradnorm loss
+        gradnorm_loss = sum(
+            F.l1_loss(grads[i], target_grads[i]) 
+            for i in range(len(self.task_names))
+        )
         
-        # Compute weighted loss
-        total_loss = 0
-        for i, loss in enumerate(task_losses):
-            total_loss += weights[i] * loss
+        # Backward gradnorm loss to update balancing weights
+        if gradnorm_loss.requires_grad:
+            gradnorm_loss.backward(retain_graph=True)
         
         return total_loss
 

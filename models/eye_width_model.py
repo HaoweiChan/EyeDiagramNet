@@ -94,11 +94,6 @@ class EyeWidthRegressor(nn.Module):
             nn.Linear(model_dim, output_dim),
         )
 
-        # Logit conversion
-        # self.logit_threshold = nn.Parameter(torch.tensor(0.0))
-        # self.threshold = nn.Parameter(torch.tensor(0.0))
-        # self.slope = nn.Parameter(torch.tensor(1.0))
-
     def forward(
         self,
         trace_seq: torch.Tensor,
@@ -157,9 +152,6 @@ class EyeWidthRegressor(nn.Module):
         # Predict eye width and open eye probabilities respectively
         output = self.pred_head(hidden_states_sig)
         values, log_var, logits = torch.unbind(output, dim=-1)
-        # values, log_var = torch.unbind(output, dim=-1)
-        # logits = (logits - self.threshold) * self.slope
-        # logits = logits - self.logit_threshold
 
         if output_hidden_states:
             return values, log_var, logits, hidden_states_sig

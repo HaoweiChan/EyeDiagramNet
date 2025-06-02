@@ -225,7 +225,7 @@ class TraceEWModule(LightningModule):
             true_ew = true_ew * self.ew_scaler
             pred_logvar = pred_logvar + 2 + torch.log(self.ew_scaler)
             pred_sigma = torch.exp(0.5 * pred_logvar)
-            self.update_metrics(stage, loss.detach(), pred_ew, true_ew, pred_prob, pred_sigma)
+            self.update_metrics(stage, loss.detach(), pred_ew, true_ew, pred_prob, true_prob, pred_sigma)
             
             if batch_idx in self.get_output_steps(stage):
                 idx = torch.randint(len(pred_ew), (1,)).item()
@@ -321,4 +321,4 @@ class TraceEWModule(LightningModule):
         fig = utils.plot_ew_curve(outputs, log_metrics, self.hparams.ew_threshold)
         if self.logger:
             tag = "_".join(['sparam', str(dataloader_idx)])
-            self.logger.experiment.add_image(f'{stage}/{tag}', utils.plot_to_image(fig), self.current_epoch)
+            self.logger.experiment.add_image(f'{stage}/{tag}', utils.image_to_buffer(fig), self.current_epoch)
