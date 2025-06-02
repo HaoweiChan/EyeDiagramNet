@@ -78,3 +78,21 @@ def correlation_loss(inputs, targets, mask=None):
     correlation = covariance / (inputs_std * targets_std + 1e-8)
     loss = 1 - correlation
     return _reduce_loss(loss, mask)
+
+def gaussian_nll_loss(inputs, targets, logvar, mask=None):
+    """
+    Gaussian negative log-likelihood loss with learnable variance.
+    
+    Args:
+        inputs: Predicted values
+        targets: Ground truth values  
+        logvar: Log variance (log of variance, not log of std)
+        mask: Optional mask for valid predictions
+        
+    Returns:
+        Reduced loss value
+    """
+    precision = torch.exp(-logvar)
+    loss = 0.5 * (logvar + precision * (inputs - targets).pow(2))
+
+    return _reduce_loss(loss, mask)
