@@ -41,6 +41,7 @@ class SNPEmbedding(nn.Module):
         
         if p1 != p2:
             raise ValueError("SNP matrix must be square (P x P)")
+        p = p1
 
         # Convert to real and apply power transformation
         snp_vert = torch.view_as_real(snp_vert)  # (B, D, F, P1, P2, 2)
@@ -57,7 +58,7 @@ class SNPEmbedding(nn.Module):
         # Interleave in/out port information of a signal trace
         half_p = p1 // 2
         interleaved = torch.stack([snp_vert[:, :half_p], snp_vert[:, half_p:]], dim=2)
-        snp_vert = rearrange(interleaved, "b p1 d (p2 e) -> (b p1) (d p2) e", p1=half_p, d=2, p2=half_p)
+        snp_vert = rearrange(interleaved, "b p1 d (p2 e) -> (b p1) (d p2) e", p1=half_p, d=2, p2=p)
 
         # Forward snp_vert to conditional embedding to condense port interaction information
         hidden_states_snp = self.snp_encoder(snp_vert)
@@ -131,6 +132,7 @@ class OptimizedSNPEmbedding(nn.Module):
         
         if p1 != p2:
             raise ValueError("SNP matrix must be square (P x P)")
+        p = p1
 
         # Use gradient checkpointing for memory efficiency during training
         if self.use_checkpointing and self.training:
@@ -143,7 +145,7 @@ class OptimizedSNPEmbedding(nn.Module):
         # Interleave in/out port information of a signal trace
         half_p = p1 // 2
         interleaved = torch.stack([snp_vert[:, :half_p], snp_vert[:, half_p:]], dim=2)
-        snp_vert = rearrange(interleaved, "b p1 d (p2 e) -> (b p1) (d p2) e", p1=half_p, d=2, p2=half_p)
+        snp_vert = rearrange(interleaved, "b p1 d (p2 e) -> (b p1) (d p2) e", p1=half_p, d=2, p2=p)
 
         # Forward through encoder with mixed precision
         with torch.cuda.amp.autocast(enabled=self.use_mixed_precision):
