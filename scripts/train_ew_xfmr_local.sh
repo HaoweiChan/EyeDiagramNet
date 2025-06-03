@@ -58,10 +58,6 @@ if ($?LSB_JOBID || $bsub_available == 0) then
         endif
     endif
 
-    # Install requirements if needed
-    echo "Installing/updating Python requirements..."
-    pip install -U -r requirements.txt
-
     # Configure profiling based on flag
     if ($profiling) then
         echo "Starting system monitoring..."
@@ -77,31 +73,39 @@ if ($?LSB_JOBID || $bsub_available == 0) then
             set monitor_started = 0
         endif
         
-        set config_file = "configs/train_ew_xfmr.yaml"
+        echo "Profiling ENABLED - adding profiler arguments..."
     else
-        echo "Profiling disabled - using optimized config..."
-        # Create a temporary config without profiling using Python
-        set temp_script = "/tmp/disable_profiler_$$.py"
-        cat << EOF > $temp_script
-import yaml
-import sys
-with open('configs/train_ew_xfmr.yaml', 'r') as f:
-    config = yaml.safe_load(f)
-config['trainer']['profiler'] = None
-with open(sys.argv[1], 'w') as f:
-    yaml.dump(config, f, default_flow_style=False)
-EOF
-        python $temp_script "/tmp/train_config_no_profile_$$.yaml"
-        rm -f $temp_script
-        set config_file = "/tmp/train_config_no_profile_$$.yaml"
+        echo "Profiling DISABLED - using optimized config..."
         set monitor_started = 0
     endif
 
+    # Base python command
+    set python_cmd = ( \
+        python3 trainer.py fit --config configs/train_ew_xfmr.yaml \
+        --trainer.devices 1 --trainer.num_nodes 1 --trainer.limit_train_batches 1 \
+        --trainer.limit_val_batches 1 --trainer.max_epochs 10 \
+        --trainer.profiler null \
+    )
+
+    # Add profiler arguments if profiling is enabled
+    if ($profiling) then
+        set python_cmd = ( $python_cmd \
+            --trainer.profiler.class_path lightning.pytorch.profilers.PyTorchProfiler \
+            --trainer.profiler.init_args.dirpath ./profiler_logs \
+            --trainer.profiler.init_args.filename perf_logs \
+            --trainer.profiler.init_args.export_to_chrome true \
+            --trainer.profiler.init_args.sort_by_key cuda_time_total \
+            --trainer.profiler.init_args.group_by_input_shapes true \
+            --trainer.profiler.init_args.record_module_names true \
+            --trainer.profiler.init_args.row_limit 100 \
+        )
+    endif
+
     echo "Starting training..."
-    echo "Command: python trainer.py fit --config $config_file"
+    echo "Command: $python_cmd"
 
     # Run the training
-    python trainer.py fit --config $config_file
+    $python_cmd
     set train_exit_code = $status
 
     # Cleanup
@@ -126,11 +130,6 @@ EOF
         rm -f /tmp/monitor_$$.log
     endif
     
-    if ($profiling == 0) then
-        # Clean up temporary config
-        rm -f /tmp/train_config_no_profile_$$.yaml
-    endif
-
     echo "=========================================="
     echo "Training completed with exit code: $train_exit_code"
     echo "Time: `date`"

@@ -34,24 +34,6 @@ trainer:
   benchmark: null
   inference_mode: true
   use_distributed_sampler: true
-  # Alternative profiler options:
-  # profiler: simple
-  # profiler: null  # Disable profiler
-  # profiler: 
-  #   class_path: lightning.pytorch.profilers.AdvancedProfiler
-  #   init_args:
-  #     dirpath: ./profiler_logs
-  #     filename: "advanced_perf_logs"
-  profiler:
-    class_path: lightning.pytorch.profilers.PyTorchProfiler
-    init_args:
-      dirpath: ./profiler_logs
-      filename: "perf_logs"
-      export_to_chrome: true
-      sort_by_key: "cuda_time_total"
-      group_by_input_shapes: true
-      record_module_names: true
-      row_limit: 100
   detect_anomaly: false
   barebones: false
   plugins: null
