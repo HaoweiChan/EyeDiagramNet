@@ -76,7 +76,7 @@ if ($?LSB_JOBID || $bsub_available == 0) then
         echo "Profiling disabled - using optimized config..."
         # Create a temporary config without profiling using Python
         set temp_script = "/tmp/disable_profiler_$$.py"
-        cat > $temp_script << 'EOF'
+        cat << EOF > $temp_script
 import yaml
 import sys
 with open('configs/train_ew_xfmr.yaml', 'r') as f:
