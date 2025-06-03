@@ -52,10 +52,6 @@ trainer:
       group_by_input_shapes: true
       record_module_names: true
       row_limit: 100
-      profiler_kwargs:
-        record_shapes: true
-        profile_memory: true
-        with_stack: false
   detect_anomaly: false
   barebones: false
   plugins: null

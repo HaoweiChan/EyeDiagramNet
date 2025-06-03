@@ -13,6 +13,13 @@ foreach arg ($argv)
     endif
 end
 
+# Load required modules first (needed for bsub to be available)
+if (-f /etc/modulefiles/LSF/mtkgpu) then
+    module load LSF/mtkgpu
+    module load Python3/3.11.8_gpu_torch251
+    source /proj/siaiadm/ew_predictor/.venv/sipi/bin/activate.csh
+endif
+
 # Check if bsub is available (HPC environment) or if we're on macOS/local environment
 set bsub_available = 0
 which bsub >& /dev/null
@@ -42,9 +49,8 @@ if ($?LSB_JOBID || $bsub_available == 0) then
 
     # Load required modules (only if available - HPC environment)
     if ($bsub_available == 1) then
-        module load LSF/mtkgpu
-        module load Python3/3.11.8_gpu_torch251
-        source /proj/siaiadm/ew_predictor/.venv/sipi/bin/activate.csh
+        # Modules already loaded at top of script
+        echo "Running on HPC environment with modules loaded"
     else
         # Local environment - check for virtual environment
         if (! $?VIRTUAL_ENV) then

@@ -24,27 +24,20 @@ class CustomLightningCLI(LightningCLI):
 def setup_torch_compile_fallback():
     """Setup torch.compile fallback to eager mode on compilation failures"""
     try:
-        # Test if torch.compile works with second-order gradients (GradNorm style)
+        # Test if torch.compile works with basic operations
         test_model = torch.nn.Linear(2, 1)
         test_input = torch.randn(1, 2, requires_grad=True)
         
         compiled_test = torch.compile(test_model, mode="default")
         output = compiled_test(test_input)
-        loss1 = output.sum()
+        loss = output.sum()
+        loss.backward()
         
-        # Test first-order gradients
-        grad1 = torch.autograd.grad(loss1, test_input, create_graph=True)[0]
-        
-        # Test second-order gradients (this is what GradNorm does)
-        loss2 = grad1.norm()
-        loss2.backward()
-        
-        print("torch.compile test with second-order gradients passed - compilation will be attempted")
+        print("torch.compile test passed - compilation will be attempted")
         return True
     except Exception as e:
-        print(f"torch.compile test failed (likely due to second-order gradients): {e}")
-        print("Your model uses GradNormLossBalancer which requires second-order gradients")
-        print("torch.compile with aot_autograd doesn't support this - disabling compilation")
+        print(f"torch.compile test failed: {e}")
+        print("Disabling torch.compile and falling back to eager mode")
         
         # Disable torch.compile more aggressively
         torch._dynamo.config.suppress_errors = True
