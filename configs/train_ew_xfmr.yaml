@@ -2,7 +2,10 @@
 seed_everything: true
 trainer:
   accelerator: gpu
-  strategy: ddp
+  strategy:
+    class_path: lightning.pytorch.strategies.DDPStrategy
+    init_args:
+      find_unused_parameters: true
   devices: -1
   num_nodes: 8
   precision: 16-mixed
@@ -31,7 +34,24 @@ trainer:
   benchmark: null
   inference_mode: true
   use_distributed_sampler: true
-  profiler: null
+  profiler:
+    class_path: lightning.pytorch.profilers.PyTorchProfiler
+    init_args:
+      dirpath: ./profiler_logs
+      filename: "perf_logs"
+      group_by_input_shape: true
+      emit_nvtx: true
+      export_to_chrome: true
+      row_limit: 20
+      sort_by: "cuda_time_total"
+      record_shapes: true
+      profile_memory: true
+      with_stack: true
+      schedule:
+        wait: 1
+        warmup: 1
+        active: 3
+        repeat: 2
   detect_anomaly: false
   barebones: false
   plugins: null
