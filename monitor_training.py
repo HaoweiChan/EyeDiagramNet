@@ -42,8 +42,10 @@ def monitor_system(duration=3600, interval=5):
         }
         stats.append(stat)
         
+        # Fix the nested f-string issue
+        gpu_loads = [f"{g['load']:.1f}%" for g in gpu_stats]
         print(f"CPU: {cpu_percent:.1f}% | Memory: {memory.percent:.1f}% | "
-              f"GPU Load: {[f'{g['load']:.1f}%' for g in gpu_stats]}")
+              f"GPU Load: {gpu_loads}")
         
         time.sleep(interval)
     
