@@ -37,8 +37,13 @@ class TraceEWModule(LightningModule):
         self.ew_scaler_inv = torch.tensor(1.0 / self.hparams.ew_scaler)
         self.log_ew_scaler = torch.log(self.ew_scaler)
         # self.weighted_loss = UncertaintyWeightedLoss(['nll', 'bce'])
-        # self.weighted_loss = LearnableLossWeighting(['nll', 'bce'])
-        self.weighted_loss = GradNormLossBalancer(['nll', 'bce'])
+        self.weighted_loss = LearnableLossWeighting(['nll', 'bce'])
+        
+        # NOTE: GradNormLossBalancer uses second-order gradients which are incompatible 
+        # with torch.compile. If you want to use torch.compile, switch to:
+        # self.weighted_loss = LearnableLossWeighting(['nll', 'bce'])  # Simple learnable weights
+        # or
+        # self.weighted_loss = UncertaintyWeightedLoss(['nll', 'bce'])  # Uncertainty weighting
 
     def setup(self, stage=None):
         # Warm up the model by performing a dummy forward pass
