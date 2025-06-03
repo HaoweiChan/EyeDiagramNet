@@ -143,7 +143,21 @@ class EyeWidthRegressor(nn.Module):
             hidden_states_vert = hidden_states_vert + signal_embeds.unsqueeze(0)
         
         hidden_states_vert = rearrange(hidden_states_vert, "b d p e -> b (d p) e") # concat tx and rx snp states
-        hidden_states = torch.cat([hidden_states_seq, hidden_states_vert, hidden_states_fix + self.fix_token], dim=1)
+        
+        # Pre-allocate concatenated tensor for better memory efficiency
+        total_seq_len = hidden_states_seq.size(1) + hidden_states_vert.size(1) + 1
+        hidden_states = torch.empty(
+            (hidden_states_seq.size(0), total_seq_len, hidden_states_seq.size(2)),
+            device=hidden_states_seq.device, dtype=hidden_states_seq.dtype
+        )
+        
+        # Use slice assignment instead of torch.cat
+        seq_len = hidden_states_seq.size(1)
+        vert_len = hidden_states_vert.size(1)
+        
+        hidden_states[:, :seq_len] = hidden_states_seq
+        hidden_states[:, seq_len:seq_len+vert_len] = hidden_states_vert  
+        hidden_states[:, -1:] = hidden_states_fix + self.fix_token
 
         # Run transformer for the signals
         hidden_states_sig = self.signal_encoder(hidden_states)

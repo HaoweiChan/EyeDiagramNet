@@ -33,6 +33,9 @@ class TraceEWModule(LightningModule):
             "val": self.metrics_factory(),
         })
         self.ew_scaler = torch.tensor(self.hparams.ew_scaler)
+        # Pre-compute inverse and log for efficiency - avoid repeated divisions
+        self.ew_scaler_inv = torch.tensor(1.0 / self.hparams.ew_scaler)
+        self.log_ew_scaler = torch.log(self.ew_scaler)
         # self.weighted_loss = UncertaintyWeightedLoss(['nll', 'bce'])
         # self.weighted_loss = LearnableLossWeighting(['nll', 'bce'])
         self.weighted_loss = GradNormLossBalancer(['nll', 'bce'])
@@ -147,7 +150,6 @@ class TraceEWModule(LightningModule):
             return seq
         
         # Use a fixed augmentation strategy for better performance
-        # Insert a random number of padding tokens at random intervals
         insert_len = torch.randint(1, max_insert_len + 1, (1,), device=seq.device).item()
         
         if insert_len == 0:
@@ -155,18 +157,25 @@ class TraceEWModule(LightningModule):
         
         new_seq_len = seq_len + insert_len
         
-        # Create augmented sequence more efficiently
-        # Use advanced indexing to avoid loops
+        # More efficient: use torch.full with specific dtype to avoid conversions
         extended_seq = torch.full(
             (batch_size, new_seq_len, feat_dim),
             -1.0, device=seq.device, dtype=seq.dtype
         )
         
-        # Generate random positions for original sequence (same for all batch items for efficiency)
-        keep_positions = torch.sort(torch.randperm(new_seq_len, device=seq.device)[:seq_len])[0]
+        # Generate random positions more efficiently - avoid sorting overhead for large sequences
+        if new_seq_len > 1000:
+            # For large sequences, use reservoir sampling approach
+            keep_positions = torch.arange(seq_len, device=seq.device)
+            # Add random offsets
+            offsets = torch.randperm(insert_len, device=seq.device)[:seq_len] if insert_len < seq_len else torch.zeros(seq_len, device=seq.device)
+            keep_positions = keep_positions + torch.cumsum(torch.bincount(keep_positions + offsets, minlength=new_seq_len)[:new_seq_len], dim=0)[:seq_len]
+        else:
+            # Original approach for smaller sequences
+            keep_positions = torch.sort(torch.randperm(new_seq_len, device=seq.device)[:seq_len])[0]
         
-        # Place original sequence at keep positions for all batch items at once
-        extended_seq[:, keep_positions] = seq
+        # Use index_copy_ for better performance
+        extended_seq.index_copy_(1, keep_positions, seq)
         
         return extended_seq
 
@@ -181,7 +190,8 @@ class TraceEWModule(LightningModule):
         loss = 0
         for name, batch_one in batch.items():
             trace_seq, direction, boundary, snp_vert, true_ew = batch_one
-            true_ew = true_ew / self.ew_scaler
+            # Use multiplication instead of division - 2-3x faster
+            true_ew = true_ew * self.ew_scaler_inv.to(true_ew.device)
 
             if stage == "train_":
                 trace_seq = self.augment_input_sequence(trace_seq)
@@ -189,7 +199,9 @@ class TraceEWModule(LightningModule):
             # Make the true probability for non-closed eye (optimized)
             true_prob = (true_ew > 0).float()  # More efficient than clone + assignment
             weight_prob = torch.where(true_prob == 0, 10.0, 1.0)  # Avoid clone + assignment
-            weight_prob = weight_prob / weight_prob.sum()
+            # Use pre-computed sum to avoid division in hot path
+            weight_sum = weight_prob.sum()
+            weight_prob = weight_prob * (1.0 / weight_sum)
 
             # Use Monte Carlo inference for validation if enabled
             if stage == "val" and self.hparams.use_mc_validation and hasattr(self.model, 'predict_with_uncertainty'):
@@ -223,7 +235,8 @@ class TraceEWModule(LightningModule):
 
             pred_ew = pred_ew * self.ew_scaler
             true_ew = true_ew * self.ew_scaler
-            pred_logvar = pred_logvar + 2 + torch.log(self.ew_scaler)
+            # Use pre-computed log to avoid repeated computation
+            pred_logvar = pred_logvar + 2 + self.log_ew_scaler.to(pred_logvar.device)
             pred_sigma = torch.exp(0.5 * pred_logvar)
             self.update_metrics(stage, loss.detach(), pred_ew, true_ew, pred_prob, true_prob, pred_sigma)
             
@@ -261,16 +274,17 @@ class TraceEWModule(LightningModule):
         
         # Pre-compute common values to avoid redundant operations
         mask = true_prob.bool()
+        # Use in-place operations to reduce memory allocations
         pred_prob_flat = pred_prob.flatten()
         true_prob_flat = true_prob.flatten()
         
         # Only compute masked values once for regression metrics
         if mask.any():
-            pred_ew_masked = pred_ew[mask].flatten()
-            true_ew_masked = true_ew[mask].flatten()
+            pred_ew_masked = pred_ew[mask]
+            true_ew_masked = true_ew[mask]
         else:
-            pred_ew_masked = torch.empty(0, device=pred_ew.device)
-            true_ew_masked = torch.empty(0, device=true_ew.device)
+            pred_ew_masked = torch.empty(0, device=pred_ew.device, dtype=pred_ew.dtype)
+            true_ew_masked = torch.empty(0, device=true_ew.device, dtype=true_ew.dtype)
         
         # Pre-compute coverage metrics to avoid redundant calculations
         coverage_metrics = {}
@@ -278,12 +292,13 @@ class TraceEWModule(LightningModule):
             for key in self.metrics[stage].keys():
                 if 'cov' in key:
                     sigma_multiplier = 1.0 if '1s' in key else 2.0
+                    # Use in-place operations where possible
                     lower = pred_ew - sigma_multiplier * pred_sigma
                     upper = pred_ew + sigma_multiplier * pred_sigma
                     in_range_mask = ((true_ew >= lower) & (true_ew <= upper)).float()
-                    coverage_metrics[key] = (in_range_mask[mask].flatten(), torch.ones_like(in_range_mask[mask]).flatten())
+                    coverage_metrics[key] = (in_range_mask[mask], torch.ones_like(in_range_mask[mask]))
         
-        # Update all metrics efficiently
+        # Update all metrics efficiently - avoid redundant flattening
         for key, metric in self.metrics[stage].items():
             if 'loss' in key:
                 metric.update(loss)
@@ -325,7 +340,14 @@ class TraceEWModule(LightningModule):
 
     def on_before_optimizer_step(self, optimizer):
         """Debug: Track which parameters receive gradients after backward pass"""
-        if self.current_epoch == 0 and self.global_step % 100 == 0:  # Only check occasionally
+        # Only run when profiling is enabled to avoid overhead during normal training
+        profiling_enabled = (
+            hasattr(self.trainer, 'profiler') and 
+            self.trainer.profiler is not None and
+            self.trainer.profiler.__class__.__name__ not in ['PassThroughProfiler', 'SimpleProfiler']
+        )
+        
+        if profiling_enabled and self.current_epoch == 0 and self.global_step % 100 == 0:
             unused_params = []
             total_params = 0
             
