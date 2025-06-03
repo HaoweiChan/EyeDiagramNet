@@ -106,15 +106,23 @@ class TimedDataLoader:
         self.timing_stats = []
         
     def __iter__(self):
+        start_time = time.perf_counter()
         for batch in self.dataloader:
-            start_time = time.perf_counter()
             yield batch
-            end_time = time.perf_counter()
-            self.timing_stats.append(end_time - start_time)
-            
-            if len(self.timing_stats) % 100 == 0:
-                avg_time = sum(self.timing_stats[-100:]) / 100
-                print(f"Avg data loading time (last 100 batches): {avg_time*1000:.2f}ms")
+            if len(self.timing_stats) % 10 == 0:  # Reduced frequency for better performance
+                end_time = time.perf_counter()
+                self.timing_stats.append(end_time - start_time)
+                if len(self.timing_stats) % 100 == 0:
+                    avg_time = sum(self.timing_stats[-100:]) / 100
+                    print(f"Avg data loading time (last 100 batches): {avg_time*1000:.2f}ms")
+                start_time = time.perf_counter()
+    
+    def __len__(self):
+        return len(self.dataloader)
+    
+    def __getattr__(self, name):
+        # Delegate attribute access to the wrapped dataloader
+        return getattr(self.dataloader, name)
 
 class TraceSeqEWDataloader(pl.LightningDataModule):
     def __init__(
@@ -241,7 +249,8 @@ class TraceSeqEWDataloader(pl.LightningDataModule):
             for name, ds in self.train_dataset.items()
         }
         combined_loader = CombinedLoader(loaders, mode="min_size")
-        return TimedDataLoader(combined_loader)
+        return combined_loader  # Disable TimedDataLoader for profiling compatibility
+        # return TimedDataLoader(combined_loader)
 
     def val_dataloader(self):
         per_loader_bs = int(self.batch_size * 1.6 / max(1, len(self.val_dataset)))
