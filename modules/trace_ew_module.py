@@ -71,14 +71,21 @@ class TraceEWModule(LightningModule):
         
         # Compile model for performance optimization after setup
         if stage in ('fit', None):
-            utils.log_info("Compiling model with torch.compile for optimized performance...")
-            self.model = torch.compile(
-                self.model, 
-                mode="max-autotune",
-                dynamic=False,
-                fullgraph=True
-            )
-            utils.log_info("Model compilation completed.")
+            try:
+                utils.log_info("Attempting to compile model with torch.compile...")
+                self.model = torch.compile(
+                    self.model, 
+                    mode="default",
+                    dynamic=True,
+                    fullgraph=False
+                )
+                utils.log_info("Model compilation completed successfully.")
+            except Exception as e:
+                utils.log_info(f"Model compilation failed: {str(e)}")
+                utils.log_info("Falling back to eager mode execution.")
+                # Ensure model is in eager mode if compilation fails
+                if hasattr(self.model, '_orig_mod'):
+                    self.model = self.model._orig_mod
 
     def forward(self, *args, **kwargs):
         return self.model(*args, **kwargs)

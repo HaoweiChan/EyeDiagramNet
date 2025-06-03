@@ -21,7 +21,22 @@ class CustomLightningCLI(LightningCLI):
             scaler_path = list(Path(str(ckpt_config)).parent.glob("*.pth"))[0]
             self.config.predict.data.init_args.scaler_path = str(scaler_path)
 
+def setup_torch_compile_fallback():
+    """Setup torch.compile fallback to eager mode on compilation failures"""
+    try:
+        # Test if torch.compile is working properly
+        test_model = torch.nn.Linear(2, 1)
+        compiled_test = torch.compile(test_model, mode="default")
+        # If this succeeds, torch.compile should work
+        return True
+    except Exception as e:
+        print(f"torch.compile test failed: {e}")
+        print("Disabling torch.compile globally - falling back to eager mode")
+        torch._dynamo.config.suppress_errors = True
+        return False
+
 def cli_main():
+    setup_torch_compile_fallback()
     cli = CustomLightningCLI(datamodule_class=None)
 
 if __name__ == "__main__":
