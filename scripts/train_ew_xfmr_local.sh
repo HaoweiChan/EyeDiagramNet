@@ -2,8 +2,8 @@
 
 # EyeDiagramNet Training Script with embedded bsub command
 # Usage: 
-#   ./scripts/train_ew_xfmr_local.sh                    # Run without profiling
-#   ./scripts/train_ew_xfmr_local.sh --profiling        # Run with profiling enabled
+#   tcsh scripts/train_ew_xfmr_local.sh                    # Run without profiling
+#   tcsh scripts/train_ew_xfmr_local.sh --profiling        # Run with profiling enabled
 
 # Parse arguments
 set profiling = 0
@@ -41,12 +41,9 @@ if ($?LSB_JOBID) then
     # Configure profiling based on flag
     if ($profiling) then
         echo "Starting system monitoring..."
-        python monitor_training.py --interval 10 &
-        set monitor_pid = $!
-        
-        # Create cleanup script for tcsh
-        echo "if (\$status == 0) kill -TERM $monitor_pid" > /tmp/cleanup_monitor_$$.csh
-        echo "wait" >> /tmp/cleanup_monitor_$$.csh
+        python monitor_training.py --interval 10 >& /tmp/monitor_$$.log &
+        # tcsh doesn't have $!, so we'll use jobs and ps to manage the process
+        set monitor_started = 1
         
         # Wait a moment for monitoring to start
         sleep 3
@@ -54,9 +51,10 @@ if ($?LSB_JOBID) then
         set config_file = "configs/train_ew_xfmr.yaml"
     else
         echo "Profiling disabled - using optimized config..."
-        # Create a temporary config without profiling
-        sed 's/profiler:/# profiler (disabled):/' configs/train_ew_xfmr.yaml > /tmp/train_config_no_profile_$$.yaml
+        # Create a temporary config without profiling using tcsh-compatible syntax
+        cat configs/train_ew_xfmr.yaml | sed 's/profiler:/# profiler (disabled):/' > /tmp/train_config_no_profile_$$.yaml
         set config_file = "/tmp/train_config_no_profile_$$.yaml"
+        set monitor_started = 0
     endif
 
     echo "Starting training..."
@@ -67,13 +65,28 @@ if ($?LSB_JOBID) then
     set train_exit_code = $status
 
     # Cleanup
-    if ($profiling) then
+    if ($profiling && $monitor_started) then
         echo "Cleaning up monitoring process..."
-        if (-e /tmp/cleanup_monitor_$$.csh) then
-            source /tmp/cleanup_monitor_$$.csh
-            rm -f /tmp/cleanup_monitor_$$.csh
+        # Find and kill the monitoring process using tcsh-compatible method
+        set monitor_pids = `ps -u $USER -o pid,comm | grep monitor_training | awk '{print $1}'`
+        if ($#monitor_pids > 0) then
+            foreach pid ($monitor_pids)
+                kill -TERM $pid >& /dev/null
+            end
+            sleep 2
+            # Force kill if still running
+            set remaining_pids = `ps -u $USER -o pid,comm | grep monitor_training | awk '{print $1}'`
+            if ($#remaining_pids > 0) then
+                foreach pid ($remaining_pids)
+                    kill -KILL $pid >& /dev/null
+                end
+            endif
         endif
-    else
+        # Clean up log file
+        rm -f /tmp/monitor_$$.log
+    endif
+    
+    if (! $profiling) then
         # Clean up temporary config
         rm -f /tmp/train_config_no_profile_$$.yaml
     endif
@@ -90,9 +103,9 @@ else
     echo "Submitting bsub job..."
     if ($profiling) then
         echo "Profiling will be ENABLED in the job"
-        bsub -Is -J EyeDiagram_Prof -q ML_GPU -app PyTorch -P d_09017 -gpu "num=4" -m GPU_3090_4 -R "rusage[mem=32000]" "$0 --profiling"
+        bsub -Is -J EyeDiagram_Prof -q ML_GPU -app PyTorch -P d_09017 -gpu "num=4" -m GPU_3090_4 -R "rusage[mem=32000]" "tcsh $0 --profiling"
     else
         echo "Profiling will be DISABLED in the job"
-        bsub -Is -J EyeDiagram_Fast -q ML_GPU -app PyTorch -P d_09017 -gpu "num=4" -m GPU_3090_4 -R "rusage[mem=24000]" "$0"
+        bsub -Is -J EyeDiagram_Fast -q ML_GPU -app PyTorch -P d_09017 -gpu "num=4" -m GPU_3090_4 -R "rusage[mem=24000]" "tcsh $0"
     endif
 endif 
