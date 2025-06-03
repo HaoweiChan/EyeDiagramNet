@@ -185,7 +185,7 @@ class EyeWidthRegressor(nn.Module):
         log_vars = []
         logits_list = []
         
-        with torch.no_grad():
+        with torch.inference_mode():  # Better than no_grad for pure inference
             for _ in range(n_samples):
                 values, log_var, logits = self(trace_seq, direction, boundary, snp_vert)
                 predictions.append(values)

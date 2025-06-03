@@ -322,3 +322,16 @@ class TraceEWModule(LightningModule):
         if self.logger:
             tag = "_".join(['sparam', str(dataloader_idx)])
             self.logger.experiment.add_image(f'{stage}/{tag}', utils.image_to_buffer(fig), self.current_epoch)
+
+    def on_before_backward(self, loss):
+        """Debug: Track which parameters receive gradients"""
+        if self.current_epoch == 0 and self.global_step % 100 == 0:  # Only check occasionally
+            unused_params = []
+            for name, param in self.named_parameters():
+                if param.requires_grad and param.grad is None:
+                    unused_params.append(name)
+            
+            if unused_params:
+                print(f"Step {self.global_step} - Unused parameters:")
+                for param_name in unused_params:
+                    print(f"  - {param_name}")
