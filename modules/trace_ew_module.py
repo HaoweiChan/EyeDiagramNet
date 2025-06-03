@@ -71,6 +71,12 @@ class TraceEWModule(LightningModule):
         
         # Compile model for performance optimization after setup
         if stage in ('fit', None):
+            # Check if torch.compile is disabled globally
+            import os
+            if os.environ.get('TORCH_COMPILE_DISABLE') == '1':
+                utils.log_info("torch.compile is disabled globally - using eager mode")
+                return
+                
             try:
                 utils.log_info("Attempting to compile model with torch.compile...")
                 self.model = torch.compile(
@@ -86,6 +92,12 @@ class TraceEWModule(LightningModule):
                 # Ensure model is in eager mode if compilation fails
                 if hasattr(self.model, '_orig_mod'):
                     self.model = self.model._orig_mod
+                    
+                # Disable compilation globally to prevent future attempts
+                import os
+                os.environ['TORCH_COMPILE_DISABLE'] = '1'
+                torch._dynamo.config.suppress_errors = True
+                torch._dynamo.config.disable = True
 
     def forward(self, *args, **kwargs):
         return self.model(*args, **kwargs)
@@ -93,7 +105,31 @@ class TraceEWModule(LightningModule):
     ############################ TRAIN & VALIDATION ############################
 
     def training_step(self, batch, batch_idx, dataloader_idx=0):
-        return self.step(batch, batch_idx, "train_", dataloader_idx)
+        try:
+            return self.step(batch, batch_idx, "train_", dataloader_idx)
+        except RuntimeError as e:
+            # Check for torch.compile related errors
+            if "torch.compile" in str(e) or "aot_autograd" in str(e) or "double backward" in str(e):
+                utils.log_info(f"torch.compile runtime error detected: {e}")
+                utils.log_info("Disabling torch.compile and falling back to eager mode")
+                
+                # Disable compilation globally
+                import os
+                os.environ['TORCH_COMPILE_DISABLE'] = '1'
+                torch._dynamo.config.suppress_errors = True
+                torch._dynamo.config.disable = True
+                
+                # Reset model to eager mode
+                if hasattr(self.model, '_orig_mod'):
+                    self.model = self.model._orig_mod
+                elif hasattr(self.model, '_orig_module'):
+                    self.model = self.model._orig_module
+                
+                # Retry the step with eager mode
+                return self.step(batch, batch_idx, "train_", dataloader_idx)
+            else:
+                # Re-raise if it's not a torch.compile issue
+                raise
 
     def validation_step(self, batch, batch_idx, dataloader_idx=0):
         return self.step(batch, batch_idx, "val", dataloader_idx)

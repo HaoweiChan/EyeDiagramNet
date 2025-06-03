@@ -24,15 +24,29 @@ class CustomLightningCLI(LightningCLI):
 def setup_torch_compile_fallback():
     """Setup torch.compile fallback to eager mode on compilation failures"""
     try:
-        # Test if torch.compile is working properly
+        # Test if torch.compile works with a simple forward and backward pass
         test_model = torch.nn.Linear(2, 1)
+        test_input = torch.randn(1, 2, requires_grad=True)
+        
         compiled_test = torch.compile(test_model, mode="default")
-        # If this succeeds, torch.compile should work
+        output = compiled_test(test_input)
+        loss = output.sum()
+        loss.backward()
+        
+        print("torch.compile test passed - compilation will be attempted during training")
         return True
     except Exception as e:
         print(f"torch.compile test failed: {e}")
         print("Disabling torch.compile globally - falling back to eager mode")
+        
+        # Disable torch.compile more aggressively
         torch._dynamo.config.suppress_errors = True
+        torch._dynamo.config.disable = True
+        
+        # Set environment variable to disable compilation
+        import os
+        os.environ['TORCH_COMPILE_DISABLE'] = '1'
+        
         return False
 
 def cli_main():
