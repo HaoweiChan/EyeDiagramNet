@@ -2,6 +2,8 @@
 import psutil
 import time
 import json
+import signal
+import sys
 from pathlib import Path
 
 # Try to import GPUtil, fallback to alternative GPU monitoring
@@ -11,6 +13,14 @@ try:
 except ImportError:
     HAS_GPUTIL = False
     print("Warning: GPUtil not available. GPU monitoring will be limited.")
+
+# Global flag for graceful shutdown
+RUNNING = True
+
+def signal_handler(signum, frame):
+    global RUNNING
+    print(f"\nReceived signal {signum}. Shutting down gracefully...")
+    RUNNING = False
 
 def get_gpu_stats():
     """Get GPU stats with fallback options"""
@@ -61,47 +71,81 @@ def get_gpu_stats():
             print(f"pynvml error: {e}")
             return []
 
-def monitor_system(duration=3600, interval=5):
+def monitor_system(duration=None, interval=5):
     """Monitor system resources during training"""
+    global RUNNING
+    
+    # Set up signal handlers for graceful shutdown
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
+    
     stats = []
     start_time = time.time()
+    print(f"Starting system monitoring (interval: {interval}s)...")
     
-    while time.time() - start_time < duration:
-        # CPU and Memory
-        cpu_percent = psutil.cpu_percent(interval=1)
-        memory = psutil.virtual_memory()
-        
-        # GPU Stats
-        gpu_stats = get_gpu_stats()
-        
-        # Disk I/O
-        disk_io = psutil.disk_io_counters()
-        
-        stat = {
-            'timestamp': time.time(),
-            'cpu_percent': cpu_percent,
-            'memory_percent': memory.percent,
-            'memory_used_gb': memory.used / (1024**3),
-            'gpus': gpu_stats,
-            'disk_read_mb': disk_io.read_bytes / (1024**2),
-            'disk_write_mb': disk_io.write_bytes / (1024**2)
-        }
-        stats.append(stat)
-        
-        # Fix the nested f-string issue
-        if gpu_stats:
-            gpu_loads = [f"{g['load']:.1f}%" for g in gpu_stats]
-            print(f"CPU: {cpu_percent:.1f}% | Memory: {memory.percent:.1f}% | "
-                  f"GPU Load: {gpu_loads}")
-        else:
-            print(f"CPU: {cpu_percent:.1f}% | Memory: {memory.percent:.1f}% | "
-                  f"GPU: Not available")
-        
-        time.sleep(interval)
+    if duration:
+        print(f"Will run for {duration} seconds")
+    else:
+        print("Will run until terminated (Ctrl+C or SIGTERM)")
+    
+    while RUNNING:
+        # Check duration if specified
+        if duration and (time.time() - start_time) >= duration:
+            break
+            
+        try:
+            # CPU and Memory
+            cpu_percent = psutil.cpu_percent(interval=1)
+            memory = psutil.virtual_memory()
+            
+            # GPU Stats
+            gpu_stats = get_gpu_stats()
+            
+            # Disk I/O
+            disk_io = psutil.disk_io_counters()
+            
+            stat = {
+                'timestamp': time.time(),
+                'cpu_percent': cpu_percent,
+                'memory_percent': memory.percent,
+                'memory_used_gb': memory.used / (1024**3),
+                'gpus': gpu_stats,
+                'disk_read_mb': disk_io.read_bytes / (1024**2),
+                'disk_write_mb': disk_io.write_bytes / (1024**2)
+            }
+            stats.append(stat)
+            
+            # Fix the nested f-string issue
+            if gpu_stats:
+                gpu_loads = [f"{g['load']:.1f}%" for g in gpu_stats]
+                print(f"CPU: {cpu_percent:.1f}% | Memory: {memory.percent:.1f}% | "
+                      f"GPU Load: {gpu_loads}")
+            else:
+                print(f"CPU: {cpu_percent:.1f}% | Memory: {memory.percent:.1f}% | "
+                      f"GPU: Not available")
+            
+            time.sleep(interval)
+            
+        except KeyboardInterrupt:
+            print("\nKeyboard interrupt received. Stopping...")
+            break
+        except Exception as e:
+            print(f"Error during monitoring: {e}")
+            time.sleep(interval)
     
     # Save stats
-    with open('system_monitor.json', 'w') as f:
+    output_file = 'system_monitor.json'
+    with open(output_file, 'w') as f:
         json.dump(stats, f, indent=2)
+    print(f"\nMonitoring stopped. Stats saved to {output_file}")
 
 if __name__ == "__main__":
-    monitor_system() 
+    import argparse
+    parser = argparse.ArgumentParser(description='Monitor system resources')
+    parser.add_argument('--duration', type=int, default=None, 
+                       help='Duration to monitor in seconds (default: run until stopped)')
+    parser.add_argument('--interval', type=int, default=5,
+                       help='Monitoring interval in seconds (default: 5)')
+    
+    args = parser.parse_args()
+    monitor_system(duration=args.duration, interval=args.interval) 
