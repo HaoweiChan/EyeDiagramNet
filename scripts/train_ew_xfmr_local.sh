@@ -65,17 +65,17 @@ if ($?LSB_JOBID) then
     set train_exit_code = $status
 
     # Cleanup
-    if ($profiling && $monitor_started) then
+    if ($profiling == 1 && $monitor_started == 1) then
         echo "Cleaning up monitoring process..."
         # Find and kill the monitoring process using tcsh-compatible method
-        set monitor_pids = `ps -u $USER -o pid,comm | grep monitor_training | awk '{print $1}'`
+        set monitor_pids = (`ps -u $USER -o pid,comm | grep monitor_training | awk '{print $1}'`)
         if ($#monitor_pids > 0) then
             foreach pid ($monitor_pids)
                 kill -TERM $pid >& /dev/null
             end
             sleep 2
             # Force kill if still running
-            set remaining_pids = `ps -u $USER -o pid,comm | grep monitor_training | awk '{print $1}'`
+            set remaining_pids = (`ps -u $USER -o pid,comm | grep monitor_training | awk '{print $1}'`)
             if ($#remaining_pids > 0) then
                 foreach pid ($remaining_pids)
                     kill -KILL $pid >& /dev/null
@@ -86,7 +86,7 @@ if ($?LSB_JOBID) then
         rm -f /tmp/monitor_$$.log
     endif
     
-    if (! $profiling) then
+    if ($profiling == 0) then
         # Clean up temporary config
         rm -f /tmp/train_config_no_profile_$$.yaml
     endif
@@ -101,7 +101,7 @@ if ($?LSB_JOBID) then
 else
     # We're not in a bsub job yet, submit the job
     echo "Submitting bsub job..."
-    if ($profiling) then
+    if ($profiling == 1) then
         echo "Profiling will be ENABLED in the job"
         bsub -Is -J EyeDiagram_Prof -q ML_GPU -app PyTorch -P d_09017 -gpu "num=4" -m GPU_3090_4 -R "rusage[mem=32000]" "tcsh $0 --profiling"
     else

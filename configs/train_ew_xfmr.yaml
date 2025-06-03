@@ -48,9 +48,14 @@ trainer:
       dirpath: ./profiler_logs
       filename: "perf_logs"
       export_to_chrome: true
-      sort_by: "cuda_time_total"
+      sort_by_key: "cuda_time_total"
+      group_by_input_shapes: true
+      record_module_names: true
+      row_limit: 100
+      # PyTorch profiler-specific kwargs
       record_shapes: true
       profile_memory: true
+      with_stack: false
   detect_anomaly: false
   barebones: false
   plugins: null
