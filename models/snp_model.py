@@ -62,7 +62,7 @@ class SNPEmbedding(nn.Module):
 
         # Forward snp_vert to conditional embedding to condense port interaction information
         hidden_states_snp = self.snp_encoder(snp_vert)
-        hidden_states_snp = rearrange(hidden_states_snp, "(b p) e -> b d p e", b=b, d=d, p=half_p)
+        hidden_states_snp = rearrange(hidden_states_snp, "(b d p) e -> b d p e", b=b, d=d, p=half_p)
 
         # Add tx and rx tokens
         hidden_states_snp[:, 0].add_(self.tx_token)
