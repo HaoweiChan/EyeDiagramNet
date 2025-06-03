@@ -13,15 +13,26 @@ foreach arg ($argv)
     endif
 end
 
-# Check if we're already in a bsub job (LSB_JOBID is set by LSF)
-if ($?LSB_JOBID) then
-    # We're already in a bsub job, run the actual training
+# Check if bsub is available (HPC environment) or if we're on macOS/local environment
+set bsub_available = 0
+which bsub >& /dev/null
+if ($status == 0) then
+    set bsub_available = 1
+endif
+
+# Check if we're already in a bsub job (LSB_JOBID is set by LSF) OR if bsub is not available (local run)
+if ($?LSB_JOBID || $bsub_available == 0) then
+    # We're already in a bsub job OR running locally, run the actual training
     echo "=========================================="
-    echo "Starting EyeDiagramNet Training Job"
+    if ($bsub_available == 0) then
+        echo "Starting EyeDiagramNet Training Job (Local)"
+    else
+        echo "Starting EyeDiagramNet Training Job"
+        echo "Job ID: $LSB_JOBID"
+    endif
     echo "Time: `date`"
     echo "Host: `hostname`"
     echo "Working Directory: `pwd`"
-    echo "Job ID: $LSB_JOBID"
     if ($profiling) then
         echo "Profiling: ENABLED"
     else
@@ -29,10 +40,17 @@ if ($?LSB_JOBID) then
     endif
     echo "=========================================="
 
-    # Load required modules
-    module load LSF/mtkgpu
-    module load Python3/3.11.8_gpu_torch251
-    source /proj/siaiadm/ew_predictor/.venv/sipi/bin/activate.csh
+    # Load required modules (only if available - HPC environment)
+    if ($bsub_available == 1) then
+        module load LSF/mtkgpu
+        module load Python3/3.11.8_gpu_torch251
+        source /proj/siaiadm/ew_predictor/.venv/sipi/bin/activate.csh
+    else
+        # Local environment - check for virtual environment
+        if (! $?VIRTUAL_ENV) then
+            echo "Warning: No virtual environment detected. Consider activating your Python environment."
+        endif
+    endif
 
     # Install requirements if needed
     echo "Installing/updating Python requirements..."
@@ -41,18 +59,34 @@ if ($?LSB_JOBID) then
     # Configure profiling based on flag
     if ($profiling) then
         echo "Starting system monitoring..."
-        python monitor_training.py --interval 10 >& /tmp/monitor_$$.log &
-        # tcsh doesn't have $!, so we'll use jobs and ps to manage the process
-        set monitor_started = 1
-        
-        # Wait a moment for monitoring to start
-        sleep 3
+        if (-f "monitor_training.py") then
+            python monitor_training.py --interval 10 >& /tmp/monitor_$$.log &
+            # tcsh doesn't have $!, so we'll use jobs and ps to manage the process
+            set monitor_started = 1
+            
+            # Wait a moment for monitoring to start
+            sleep 3
+        else
+            echo "Warning: monitor_training.py not found, skipping monitoring"
+            set monitor_started = 0
+        endif
         
         set config_file = "configs/train_ew_xfmr.yaml"
     else
         echo "Profiling disabled - using optimized config..."
-        # Create a temporary config without profiling using tcsh-compatible syntax
-        cat configs/train_ew_xfmr.yaml | sed 's/profiler:/# profiler (disabled):/' > /tmp/train_config_no_profile_$$.yaml
+        # Create a temporary config without profiling using Python
+        set temp_script = "/tmp/disable_profiler_$$.py"
+        cat > $temp_script << 'EOF'
+import yaml
+import sys
+with open('configs/train_ew_xfmr.yaml', 'r') as f:
+    config = yaml.safe_load(f)
+config['trainer']['profiler'] = None
+with open(sys.argv[1], 'w') as f:
+    yaml.dump(config, f, default_flow_style=False)
+EOF
+        python $temp_script "/tmp/train_config_no_profile_$$.yaml"
+        rm -f $temp_script
         set config_file = "/tmp/train_config_no_profile_$$.yaml"
         set monitor_started = 0
     endif
@@ -99,7 +133,7 @@ if ($?LSB_JOBID) then
     exit $train_exit_code
 
 else
-    # We're not in a bsub job yet, submit the job
+    # We're not in a bsub job yet and bsub is available, submit the job
     echo "Submitting bsub job..."
     if ($profiling == 1) then
         echo "Profiling will be ENABLED in the job"
