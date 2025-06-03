@@ -68,6 +68,17 @@ class TraceEWModule(LightningModule):
             utils.log_info(f'Loading model checkpoint: {self.hparams.ckpt_path}')
             ckpt = torch.load(self.hparams.ckpt_path, map_location=self.device)
             self.load_state_dict(ckpt['state_dict'], strict=self.hparams.strict)
+        
+        # Compile model for performance optimization after setup
+        if stage in ('fit', None):
+            utils.log_info("Compiling model with torch.compile for optimized performance...")
+            self.model = torch.compile(
+                self.model, 
+                mode="max-autotune",
+                dynamic=False,
+                fullgraph=True
+            )
+            utils.log_info("Model compilation completed.")
 
     def forward(self, *args, **kwargs):
         return self.model(*args, **kwargs)
@@ -198,8 +209,7 @@ class TraceEWModule(LightningModule):
 
             # Make the true probability for non-closed eye (optimized)
             true_prob = (true_ew > 0).float()  # More efficient than clone + assignment
-            weight_prob = torch.where(true_prob == 0, 10.0, 1.0)  # Avoid clone + assignment
-            # Use pre-computed sum to avoid division in hot path
+            weight_prob = torch.where(true_prob == 0, 10.0, 1.0)
             weight_sum = weight_prob.sum()
             weight_prob = weight_prob * (1.0 / weight_sum)
 
@@ -364,4 +374,4 @@ class TraceEWModule(LightningModule):
                 if len(unused_params) > 10:
                     print(f"  ... and {len(unused_params) - 10} more")
             else:
-                print(f"Step {self.global_step} - All {total_params} parameters received gradients ✓")
+                print(f"Step {self.global_step} - All {total_params} parameters received gradients")
