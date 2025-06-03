@@ -323,15 +323,23 @@ class TraceEWModule(LightningModule):
             tag = "_".join(['sparam', str(dataloader_idx)])
             self.logger.experiment.add_image(f'{stage}/{tag}', utils.image_to_buffer(fig), self.current_epoch)
 
-    def on_before_backward(self, loss):
-        """Debug: Track which parameters receive gradients"""
+    def on_before_optimizer_step(self, optimizer):
+        """Debug: Track which parameters receive gradients after backward pass"""
         if self.current_epoch == 0 and self.global_step % 100 == 0:  # Only check occasionally
             unused_params = []
+            total_params = 0
+            
             for name, param in self.named_parameters():
-                if param.requires_grad and param.grad is None:
-                    unused_params.append(name)
+                if param.requires_grad:
+                    total_params += 1
+                    if param.grad is None:
+                        unused_params.append(name)
             
             if unused_params:
-                print(f"Step {self.global_step} - Unused parameters:")
-                for param_name in unused_params:
+                print(f"Step {self.global_step} - Found {len(unused_params)}/{total_params} unused parameters:")
+                for param_name in unused_params[:10]:  # Show first 10 to avoid spam
                     print(f"  - {param_name}")
+                if len(unused_params) > 10:
+                    print(f"  ... and {len(unused_params) - 10} more")
+            else:
+                print(f"Step {self.global_step} - All {total_params} parameters received gradients ✓")
