@@ -147,7 +147,7 @@ class EyeWidthRegressor(nn.Module):
 
         # Run transformer for the signals
         hidden_states_sig = self.signal_encoder(hidden_states)
-        hidden_states_sig = hidden_states[:, :num_signals] + hidden_states_fix
+        hidden_states_sig = hidden_states_sig[:, :num_signals] + hidden_states_fix
 
         # Predict eye width and open eye probabilities respectively
         output = self.pred_head(hidden_states_sig)
