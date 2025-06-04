@@ -14,11 +14,9 @@ foreach arg ($argv)
 end
 
 # Load required modules first (needed for bsub to be available)
-if (-f /etc/modulefiles/LSF/mtkgpu) then
-    module load LSF/mtkgpu
-    module load Python3/3.11.8_gpu_torch251
-    source /proj/siaiadm/ew_predictor/.venv/sipi/bin/activate.csh
-endif
+module load LSF/mtkgpu
+module load Python3/3.11.8_gpu_torch251
+source /proj/siaiadm/ew_predictor/.venv/sipi/bin/activate.csh
 
 # Check if bsub is available (HPC environment) or if we're on macOS/local environment
 set bsub_available = 0
