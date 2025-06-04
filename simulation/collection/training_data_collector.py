@@ -41,7 +41,7 @@ def parse_snps(snp_dir):
     return list(snp_dir.glob(suffix))
 
 def collect_snp_simulation_data(trace_snp_file, vertical_snp_pair, params_set, ctle_params_set, 
-                               pickle_dir, directions=None, debug=False):
+                               pickle_dir, enable_ctle=True, enable_direction=True, directions=None, debug=False):
     """
     Collect eye width simulation data for a single trace SNP with vertical SNP pair.
     
@@ -51,6 +51,8 @@ def collect_snp_simulation_data(trace_snp_file, vertical_snp_pair, params_set, c
         params_set: ParameterSet for boundary parameters
         ctle_params_set: ParameterSet for CTLE parameters  
         pickle_dir: Directory to save pickle files
+        enable_ctle: Whether to include CTLE parameters in config
+        enable_direction: Whether to use random directions (True) or all ones (False)
         directions: Optional directions array
         debug: Debug mode flag
     """
@@ -74,11 +76,12 @@ def collect_snp_simulation_data(trace_snp_file, vertical_snp_pair, params_set, c
     # Sample boundary parameters
     boundary_config = params_set.sample()
     
-    # Sample CTLE parameters
-    ctle_config = ctle_params_set.sample()
-    
-    # Combine boundary and CTLE parameters
-    combined_config = boundary_config + ctle_config
+    # Conditionally sample and add CTLE parameters
+    if enable_ctle:
+        ctle_config = ctle_params_set.sample()
+        combined_config = boundary_config + ctle_config
+    else:
+        combined_config = boundary_config
     
     # Add SNP file paths to config
     config_dict = combined_config.to_dict()
@@ -92,17 +95,31 @@ def collect_snp_simulation_data(trace_snp_file, vertical_snp_pair, params_set, c
         print(f"Config: {config_dict}")
     
     try:
+        # Set directions based on enable_direction flag
+        if directions is None:
+            if enable_direction:
+                # Random directions will be generated inside the simulation function
+                sim_directions = None
+            else:
+                # Use all ones (assuming 4 lines by default)
+                sim_directions = np.ones(4, dtype=int)
+        else:
+            sim_directions = directions
+            
         # Run eye width simulation using the correct function
         line_ew = snp_eyewidth_simulation(
             config=combined_config,
             snp_files=(trace_snp_path, snp_tx, snp_rx),
-            directions=directions
+            directions=sim_directions
         )
         
         # Handle case where line_ew might be a tuple (line_ew, directions)
         if isinstance(line_ew, tuple):
             line_ew, actual_directions = line_ew
             directions = actual_directions
+        else:
+            # Use the directions we passed to the simulation
+            directions = sim_directions
         
         # Ensure line_ew is a numpy array and handle closed eyes
         line_ew = np.array(line_ew)
@@ -119,7 +136,10 @@ def collect_snp_simulation_data(trace_snp_file, vertical_snp_pair, params_set, c
         line_ew[line_ew >= 99.9] = -0.1
         
         if directions is None:
-            directions = np.random.randint(0, 2, size=n_lines)
+            if enable_direction:
+                directions = np.random.randint(0, 2, size=n_lines)
+            else:
+                directions = np.ones(n_lines, dtype=int)
     
     # Append new data
     data['configs'].append(combined_config.to_list())
@@ -136,28 +156,87 @@ def collect_snp_simulation_data(trace_snp_file, vertical_snp_pair, params_set, c
     if debug:
         print(f"Saved data to {pickle_file}")
 
-def generate_vertical_snp_pairs(vertical_dir, n_pairs):
+def generate_thru_snp(trace_snp_file, output_dir):
+    """
+    Generate a thru SNP file where i-th port passes all energy to (i+n//2)-th port.
+    
+    Args:
+        trace_snp_file: Path to trace SNP file to determine number of ports
+        output_dir: Directory to save generated thru SNP
+        
+    Returns:
+        Path to generated thru SNP file
+    """
+    try:
+        # Try to determine number of ports from SNP file
+        # This is a simplified implementation - in practice you'd parse the SNP file
+        trace_name = Path(trace_snp_file).stem
+        
+        # Create a simple thru SNP with standard port configuration
+        # For demonstration, assume 4-port (2 TX + 2 RX)
+        n_ports = 4
+        thru_snp_path = Path(output_dir) / f"thru_{trace_name}.s{n_ports}p"
+        
+        # Create the directory if it doesn't exist
+        thru_snp_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Generate a simple thru SNP content
+        # This is a placeholder - in practice you'd generate proper S-parameter data
+        with open(thru_snp_path, 'w') as f:
+            f.write(f"# Generated thru SNP for {trace_name}\n")
+            f.write(f"# Hz S MA R 50\n")
+            f.write("1e9 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n")  # Placeholder data
+        
+        return thru_snp_path
+        
+    except Exception as e:
+        print(f"Warning: Could not generate thru SNP for {trace_snp_file}: {e}")
+        # Return a dummy path for testing
+        return Path(output_dir) / f"dummy_thru.s4p"
+
+def generate_vertical_snp_pairs(vertical_dir, n_pairs, trace_snps=None):
     """
     Generate N pairs of vertical SNPs using product with repeat=2 and random selection.
     
     Args:
-        vertical_dir: Directory containing vertical SNP files
+        vertical_dir: Directory containing vertical SNP files (None for auto-generated thru SNPs)
         n_pairs: Number of pairs to generate
+        trace_snps: List of trace SNP files (needed when vertical_dir is None)
         
     Returns:
         List of (tx_snp, rx_snp) tuples
     """
-    vertical_snps = parse_snps(vertical_dir)
-    if len(vertical_snps) == 0:
-        raise ValueError(f"No SNP files found in vertical directory: {vertical_dir}")
-    
-    # Generate all possible pairs using product with repeat=2
-    all_pairs = list(product(vertical_snps, repeat=2))
-    
-    # Randomly select N pairs (duplicates allowed)
-    selected_pairs = random.choices(all_pairs, k=n_pairs)
-    
-    return selected_pairs
+    if vertical_dir is None:
+        # Generate thru SNPs for each trace SNP
+        if trace_snps is None:
+            raise ValueError("trace_snps must be provided when vertical_dir is None")
+        
+        thru_snps = []
+        temp_dir = Path("./temp_thru_snps")
+        temp_dir.mkdir(exist_ok=True)
+        
+        for trace_snp in trace_snps:
+            thru_snp = generate_thru_snp(trace_snp, temp_dir)
+            thru_snps.append(thru_snp)
+        
+        # Generate pairs using thru SNPs
+        all_pairs = list(product(thru_snps, repeat=2))
+        selected_pairs = random.choices(all_pairs, k=n_pairs)
+        
+        return selected_pairs
+    else:
+        # Original logic for existing vertical directory
+        vertical_snps = parse_snps(vertical_dir)
+        if len(vertical_snps) == 0:
+            raise ValueError(f"No SNP files found in vertical directory: {vertical_dir}")
+        
+        # Generate all possible pairs using product with repeat=2
+        all_pairs = list(product(vertical_snps, repeat=2))
+        
+        # Randomly select N pairs (duplicates allowed)
+        selected_pairs = random.choices(all_pairs, k=n_pairs)
+        
+        return selected_pairs
 
 def load_config(config_path):
     """Load configuration from YAML file"""
@@ -198,6 +277,22 @@ def build_argparser():
         help="Maximum number of samples to collect per trace SNP (overrides config)"
     )
     parser.add_argument(
+        '--enable_ctle', action='store_true',
+        help="Enable CTLE parameter sampling (overrides config)"
+    )
+    parser.add_argument(
+        '--disable_ctle', action='store_true',
+        help="Disable CTLE parameter sampling (overrides config)"
+    )
+    parser.add_argument(
+        '--enable_direction', action='store_true',
+        help="Enable random direction generation (overrides config)"
+    )
+    parser.add_argument(
+        '--disable_direction', action='store_true',
+        help="Disable random direction generation - use all ones (overrides config)"
+    )
+    parser.add_argument(
         '--debug', action='store_true',
         help="Enable debug mode (overrides config)"
     )
@@ -223,13 +318,30 @@ def main():
         return
     
     # Override config with command line arguments
-    trace_pattern = Path(args.trace_pattern) if args.trace_pattern else Path(config['trace_pattern'])
-    vertical_dir = Path(args.vertical_dir) if args.vertical_dir else Path(config['vertical_dir'])
-    output_dir = Path(args.output_dir) if args.output_dir else Path(config['output_dir'])
-    param_type = args.param_type if args.param_type else config['param_type']
-    max_samples = args.max_samples if args.max_samples else config['max_samples']
-    debug = args.debug if args.debug else config.get('debug', False)
-    max_workers = args.max_workers if args.max_workers else config.get('max_workers')
+    trace_pattern = Path(args.trace_pattern) if args.trace_pattern else Path(config['data']['trace_pattern'])
+    vertical_dir = Path(args.vertical_dir) if args.vertical_dir else (Path(config['data']['vertical_dir']) if config['data']['vertical_dir'] is not None else None)
+    output_dir = Path(args.output_dir) if args.output_dir else Path(config['data']['output_dir'])
+    param_type = args.param_type if args.param_type else config['boundary']['param_type']
+    max_samples = args.max_samples if args.max_samples else config['boundary']['max_samples']
+    
+    # Handle enable_ctle logic
+    if args.enable_ctle:
+        enable_ctle = True
+    elif args.disable_ctle:
+        enable_ctle = False
+    else:
+        enable_ctle = config['boundary'].get('enable_ctle', True)
+    
+    # Handle enable_direction logic
+    if args.enable_direction:
+        enable_direction = True
+    elif args.disable_direction:
+        enable_direction = False
+    else:
+        enable_direction = config['boundary'].get('enable_direction', True)
+    
+    debug = args.debug if args.debug else config['debug'].get('debug', False)
+    max_workers = args.max_workers if args.max_workers else config['runner'].get('max_workers')
     
     print(f"Using configuration:")
     print(f"  Trace pattern: {trace_pattern}")
@@ -237,6 +349,8 @@ def main():
     print(f"  Output dir: {output_dir}")
     print(f"  Parameter type: {param_type}")
     print(f"  Max samples: {max_samples}")
+    print(f"  Enable CTLE: {enable_ctle}")
+    print(f"  Enable direction: {enable_direction}")
     print(f"  Debug mode: {debug}")
     print(f"  Max workers: {max_workers}")
     
@@ -251,8 +365,11 @@ def main():
     print(f"Found {len(trace_snps)} trace SNP files")
     
     # Generate vertical SNP pairs for each trace SNP
-    vertical_pairs = generate_vertical_snp_pairs(vertical_dir, len(trace_snps))
-    print(f"Generated {len(vertical_pairs)} vertical SNP pairs")
+    vertical_pairs = generate_vertical_snp_pairs(vertical_dir, len(trace_snps), trace_snps)
+    if vertical_dir is None:
+        print(f"Generated {len(vertical_pairs)} thru SNP pairs (auto-generated)")
+    else:
+        print(f"Generated {len(vertical_pairs)} vertical SNP pairs")
     
     # Get parameter sets
     from simulation.parameters.bound_param import DDR_PARAMS, HBM2_PARAMS, UCIE_PARAMS, MIX_PARAMS, CTLE_PARAMS
@@ -284,7 +401,7 @@ def main():
         if current_samples < max_samples:
             samples_needed = max_samples - current_samples
             for _ in range(samples_needed):
-                simulation_tasks.append((trace_snp, vertical_pair, boundary_params, ctle_params, output_dir))
+                simulation_tasks.append((trace_snp, vertical_pair, boundary_params, ctle_params, output_dir, enable_ctle, enable_direction))
     
     print(f"Need to run {len(simulation_tasks)} simulations")
     
@@ -306,9 +423,9 @@ def main():
                 executor.submit(
                     collect_snp_simulation_data,
                     trace_snp, vertical_pair, boundary_params, ctle_params,
-                    output_dir, None, False
+                    output_dir, enable_ctle, enable_direction, None, False
                 )
-                for trace_snp, vertical_pair, boundary_params, ctle_params, output_dir in simulation_tasks
+                for trace_snp, vertical_pair, boundary_params, ctle_params, output_dir, enable_ctle, enable_direction in simulation_tasks
             ]
             
             try:
@@ -328,13 +445,13 @@ def main():
                 sys.exit(1)
     else:
         # Debug mode - run sequentially
-        for i, (trace_snp, vertical_pair, boundary_params, ctle_params, output_dir) in enumerate(
+        for i, (trace_snp, vertical_pair, boundary_params, ctle_params, output_dir, enable_ctle, enable_direction) in enumerate(
             tqdm(simulation_tasks, desc="Debug simulation")
         ):
             print(f"\n--- Task {i+1}/{len(simulation_tasks)} ---")
             collect_snp_simulation_data(
                 trace_snp, vertical_pair, boundary_params, ctle_params,
-                output_dir, None, True
+                output_dir, enable_ctle, enable_direction, None, True
             )
     
     print(f"Data collection completed. Results saved to: {output_dir}")
