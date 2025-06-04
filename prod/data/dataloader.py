@@ -89,7 +89,7 @@ class CSVProcessor:
 
         # original feature block
         layer_idx = np.flatnonzero(layer_mask)
-        feat_dim = layer_idx[l] - layer_idx[0]
+        feat_dim = layer_idx[1] - layer_idx[0]
         data_col = case.values.reshape(-1, feat_dim)
         
         return np.hstack([data_col, x_dim[:, None], z_dim[:, None]])

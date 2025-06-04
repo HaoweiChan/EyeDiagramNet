@@ -443,10 +443,10 @@ def get_waveform2(test_patt_lines, Pmatrix_tprs_lines):
     # # wave = []
     # # for (test_patt, Pmatrix_tprs) in zip(test_patt_lines, Pmatrix_tprs_lines):
     # #     test_patt = test_patt.unsqueeze(0).unsqueeze(1)
-    #     Pmatrix_tprs = Pmatrix_tprs.permute(2, 0, 1).unsqueeze(1)
-    #     convolved = torch.nn.functional.conv2d(test_patt, Pmatrix_tprs, padding=(0, UIs - 1)) 
-    #     wave.append(convolved.squeeze(0))
-    # wave = torch.stack(wave).permute(1, 2, 0)
+    # #     Pmatrix_tprs = Pmatrix_tprs.permute(2, 0, 1).unsqueeze(1)
+    # #     convolved = torch.nn.functional.conv2d(test_patt, Pmatrix_tprs, padding=(0, UIs - 1)) 
+    # #     wave.append(convolved.squeeze(0))
+    # # wave = torch.stack(wave).permute(1, 2, 0)
 
     test_patt_lines = torch.from_numpy(test_patt_lines).reshape(nline ** 2, -1)
     Pmatrix_tprs_lines = torch.from_numpy(Pmatrix_tprs_lines).reshape(nline ** 2, UIs, n_perUI_intrp)
@@ -534,24 +534,24 @@ if __name__ == '__main__':
     from bound_param import LinearParameter, LogParameter, ParameterSet, SampleResult
 
     def main(device=None):            
-        snp_horiz = "../../test_data/tlines48_seed0.s96p"
-        snp_tx = "../../test_data/tlines48_seed1.s96p"
-        snp_rx = "../../test_data/tlines48_seed2.s96p"
+        snp_horiz = "../../test_data/tlines4_seed0.s8p"
+        snp_tx = "../../test_data/tlines4_seed1.s8p"
+        snp_rx = "../../test_data/tlines4_seed2.s8p"
         snp_file = (snp_horiz, snp_tx, snp_rx)
 
         config_dict = {
             "R_tx": 10,
             "R_rx": 1.0e9,
-            "C_tx": 4e-13,
-            "C_rx": 2e-13,
-            "L_tx": 2e-10,
-            "L_rx": 1.6e-9,
-            "pulse_amplitude": 0.8,
-            "bits_per_sec": 1.3e10,
-            "vmask": 0.05
+            "C_tx": 1e-13,
+            "C_rx": 1e-13,
+            "L_tx": 1e-10,
+            "L_rx": 1e-10,
+            "pulse_amplitude": 0.4,
+            "bits_per_sec": 6.4e9,
+            "vmask": 0.04
         }
         config = SampleResult(**config_dict)
-        directions = [1] * 12 + [0] * 12 + [1] * 12 + [0] * 12
+        directions = [1] * 1 + [0] * 1 + [1] * 1 + [0] * 1
 
         line_ew, directions = snp_eyewidth_simulation(config, snp_file, directions, device=device)
         print(line_ew)
