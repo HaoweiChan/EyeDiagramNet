@@ -1,0 +1,112 @@
+# Lightning CLI Configuration for Eye Width Transformer Training
+# Usage: ./scripts/train.sh fit --config configs/training/train_ew_xfmr.yaml
+
+# Lightning CLI standard format
+seed_everything: 42
+
+# Data configuration
+data:
+  class_path: ml.data.dataloaders.TraceSeqEWDataloader
+  init_args:
+    train_csv_file: '/proj/siaiadm/AI_training_data/D2D/UCIe_Trace/traces_ew_train.csv'
+    test_csv_file: '/proj/siaiadm/AI_training_data/D2D/UCIe_Trace/traces_ew_test.csv'
+    trace_dir: '/proj/siaiadm/AI_training_data/D2D/UCIe_Trace'
+    config_columns: 
+      - 'R_tx'
+      - 'R_rx' 
+      - 'C_tx'
+      - 'C_rx'
+      - 'L_tx'
+      - 'L_rx'
+      - 'pulse_amplitude'
+      - 'bits_per_sec'
+      - 'vmask'
+      - 'AC_gain'
+      - 'DC_gain'
+      - 'fp1'
+      - 'fp2'
+    trace_length: 512
+    batch_size: 32
+    num_workers: 8
+    train_test_split: 0.8
+    pin_memory: true
+
+# Model configuration  
+model:
+  class_path: ml.modules.trace_ew_module.TraceEWModule
+  init_args:
+    model_name: 'trace_ew_xfmr'
+    trace_model_config:
+      model_type: 'xfmr'
+      input_dim: 1
+      embed_dim: 128
+      num_heads: 8
+      num_layers: 6
+      ff_dim: 512
+      dropout: 0.1
+      max_seq_len: 512
+    ew_model_config:
+      model_type: 'mlp'
+      input_dim: 13  # config features
+      hidden_dims: [256, 128, 64]
+      output_dim: 1
+      dropout: 0.1
+    fusion_config:
+      fusion_dim: 256
+      hidden_dims: [128, 64]
+      output_dim: 4  # number of trace lines
+      dropout: 0.1
+    learning_rate: 0.001
+    weight_decay: 0.01
+    scheduler_config:
+      scheduler_type: 'cosine_with_warmup'
+      warmup_epochs: 10
+      max_epochs: 100
+
+# Trainer configuration
+trainer:
+  accelerator: 'gpu'
+  devices: 1
+  max_epochs: 100
+  precision: '16-mixed'
+  gradient_clip_val: 1.0
+  accumulate_grad_batches: 1
+  log_every_n_steps: 50
+  val_check_interval: 0.25
+  check_val_every_n_epoch: 1
+  enable_checkpointing: true
+  enable_progress_bar: true
+  enable_model_summary: true
+  deterministic: false
+  benchmark: true
+  
+  # Callbacks
+  callbacks:
+    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+      init_args:
+        dirpath: './checkpoints/trace_ew_xfmr'
+        filename: '{epoch:02d}-{val_loss:.3f}'
+        monitor: 'val_loss'
+        mode: 'min'
+        save_top_k: 3
+        save_last: true
+        
+    - class_path: lightning.pytorch.callbacks.EarlyStopping
+      init_args:
+        monitor: 'val_loss'
+        mode: 'min'
+        patience: 15
+        min_delta: 0.001
+        
+    - class_path: lightning.pytorch.callbacks.LearningRateMonitor
+      init_args:
+        logging_interval: 'step'
+        
+  # Logging
+  logger:
+    class_path: lightning.pytorch.loggers.TensorBoardLogger
+    init_args:
+      save_dir: './logs'
+      name: 'trace_ew_xfmr'
+      version: null
+      default_hp_metric: false

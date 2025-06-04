@@ -159,17 +159,11 @@ def generate_vertical_snp_pairs(vertical_dir, n_pairs):
     
     return selected_pairs
 
-def load_config(config_path, profile=None):
+def load_config(config_path):
     """Load configuration from YAML file"""
     with open(config_path, 'r') as f:
         config = yaml.safe_load(f)
-    
-    if profile:
-        if profile not in config.get('profiles', {}):
-            raise ValueError(f"Profile '{profile}' not found in config")
-        return config['profiles'][profile]
-    else:
-        return config['collection']
+    return config
 
 def build_argparser():
     """Build argument parser for the collection script"""
@@ -178,12 +172,8 @@ def build_argparser():
     )
     parser.add_argument(
         '--config', type=Path, 
-        default='configs/collect_training_data.yaml',
+        default='configs/data/default.yaml',
         help="Path to configuration YAML file"
-    )
-    parser.add_argument(
-        '--profile', type=str,
-        help="Configuration profile to use (overrides default collection config)"
     )
     # Allow command line overrides
     parser.add_argument(
@@ -223,7 +213,7 @@ def main():
     
     # Load configuration
     try:
-        config = load_config(args.config, args.profile)
+        config = load_config(args.config)
     except FileNotFoundError:
         print(f"Config file not found: {args.config}")
         print("Please create the config file or provide command line arguments")
