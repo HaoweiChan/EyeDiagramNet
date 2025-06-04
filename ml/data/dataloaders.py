@@ -16,7 +16,7 @@ from .processors import CSVProcessor
 from simulation.parameters.bound_param import SampleResult
 from common.scaler import MinMaxScaler
 from common.utils import log_info, parse_snps, read_snp
-from common.trace_processor import TraceSequenceProcessor
+from .trace_processor import TraceSequenceProcessor
 
 class TimedDataLoader:
     def __init__(self, dataloader):

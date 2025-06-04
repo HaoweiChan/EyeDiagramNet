@@ -6,8 +6,9 @@ import torch.nn.functional as F
 import torchmetrics as tm
 from lightning import LightningModule
 
-from common import utils, losses
-from common.init_weights import init_weights
+from common import utils
+from ml import losses
+from ml.init_weights import init_weights
 from ..models.layers import UncertaintyWeightedLoss, LearnableLossWeighting, GradNormLossBalancer
 
 class TraceEWModule(LightningModule):

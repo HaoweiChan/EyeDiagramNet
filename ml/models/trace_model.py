@@ -6,7 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .layers import positional_encoding_1d, cont_positional_encoding, RotaryTransformerEncoder
-from common.trace_processor import TraceSequenceProcessor
+from ..data.trace_processor import TraceSequenceProcessor
 
 class TraceSeqTransformer(nn.Module):
     def __init__(
