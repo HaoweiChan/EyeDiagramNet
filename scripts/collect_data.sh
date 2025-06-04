@@ -9,4 +9,4 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_ROOT"
 
 # Add project root to Python path and run data collection
-PYTHONPATH="$PROJECT_ROOT:$PYTHONPATH" python -m simulation.collection.parallel_collector "$@" 
+PYTHONPATH="$PROJECT_ROOT:$PYTHONPATH" python -m simulation.collection.training_data_collector "$@" 
