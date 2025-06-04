@@ -9,8 +9,8 @@ import torch.nn.functional as F
 import torch.multiprocessing as mp
 from torch.utils.data import Dataset, DataLoader
 
-from common.utils import log_info, read_snp, flip_snp, renumber_snp, greedy_covering_design
-from common.trace_processor import TraceSequenceProcessor
+from common.signal_utils import log_info, read_snp, flip_snp, renumber_snp, greedy_covering_design
+from ml.data.trace_processor import TraceSequenceProcessor
 
 def collate_fn(batch, pad_token=-1):
     sequences, labels, sel_ports = zip(*batch)

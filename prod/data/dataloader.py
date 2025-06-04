@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Union, Dict, List, Tuple
 from lightning.pytorch.utilities import CombinedLoader
 
-from common.utils import log_info, read_snp, read_boundary
+from common.signal_utils import log_info, read_snp, read_boundary
 from .dataset import InferenceTraceEWDataset, get_loader_from_dataset
 
 class CSVProcessor:

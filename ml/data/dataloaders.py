@@ -14,8 +14,8 @@ from torch.utils.data import DataLoader
 from .datasets import TraceDataset, TraceEWDataset, InferenceTraceDataset, InferenceTraceEWDataset, get_loader_from_dataset
 from .processors import CSVProcessor
 from simulation.parameters.bound_param import SampleResult
-from common.scaler import MinMaxScaler
-from common.utils import log_info, parse_snps, read_snp
+from ml.utils.scaler import MinMaxScaler
+from common.signal_utils import log_info, parse_snps, read_snp
 from .trace_processor import TraceSequenceProcessor
 
 class TimedDataLoader:

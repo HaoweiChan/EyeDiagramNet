@@ -5,7 +5,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 
-from common.utils import log_info, read_snp, flip_snp
+from common.signal_utils import log_info, read_snp, flip_snp
 
 def collate_fn(batch, pad_token=-1):
     sequences, labels, sel_ports = zip(*batch)

@@ -13,9 +13,9 @@ from torch.utils.data import DataLoader
 
 from .dataset import TraceDataset, TraceEWDataset, InferenceTraceDataset, InferenceTraceEWDataset, get_loader_from_dataset
 from .bound_param import SampleResult
-from common.scaler import MinMaxScaler
-from common.utils import log_info, parse_snps, read_snp
-from common.trace_processor import TraceSequenceProcessor
+from ml.utils.scaler import MinMaxScaler
+from common.signal_utils import log_info, parse_snps, read_snp
+from ml.data.trace_processor import TraceSequenceProcessor
 
 class CSVProcessor:
     def __init__(self, patterns: List[str] = None, padding_value: int = -1):

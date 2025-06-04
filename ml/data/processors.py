@@ -3,7 +3,7 @@ import pandas as pd
 from pathlib import Path
 from typing import Union, Dict, List, Tuple
 
-from common.utils import log_info
+from common.signal_utils import log_info
 
 class CSVProcessor:
     def __init__(self, patterns: List[str] = None, padding_value: int = -1):
