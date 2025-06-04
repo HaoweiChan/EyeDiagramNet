@@ -62,14 +62,14 @@ trainer:
         enable_version_counter: true
 
 model:
-  class_path: modules.trace_ew_module.TraceEWModule
+  class_path: ml.modules.trace_ew_module.TraceEWModule
   init_args:
     ew_scaler: 50
     ew_threshold: 0.1
     ckpt_path: ./saved/ew_xfmr/version_0/checkpoints/last.ckpt
     strict: false
     model:
-      class_path: models.eye_width_model.EyeWidthRegressor
+      class_path: ml.models.eye_width_model.EyeWidthRegressor
       init_args:
         num_types: 3 # (S, G, D)
         model_dim: 384
@@ -80,7 +80,7 @@ model:
         dropout: 0.2
 
 data:
-  class_path: data.dataloader.TraceSeqEWDataloader
+  class_path: ml.data.dataloaders.TraceSeqEWDataloader
   init_args:
     data_dirs:
       pattern2_cowos_8mi: /proj/siaiadm/AI_training_data/D2D/UCIe_Trace/pattern2/cowos_8mi
