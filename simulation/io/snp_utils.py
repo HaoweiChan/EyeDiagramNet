@@ -147,4 +147,32 @@ def generate_vertical_snp_pairs(vertical_dirs, n_pairs, trace_snps=None, base_ou
         # Randomly select N pairs (duplicates allowed)
         selected_pairs = random.choices(all_pairs, k=n_pairs)
         
-        return selected_pairs 
+        return selected_pairs
+
+if __name__ == "__main__":
+    import argparse
+    import sys
+    
+    parser = argparse.ArgumentParser(description="Generate all-thru SNP file from reference trace SNP")
+    parser.add_argument("reference_snp", help="Path to reference trace SNP file")
+    parser.add_argument("-o", "--output-dir", default=".", help="Output directory (default: current directory)")
+    parser.add_argument("-k", "--key", default="thru", help="Subdirectory key (default: 'thru')")
+    
+    args = parser.parse_args()
+    
+    # Validate input file
+    ref_snp_path = Path(args.reference_snp)
+    if not ref_snp_path.exists():
+        print(f"Error: Reference SNP file {ref_snp_path} does not exist")
+        sys.exit(1)
+    
+    try:
+        thru_snp_path = generate_thru_snp(
+            reference_trace_snp_file=args.reference_snp,
+            base_output_dir=args.output_dir,
+            trace_pattern_key=args.key
+        )
+        print(f"All-thru SNP generated at: {thru_snp_path}")
+    except ValueError as e:
+        print(f"Error: {e}")
+        sys.exit(1) 
