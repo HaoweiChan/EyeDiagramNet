@@ -1,10 +1,10 @@
+import sys
 import argparse
+import skrf as rf
 import numpy as np
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-import skrf as rf
 from pathlib import Path
-import sys
+from plotly.subplots import make_subplots
 
 class SNPPlotter:
     def __init__(self, snp_file_path):
@@ -25,6 +25,31 @@ class SNPPlotter:
             print(f"Error loading network: {e}")
             sys.exit(1)
     
+    def get_sparam_data(self, p1, p2):
+        """Get S-parameter data for specific port combination."""
+        if self.network is None:
+            return None
+        
+        try:
+            # Convert to 0-based indexing
+            i, j = p1 - 1, p2 - 1
+            if i < 0 or i >= self.network.nports or j < 0 or j >= self.network.nports:
+                return None
+            
+            s_param = self.network.s[:, i, j]
+            freq_ghz = self.network.f / 1e9
+            s_db = 20 * np.log10(np.abs(s_param))
+            s_phase = np.angle(s_param, deg=True)
+            
+            return {
+                'frequency': freq_ghz.tolist(),
+                'magnitude_db': s_db.tolist(),
+                'phase_deg': s_phase.tolist()
+            }
+        except Exception as e:
+            print(f"Error getting S{p1}{p2} data: {e}")
+            return None
+    
     def create_interactive_plot(self, output_file=None):
         """Create interactive plotly plot with scrollable S-parameter selection."""
         if self.network is None:
@@ -32,6 +57,15 @@ class SNPPlotter:
             return
         
         nports = self.network.nports
+        
+        # For large files, recommend using server mode
+        if nports > 20:
+            print(f"Warning: {nports}-port file detected. Consider using --server mode for better performance.")
+            response = input("Continue with static plot? (y/N): ")
+            if response.lower() != 'y':
+                print("Use --server flag for interactive server mode")
+                return
+        
         freq_ghz = self.network.f / 1e9
         
         # Create figure with secondary y-axis
@@ -213,11 +247,169 @@ class SNPPlotter:
         
         return fig
 
+def create_server_app(snp_plotter):
+    """Create Flask server app for on-demand S-parameter plotting."""
+    try:
+        from flask import Flask, render_template_string, request, jsonify
+    except ImportError:
+        print("Flask not installed. Install with: pip install flask")
+        sys.exit(1)
+    
+    app = Flask(__name__)
+    
+    # HTML template for the interactive interface
+    html_template = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>S-Parameter Plotter - {{ filename }}</title>
+        <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+        <style>
+            body { font-family: Arial, sans-serif; margin: 20px; }
+            .controls { margin-bottom: 20px; }
+            .controls label { margin-right: 10px; }
+            .controls input, .controls select { margin-right: 20px; padding: 5px; }
+            .controls button { padding: 8px 16px; background-color: #007bff; color: white; border: none; cursor: pointer; }
+            .controls button:hover { background-color: #0056b3; }
+            #plot { width: 100%; height: 600px; }
+            .info { background-color: #f8f9fa; padding: 10px; border-radius: 5px; margin-bottom: 20px; }
+        </style>
+    </head>
+    <body>
+        <div class="info">
+            <h2>S-Parameter Plotter: {{ filename }}</h2>
+            <p>Ports: {{ nports }} | Frequency Points: {{ nfreq }} | Range: {{ freq_range }}</p>
+        </div>
+        
+        <div class="controls">
+            <label>Port 1:</label>
+            <input type="number" id="p1" min="1" max="{{ nports }}" value="1">
+            
+            <label>Port 2:</label>
+            <input type="number" id="p2" min="1" max="{{ nports }}" value="1">
+            
+            <label>Show:</label>
+            <select id="show_type">
+                <option value="both">Magnitude & Phase</option>
+                <option value="magnitude">Magnitude Only</option>
+                <option value="phase">Phase Only</option>
+            </select>
+            
+            <button onclick="updatePlot()">Plot S-Parameter</button>
+        </div>
+        
+        <div id="plot"></div>
+        
+        <script>
+            function updatePlot() {
+                const p1 = document.getElementById('p1').value;
+                const p2 = document.getElementById('p2').value;
+                const showType = document.getElementById('show_type').value;
+                
+                fetch('/plot_sparam', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({p1: parseInt(p1), p2: parseInt(p2), show_type: showType})
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        alert('Error: ' + data.error);
+                        return;
+                    }
+                    
+                    const plotDiv = document.getElementById('plot');
+                    Plotly.newPlot(plotDiv, data.traces, data.layout);
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                    alert('Error fetching data');
+                });
+            }
+            
+            // Initial plot
+            updatePlot();
+        </script>
+    </body>
+    </html>
+    """
+    
+    @app.route('/')
+    def index():
+        return render_template_string(html_template,
+            filename=snp_plotter.snp_file_path.name,
+            nports=snp_plotter.network.nports,
+            nfreq=len(snp_plotter.network.f),
+            freq_range=f"{snp_plotter.network.f[0]/1e9:.3f} - {snp_plotter.network.f[-1]/1e9:.3f} GHz"
+        )
+    
+    @app.route('/plot_sparam', methods=['POST'])
+    def plot_sparam():
+        try:
+            data = request.json
+            p1 = data.get('p1', 1)
+            p2 = data.get('p2', 1)
+            show_type = data.get('show_type', 'both')
+            
+            sparam_data = snp_plotter.get_sparam_data(p1, p2)
+            if sparam_data is None:
+                return jsonify({'error': f'Invalid port combination S{p1}{p2}'})
+            
+            traces = []
+            
+            if show_type in ['both', 'magnitude']:
+                traces.append({
+                    'x': sparam_data['frequency'],
+                    'y': sparam_data['magnitude_db'],
+                    'type': 'scatter',
+                    'mode': 'lines',
+                    'name': f'|S{p1}{p2}| (dB)',
+                    'line': {'width': 2}
+                })
+            
+            if show_type in ['both', 'phase']:
+                traces.append({
+                    'x': sparam_data['frequency'],
+                    'y': sparam_data['phase_deg'],
+                    'type': 'scatter',
+                    'mode': 'lines',
+                    'name': f'∠S{p1}{p2} (°)',
+                    'line': {'width': 2, 'dash': 'dash'},
+                    'yaxis': 'y2' if show_type == 'both' else 'y'
+                })
+            
+            layout = {
+                'title': f'S{p1}{p2} Frequency Response - {snp_plotter.snp_file_path.name}',
+                'xaxis': {'title': 'Frequency (GHz)', 'showgrid': True},
+                'yaxis': {'title': 'Magnitude (dB)', 'showgrid': True},
+                'hovermode': 'x unified',
+                'width': 1000,
+                'height': 600
+            }
+            
+            if show_type == 'both':
+                layout['yaxis2'] = {
+                    'title': 'Phase (°)',
+                    'overlaying': 'y',
+                    'side': 'right',
+                    'showgrid': True
+                }
+            
+            return jsonify({'traces': traces, 'layout': layout})
+            
+        except Exception as e:
+            return jsonify({'error': str(e)})
+    
+    return app
+
 def main():
     parser = argparse.ArgumentParser(description="Plot S-parameter data from SNP files")
     parser.add_argument("snp_file", help="Path to S-parameter file (.snp, .s2p, etc.)")
     parser.add_argument("-o", "--output", help="Output HTML file path")
     parser.add_argument("--slider", action="store_true", help="Use slider interface instead of dropdown")
+    parser.add_argument("--server", action="store_true", help="Run as interactive server (recommended for large files)")
+    parser.add_argument("--port", type=int, default=5000, help="Server port (default: 5000)")
+    parser.add_argument("--host", default="127.0.0.1", help="Server host (default: 127.0.0.1)")
     
     args = parser.parse_args()
     
@@ -230,7 +422,16 @@ def main():
     # Create plotter
     plotter = SNPPlotter(args.snp_file)
     
-    # Create plot
+    # Run in server mode
+    if args.server:
+        print(f"Starting server for {plotter.network.nports}-port S-parameter file...")
+        print(f"Open http://{args.host}:{args.port} in your browser")
+        
+        app = create_server_app(plotter)
+        app.run(host=args.host, port=args.port, debug=False)
+        return
+    
+    # Create static plot
     if args.slider:
         plotter.create_slider_plot(args.output)
     else:
