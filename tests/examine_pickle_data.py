@@ -10,14 +10,14 @@ Usage:
 """
 
 import pickle
+import argparse
+import warnings
+import traceback
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 import seaborn as sns
+import matplotlib.pyplot as plt
 from pathlib import Path
-from collections import Counter
-import warnings
-import argparse
 warnings.filterwarnings('ignore')
 
 # Try to import simulation functions for comparison
@@ -27,6 +27,7 @@ try:
     VALIDATION_AVAILABLE = True
 except ImportError as e:
     print(f"Warning: Could not import validation modules: {e}")
+    traceback.print_exc()
     print("Validation features will be disabled.")
     VALIDATION_AVAILABLE = False
 
@@ -100,6 +101,7 @@ def main():
                     print(f"  {key}: {type(value)}")
         except Exception as e:
             print(f"Error loading sample file: {e}")
+            traceback.print_exc()
     
     # 2. Data Structure Analysis
     print("\n\n2. DATA STRUCTURE ANALYSIS")
@@ -178,6 +180,7 @@ def main():
                 
         except Exception as e:
             print(f"Error loading {pfile.name}: {e}")
+            traceback.print_exc()
     
     print(f"\nLoaded data from {len(file_stats)} files")
     print(f"Total samples: {len(all_configs)}")
@@ -270,6 +273,7 @@ def main():
             plt.show()
         except Exception as e:
             print(f"Error creating plots: {e}")
+            traceback.print_exc()
     else:
         print("No eye width data found in pickle files.")
     
@@ -289,6 +293,7 @@ def main():
                 inconsistent_files.append((pfile.name, lengths))
         except Exception as e:
             print(f"Error checking {pfile.name}: {e}")
+            traceback.print_exc()
     
     if inconsistent_files:
         print(f"\n⚠️  Found {len(inconsistent_files)} files with inconsistent data lengths:")
@@ -406,10 +411,12 @@ def main():
                         
                     except Exception as e:
                         print(f"    Error in fresh simulation: {e}")
+                        traceback.print_exc()
                         continue
                         
             except Exception as e:
                 print(f"Error processing {pfile.name}: {e}")
+                traceback.print_exc()
                 continue
         
         print(f"\nValidation completed!")
@@ -518,6 +525,7 @@ def main():
                 
             except Exception as e:
                 print(f"Error creating validation plots: {e}")
+                traceback.print_exc()
     
     elif args.validate and not VALIDATION_AVAILABLE:
         print("\nValidation requested but not available due to missing imports.")

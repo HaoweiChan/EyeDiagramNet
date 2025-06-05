@@ -37,6 +37,40 @@ def collect_snp_simulation_data(trace_snp_file, vertical_snp_pair, params_set,
     trace_snp_path = Path(trace_snp_file)
     pickle_file = Path(pickle_dir) / f"{trace_snp_path.stem}.pkl"
     
+    # Parse n_ports from SNP filename (e.g., "trace_8port.s8p" -> 8 ports)
+    snp_filename = trace_snp_path.name.lower()
+    
+    if '.s' in snp_filename and 'p' in snp_filename:
+        # Extract number from .sXp extension
+        try:
+            extension = snp_filename.split('.s')[-1]
+            if not extension.endswith('p'):
+                raise ValueError("Extension doesn't end with 'p'")
+            port_str = extension.replace('p', '')
+            if not port_str.isdigit():
+                raise ValueError("No numeric port count found")
+            n_ports = int(port_str)
+        except (ValueError, IndexError):
+            raise ValueError(f"Cannot parse port count from SNP extension in filename: {snp_filename}")
+    else:
+        # Try to extract from filename pattern
+        import re
+        port_match = re.search(r'(\d+)port', snp_filename)
+        if port_match:
+            n_ports = int(port_match.group(1))
+        else:
+            raise ValueError(f"Cannot determine number of ports from filename: {snp_filename}. "
+                           f"Filename must contain .sXp extension (e.g., .s8p) or 'Xport' pattern (e.g., 8port)")
+    
+    # Calculate number of lines (differential pairs)
+    n_lines = n_ports // 2
+    
+    if n_lines == 0:
+        raise ValueError(f"Invalid n_ports={n_ports}, n_lines would be 0. Need at least 2 ports for differential pairs.")
+    
+    if debug:
+        print(f"Detected {n_ports} ports, {n_lines} lines from {snp_filename}")
+    
     # Load existing data if pickle file exists
     if pickle_file.exists():
         with open(pickle_file, 'rb') as f:
@@ -68,11 +102,11 @@ def collect_snp_simulation_data(trace_snp_file, vertical_snp_pair, params_set,
         # Set directions based on enable_direction flag
         if directions is None:
             if enable_direction:
-                # Random directions will be generated inside the simulation function
-                sim_directions = None
+                # Generate random directions (0 or 1) for each line
+                sim_directions = np.random.randint(0, 2, size=n_lines)
             else:
-                # Use all ones (assuming 4 lines by default)
-                sim_directions = np.ones(4, dtype=int)
+                # Use all ones for all lines
+                sim_directions = np.ones(n_lines, dtype=int)
         else:
             sim_directions = directions
             
@@ -86,10 +120,10 @@ def collect_snp_simulation_data(trace_snp_file, vertical_snp_pair, params_set,
         # Handle case where line_ew might be a tuple (line_ew, directions)
         if isinstance(line_ew, tuple):
             line_ew, actual_directions = line_ew
-            directions = actual_directions
-        else:
-            # Use the directions we passed to the simulation
-            directions = sim_directions
+            sim_directions = actual_directions
+        
+        # Use the final directions (either from simulation return or what we passed)
+        final_directions = sim_directions
         
         # Ensure line_ew is a numpy array and handle closed eyes
         line_ew = np.array(line_ew)
@@ -97,26 +131,19 @@ def collect_snp_simulation_data(trace_snp_file, vertical_snp_pair, params_set,
         
         if debug:
             print(f"Eye widths: {line_ew}")
+            print(f"Directions: {final_directions}")
             
     except Exception as e:
         print(f"Error in simulation for {trace_snp_path.name}: {e}")
-        # Use random data as fallback
-        n_lines = 4  # Default number of lines, could be inferred from SNP
-        line_ew = np.random.uniform(0, 99.9, size=n_lines)
-        line_ew[line_ew >= 99.9] = -0.1
-        
-        if directions is None:
-            if enable_direction:
-                directions = np.random.randint(0, 2, size=n_lines)
-            else:
-                directions = np.ones(n_lines, dtype=int)
+        # Re-raise the exception instead of using fallback data
+        raise
     
     # Append new data
     data['configs'].append(combined_config.to_list())
     data['line_ews'].append(line_ew.tolist())
     data['snp_txs'].append(snp_tx.as_posix())
     data['snp_rxs'].append(snp_rx.as_posix()) 
-    data['directions'].append(directions.tolist() if directions is not None else [])
+    data['directions'].append(final_directions.tolist() if final_directions is not None else [])
     
     # Save updated data
     pickle_file.parent.mkdir(parents=True, exist_ok=True)
@@ -154,21 +181,11 @@ def main():
     param_types = parse_param_types(param_type_str)
     max_samples = args.max_samples if args.max_samples else config['boundary']['max_samples']
     
-    # Handle enable_direction logic
-    if args.enable_direction:
-        enable_direction = True
-    elif args.disable_direction:
-        enable_direction = False
-    else:
-        enable_direction = config['boundary'].get('enable_direction', True)
+    # Handle enable_direction logic (default to False)
+    enable_direction = args.enable_direction or config['boundary'].get('enable_direction', False)
     
-    # Handle enable_inductance logic
-    if args.enable_inductance:
-        enable_inductance = True
-    elif args.disable_inductance:
-        enable_inductance = False
-    else:
-        enable_inductance = config['boundary'].get('enable_inductance', True)
+    # Handle enable_inductance logic (default to False)  
+    enable_inductance = args.enable_inductance or config['boundary'].get('enable_inductance', False)
     
     debug = args.debug if args.debug else config.get('debug', False)
     max_workers = args.max_workers if args.max_workers else config['runner'].get('max_workers')
@@ -272,12 +289,24 @@ def main():
             ]
             
             try:
-                for _ in tqdm(
+                failed_tasks = []
+                for future in tqdm(
                     concurrent.futures.as_completed(futures), 
                     total=len(futures),
                     desc="Collecting simulation data"
                 ):
-                    pass
+                    try:
+                        future.result()  # This will raise any exception that occurred
+                    except Exception as e:
+                        failed_tasks.append(str(e))
+                
+                if failed_tasks:
+                    print(f"\nWarning: {len(failed_tasks)} tasks failed:")
+                    for i, error in enumerate(failed_tasks[:5]):  # Show first 5 errors
+                        print(f"  {i+1}. {error}")
+                    if len(failed_tasks) > 5:
+                        print(f"  ... and {len(failed_tasks)-5} more errors")
+                        
             except KeyboardInterrupt:
                 print("KeyboardInterrupt detected, shutting down...")
                 # Kill each process

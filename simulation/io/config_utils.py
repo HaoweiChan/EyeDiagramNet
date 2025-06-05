@@ -52,19 +52,11 @@ def build_argparser():
     )
     parser.add_argument(
         '--enable_direction', action='store_true',
-        help="Enable random direction generation (overrides config)"
-    )
-    parser.add_argument(
-        '--disable_direction', action='store_true',
-        help="Disable random direction generation - use all ones (overrides config)"
+        help="Enable random direction generation (default: False, overrides config)"
     )
     parser.add_argument(
         '--enable_inductance', action='store_true',
-        help="Enable inductance parameters (overrides config)"
-    )
-    parser.add_argument(
-        '--disable_inductance', action='store_true',
-        help="Disable inductance parameters - set L_tx and L_rx to zero (overrides config)"
+        help="Enable inductance parameters (default: False, overrides config)"
     )
     parser.add_argument(
         '--debug', action='store_true',
