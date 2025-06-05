@@ -4,8 +4,7 @@ import random
 import numpy as np
 from pathlib import Path
 from itertools import product
-from skrf.frequency import Frequency
-from skrf.network import Network as SkrfNetwork
+from skrf.network import Network
 
 def parse_snps(snp_dir):
     """Parse SNP files from directory, supporting both .snp and .npz formats"""
@@ -40,43 +39,21 @@ def generate_thru_snp(reference_trace_snp_file, base_output_dir, trace_pattern_k
 
     Returns:
         Path to the generated or existing thru SNP file.
+    
+    Raises:
+        ValueError: If the reference SNP file cannot be read or has invalid port count.
     """
     try:
-        ref_net = SkrfNetwork(str(reference_trace_snp_file))
+        ref_net = Network(str(reference_trace_snp_file))
         n_ports = ref_net.nports
         if n_ports % 2 != 0:
-            # Try to infer from filename if skrf fails for some minimal files
-            filename_stem = Path(reference_trace_snp_file).stem
-            if 's' in filename_stem and 'p' in filename_stem:
-                try:
-                    n_ports = int(filename_stem.split('s')[1].split('p')[0])
-                    if n_ports % 2 != 0:
-                        raise ValueError(
-                            f"Number of ports ({n_ports}) derived from filename {filename_stem} must be even for thru connection."
-                        )
-                except:
-                     raise ValueError(
-                        f"Could not determine n_ports from {reference_trace_snp_file} and filename {filename_stem} is not standard format (e.g. name.sXp)"
-                    )
-            else:
-                raise ValueError(
-                    f"Number of ports ({n_ports}) determined by skrf from {reference_trace_snp_file} must be even for thru connection, and filename {filename_stem} is not standard format."
-                )
-
+            raise ValueError(
+                f"Number of ports ({n_ports}) from {reference_trace_snp_file} must be even for thru connection."
+            )
     except Exception as e:
-        print(f"Error reading reference SNP {reference_trace_snp_file} with skrf: {e}")
-        # Fallback or re-raise as appropriate for your use case
-        # For now, let's try to guess from filename if possible, or assume 4 if not
-        print("Attempting to infer port count from filename or defaulting to 4 ports for thru SNP generation.")
-        filename_stem = Path(reference_trace_snp_file).stem
-        try:
-            n_ports = int(filename_stem.split('s')[1].split('p')[0])
-            if n_ports % 2 != 0: 
-                print(f"Inferred odd n_ports={n_ports} from {filename_stem}, defaulting to 4.")
-                n_ports = 4 # Default to 4 if odd number inferred
-        except:
-            print(f"Could not infer n_ports from {filename_stem}, defaulting to 4.")
-            n_ports = 4
+        raise ValueError(
+            f"Error reading reference SNP {reference_trace_snp_file}: {e}"
+        )
 
     thru_snp_dir = Path(base_output_dir) / trace_pattern_key
     thru_snp_dir.mkdir(parents=True, exist_ok=True)
@@ -91,15 +68,14 @@ def generate_thru_snp(reference_trace_snp_file, base_output_dir, trace_pattern_k
 
     # Extract frequency points from the reference trace SNP to ensure matching frequencies
     try:
-        ref_net = SkrfNetwork(str(reference_trace_snp_file))
+        ref_net = Network(str(reference_trace_snp_file))
         freq = ref_net.frequency
         n_freq_points = len(freq.f_scaled)
         print(f"Using {n_freq_points} frequency points from reference trace SNP ({freq.f_scaled.min()/1e9:.2f} - {freq.f_scaled.max()/1e9:.2f} GHz)")
     except Exception as e:
-        print(f"Warning: Could not extract frequency from reference SNP {reference_trace_snp_file}: {e}")
-        print("Falling back to single frequency point at 1 GHz")
-        freq = Frequency(1, 1, 1, unit='ghz')
-        n_freq_points = 1
+        raise ValueError(
+            f"Could not extract frequency from reference SNP {reference_trace_snp_file}: {e}"
+        )
     
     s_matrix = np.zeros((n_freq_points, n_ports, n_ports), dtype=complex)
 
@@ -113,17 +89,14 @@ def generate_thru_snp(reference_trace_snp_file, base_output_dir, trace_pattern_k
     z0_array = np.full(n_ports, 50) # Standard 50 Ohm impedance for all ports
 
     try:
-        thru_net = SkrfNetwork(frequency=freq.f_scaled, s=s_matrix, z0=z0_array) # Use freq.f_scaled for raw numpy array
+        thru_net = Network(frequency=freq.f_scaled, s=s_matrix, z0=z0_array) # Use freq.f_scaled for raw numpy array
         thru_net.name = f'auto_thru_{n_ports}port'
         thru_net.write_touchstone(filename=str(thru_snp_path), write_z0=True)
         print(f"Successfully generated auto-thru SNP: {thru_snp_path}")
     except Exception as e:
-        print(f"Error writing touchstone file {thru_snp_path}: {e}")
-        # Fallback: create a dummy file to prevent repeated generation attempts in one run
-        with open(thru_snp_path, 'w') as f:
-            f.write(f"# Dummy file due to generation error: {e}\n")
-        print(f"Created dummy file at {thru_snp_path} after generation error.")
-        # Depending on requirements, you might want to re-raise the exception or handle it differently
+        raise ValueError(
+            f"Error writing touchstone file {thru_snp_path}: {e}"
+        )
 
     return thru_snp_path
 
