@@ -1,24 +1,34 @@
 # Default Data Collection Configuration for EyeDiagramNet Training Data
 # Used by: simulation.collection.training_data_collector
 
-# Debug configuration (put on top)
-debug:
-  debug: false  # Enable debug mode for sequential processing and verbose output
+debug: false
+
+dataset:
+  horizontal_dataset:
+    pattern2_cowos_8mi: /proj/siaiadm/AI_training_data/D2D/UCIE_Trace/pattern2/cowos_8mi
+    pattern2_cowos_9mi: /proj/siaiadm/AI_training_data/D2D/UCIE_Trace/pattern2/cowos_9mi
+    pattern2_emib: /proj/siaiadm/AI_training_data/D2D/UCIE_Trace/pattern2/emib
+    pattern2_cowos_8mi_0124: /proj/siaiadm/AI_training_data/D2D/UCIE_Trace/pattern2/cowos_8mi_0124
+    pattern2_cowos_9mi_0124: /proj/siaiadm/AI_training_data/D2D/UCIE_Trace/pattern2/cowos_9mi_0124
+    pattern2_emib_9mi_0124: /proj/siaiadm/AI_training_data/D2D/UCIE_Trace/pattern2/emib_9mi_0124
+    pattern2_emib_10mi_0124: /proj/siaiadm/AI_training_data/D2D/UCIE_Trace/pattern2/emib_10mi_0124
+
+  vertical_dataset:
+    - /proj/siaiadm/AI_training_data/D2D/vertical/snp_for_UCIE_20250121
+    - /proj/siaiadm/AI_training_data/D2D/from_enzo
 
 # Data configuration
 data:
-  trace_pattern: "./test_data/traces"  # Directory containing trace SNP files
-  vertical_dir: "./test_data/vertical"  # Directory containing vertical SNP files for TX/RX (null for auto-generated thru SNPs)
-  output_dir: "./data/training_samples"  # Output directory for collected data
+  trace_pattern: pattern2_cowos_8mi
+  output_dir: "/proj/siaiadm/ew_predictor/data/"
 
 # Boundary parameter configuration
 boundary:
-  param_type: "MIX_PARAMS"  # Options: DDR_PARAMS, HBM2_PARAMS, UCIE_PARAMS, MIX_PARAMS
-  max_samples: 50  # Maximum number of samples to collect per trace SNP
-  enable_ctle: true  # Enable CTLE parameter sampling and addition to config
-  enable_direction: true  # Enable random direction generation (false = all ones)
+  param_type: MIX_PARAMS,CTLE_PARAMS
+  max_samples: 50
+  enable_direction: false
+  enable_inductance: false
 
 # Runner configuration
 runner:
-  max_workers: 8  # Maximum number of worker processes (null for auto-detect CPU count)
-  proc_per_gpu: 1  # Number of processes per GPU (currently not used with CPU simulation) 
+  max_workers: 8 
