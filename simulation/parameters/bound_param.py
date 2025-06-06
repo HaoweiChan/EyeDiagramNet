@@ -121,6 +121,19 @@ class SampleResult:
         if return_keys:
             return ([self._data[key] for key in sorted_keys], sorted_keys)
         return [self._data[key] for key in sorted_keys]
+    
+    @classmethod
+    def from_list_with_keys(cls, values, keys):
+        """Reconstruct SampleResult from list of values and corresponding keys."""
+        if len(values) != len(keys):
+            raise ValueError(f"Length mismatch: {len(values)} values, {len(keys)} keys")
+        data = dict(zip(keys, values))
+        return cls(**data)
+    
+    @classmethod
+    def from_dict(cls, data_dict):
+        """Create SampleResult from dictionary."""
+        return cls(**data_dict)
         
     def to_array(self):
         return np.array(self.to_list())

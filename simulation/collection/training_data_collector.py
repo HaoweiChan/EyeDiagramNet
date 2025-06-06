@@ -75,13 +75,21 @@ def collect_snp_simulation_data(trace_snp_file, vertical_snp_pair, params_set,
     if pickle_file.exists():
         with open(pickle_file, 'rb') as f:
             data = pickle.load(f)
+        # Check if this is an old format file
+        if 'config_dicts' not in data or 'metadata' not in data:
+            raise ValueError(
+                f"Existing pickle file {pickle_file} uses old format. "
+                f"Please delete it and regenerate with the updated collector."
+            )
     else:
         data = {
-            'configs': [],
+            'configs': [],  # Keep for backward compatibility tools
+            'config_dicts': [],  # Primary robust format
             'line_ews': [], 
             'snp_txs': [],
             'snp_rxs': [],
-            'directions': []
+            'directions': [],
+            'metadata': {}  # Parameter metadata
         }
     
     # Sample all parameters from the combined parameter set
@@ -138,12 +146,21 @@ def collect_snp_simulation_data(trace_snp_file, vertical_snp_pair, params_set,
         # Re-raise the exception instead of using fallback data
         raise
     
-    # Append new data
-    data['configs'].append(combined_config.to_list())
+    # Append new data - save both list and dict formats for compatibility
+    config_values, config_keys = combined_config.to_list(return_keys=True)
+    data['configs'].append(config_values)  # Keep for backward compatibility
+    data['config_dicts'].append(combined_config.to_dict())  # Robust format
     data['line_ews'].append(line_ew.tolist())
     data['snp_txs'].append(snp_tx.as_posix())
     data['snp_rxs'].append(snp_rx.as_posix()) 
     data['directions'].append(final_directions.tolist() if final_directions is not None else [])
+    
+    # Update metadata with parameter info (store once per file)
+    if not data['metadata'].get('config_keys'):
+        data['metadata']['config_keys'] = config_keys
+        data['metadata']['n_ports'] = n_ports
+        data['metadata']['n_lines'] = n_lines
+        data['metadata']['param_types'] = [type(params_set).__name__]
     
     # Save updated data
     pickle_file.parent.mkdir(parents=True, exist_ok=True)

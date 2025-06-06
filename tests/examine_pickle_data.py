@@ -23,7 +23,6 @@ warnings.filterwarnings('ignore')
 # Try to import simulation functions for comparison
 try:
     from simulation.engine.sparam_to_ew import snp_eyewidth_simulation
-    from simulation.parameters.bound_param import ParameterSet
     VALIDATION_AVAILABLE = True
 except ImportError as e:
     print(f"Warning: Could not import validation modules: {e}")
@@ -35,6 +34,47 @@ except ImportError as e:
 plt.style.use('default')
 sns.set_palette("husl")
 plt.rcParams['figure.figsize'] = (12, 8)
+
+def reconstruct_config(data, sample_idx):
+    """
+    Reconstruct configuration from pickle data (new format only).
+    
+    Args:
+        data: Pickle data dictionary
+        sample_idx: Sample index to reconstruct
+        
+    Returns:
+        SampleResult object with configuration
+        
+    Raises:
+        ValueError: If data is in old/unsupported format
+    """
+    # Check for new format (config_dicts)
+    if 'config_dicts' in data and len(data['config_dicts']) > sample_idx:
+        config_dict = data['config_dicts'][sample_idx]
+        if VALIDATION_AVAILABLE:
+            from simulation.parameters.bound_param import SampleResult
+            return SampleResult.from_dict(config_dict)
+        else:
+            return config_dict  # Return dict if SampleResult not available
+    
+    # Check if this is an old format file and provide clear error
+    if 'configs' in data and 'config_dicts' not in data:
+        raise ValueError(
+            f"This pickle file uses an old format that is no longer supported. "
+            f"Please regenerate the training data using the updated collector. "
+            f"File contains {len(data['configs'])} samples in legacy format."
+        )
+    
+    # Check if sample index is out of range
+    if 'config_dicts' in data:
+        if sample_idx >= len(data['config_dicts']):
+            raise ValueError(
+                f"Sample index {sample_idx} out of range. "
+                f"File contains {len(data['config_dicts'])} samples."
+            )
+    
+    raise ValueError(f"No valid config data found for sample {sample_idx}")
 
 def main():
     """Main function to run the complete analysis"""
@@ -95,8 +135,15 @@ def main():
                         print(f"    First item type: {type(value[0])}")
                         if key == 'configs' and len(value) > 0:
                             print(f"    Config length: {len(value[0])} parameters")
+                        elif key == 'config_dicts' and len(value) > 0:
+                            print(f"    Config dict keys: {list(value[0].keys())}")
                         elif key == 'line_ews' and len(value) > 0:
                             print(f"    Line EW shape: {np.array(value[0]).shape}")
+                elif isinstance(value, dict):
+                    print(f"  {key}: dict with keys: {list(value.keys())}")
+                    if key == 'metadata':
+                        for meta_key, meta_value in value.items():
+                            print(f"    {meta_key}: {meta_value}")
                 else:
                     print(f"  {key}: {type(value)}")
         except Exception as e:
@@ -359,7 +406,6 @@ def main():
                     print(f"  Validating sample {sample_idx+1}/{n_samples}...")
                     
                     # Extract data for this sample
-                    config_list = data['configs'][sample_idx]
                     pickle_ew = np.array(data['line_ews'][sample_idx])
                     directions = np.array(data['directions'][sample_idx]) if data['directions'][sample_idx] else None
                     
@@ -371,8 +417,8 @@ def main():
                     snp_rx = Path(data['snp_rxs'][sample_idx])
                     
                     try:
-                        # Reconstruct config object
-                        config = ParameterSet.from_list(config_list)
+                        # Reconstruct config object - handle both old and new formats
+                        config = reconstruct_config(data, sample_idx)
                         
                         # Run fresh simulation
                         result = snp_eyewidth_simulation(
