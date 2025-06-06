@@ -410,8 +410,13 @@ def main():
     parser.add_argument("--server", action="store_true", help="Run as interactive server (recommended for large files)")
     parser.add_argument("--port", type=int, default=5000, help="Server port (default: 5000)")
     parser.add_argument("--host", default="127.0.0.1", help="Server host (default: 127.0.0.1)")
+    parser.add_argument("--bind_all", action="store_true", help="Bind to all interfaces (0.0.0.0) for remote access")
     
     args = parser.parse_args()
+    
+    # Override host if bind_all is specified
+    if args.bind_all:
+        args.host = "0.0.0.0"
     
     # Validate input file
     snp_path = Path(args.snp_file)
