@@ -18,28 +18,61 @@ class SNPPlotter:
         try:
             self.network = rf.Network(str(self.snp_file_path))
             print(f"Loaded network: {self.snp_file_path}")
-            print(f"Frequency range: {self.network.f[0]/1e9:.3f} - {self.network.f[-1]/1e9:.3f} GHz")
+            
+            # Debug frequency data
+            if len(self.network.f) > 0:
+                print(f"Frequency range: {self.network.f[0]/1e9:.3f} - {self.network.f[-1]/1e9:.3f} GHz")
+                print(f"Raw frequency range: {self.network.f[0]} - {self.network.f[-1]} Hz")
+            else:
+                print("Warning: No frequency points found in file")
+                
             print(f"Number of ports: {self.network.nports}")
             print(f"Number of frequency points: {len(self.network.f)}")
+            print(f"S-parameter matrix shape: {self.network.s.shape}")
+            
         except Exception as e:
             print(f"Error loading network: {e}")
+            import traceback
+            traceback.print_exc()
             sys.exit(1)
     
     def get_sparam_data(self, p1, p2):
         """Get S-parameter data for specific port combination."""
         if self.network is None:
+            print("Error: Network not loaded")
             return None
         
         try:
             # Convert to 0-based indexing
             i, j = p1 - 1, p2 - 1
+            print(f"Converting S{p1}{p2} to indices [{i},{j}]")  # Debug
+            
             if i < 0 or i >= self.network.nports or j < 0 or j >= self.network.nports:
+                print(f"Invalid port indices: [{i},{j}] for {self.network.nports}-port network")
+                return None
+            
+            # Check if frequency data exists
+            if len(self.network.f) == 0:
+                print("Error: No frequency data in network")
                 return None
             
             s_param = self.network.s[:, i, j]
+            print(f"S-parameter shape: {s_param.shape}")  # Debug
+            
             freq_ghz = self.network.f / 1e9
-            s_db = 20 * np.log10(np.abs(s_param))
+            
+            # Check for valid S-parameter data
+            if np.all(s_param == 0):
+                print(f"Warning: S{p1}{p2} appears to be all zeros")
+            
+            s_magnitude = np.abs(s_param)
+            # Avoid log(0) by setting minimum value
+            s_magnitude = np.maximum(s_magnitude, 1e-20)
+            s_db = 20 * np.log10(s_magnitude)
             s_phase = np.angle(s_param, deg=True)
+            
+            print(f"Magnitude range: {s_db.min():.2f} to {s_db.max():.2f} dB")  # Debug
+            print(f"Phase range: {s_phase.min():.2f} to {s_phase.max():.2f} degrees")  # Debug
             
             return {
                 'frequency': freq_ghz.tolist(),
@@ -48,6 +81,8 @@ class SNPPlotter:
             }
         except Exception as e:
             print(f"Error getting S{p1}{p2} data: {e}")
+            import traceback
+            traceback.print_exc()
             return None
     
     def create_interactive_plot(self, output_file=None):
@@ -346,14 +381,19 @@ def create_server_app(snp_plotter):
     @app.route('/plot_sparam', methods=['POST'])
     def plot_sparam():
         try:
+            print(f"Received plot request")  # Debug
             data = request.json
             p1 = data.get('p1', 1)
             p2 = data.get('p2', 1)
             show_type = data.get('show_type', 'both')
+            print(f"Plotting S{p1}{p2}, show_type: {show_type}")  # Debug
             
             sparam_data = snp_plotter.get_sparam_data(p1, p2)
             if sparam_data is None:
+                print(f"Failed to get data for S{p1}{p2}")  # Debug
                 return jsonify({'error': f'Invalid port combination S{p1}{p2}'})
+            
+            print(f"Got data: {len(sparam_data['frequency'])} frequency points")  # Debug
             
             traces = []
             
@@ -395,9 +435,13 @@ def create_server_app(snp_plotter):
                     'showgrid': True
                 }
             
+            print(f"Returning {len(traces)} traces")  # Debug
             return jsonify({'traces': traces, 'layout': layout})
             
         except Exception as e:
+            print(f"Server error: {e}")  # Debug
+            import traceback
+            traceback.print_exc()
             return jsonify({'error': str(e)})
     
     return app
