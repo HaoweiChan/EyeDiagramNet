@@ -80,11 +80,10 @@ def generate_thru_snp(reference_trace_snp_file, base_output_dir, trace_pattern_k
     s_matrix = np.zeros((n_freq_points, n_ports, n_ports), dtype=complex)
 
     # Set thru connections for all frequency points (frequency-independent thru)
-    for freq_idx in range(n_freq_points):
-        for i in range(n_ports // 2):
-            j = i + n_ports // 2
-            s_matrix[freq_idx, i, j] = 1.0  # Transmission from port i to port j (S_ji)
-            s_matrix[freq_idx, j, i] = 1.0  # Transmission from port j to port i (S_ij)
+    for i in range(n_ports // 2):
+        j = i + n_ports // 2
+        s_matrix[:, i, j] = 1.0  # Transmission from port i to port j (S_ji)
+        s_matrix[:, j, i] = 1.0  # Transmission from port j to port i (S_ij)
 
     z0_array = np.full(n_ports, 50) # Standard 50 Ohm impedance for all ports
 

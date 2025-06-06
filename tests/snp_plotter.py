@@ -5,6 +5,7 @@ import numpy as np
 import plotly.graph_objects as go
 from pathlib import Path
 from plotly.subplots import make_subplots
+from flask import Flask, render_template_string, request, jsonify
 
 class SNPPlotter:
     def __init__(self, snp_file_path):
@@ -284,11 +285,6 @@ class SNPPlotter:
 
 def create_server_app(snp_plotter):
     """Create Flask server app for on-demand S-parameter plotting."""
-    try:
-        from flask import Flask, render_template_string, request, jsonify
-    except ImportError:
-        print("Flask not installed. Install with: pip install flask")
-        sys.exit(1)
     
     app = Flask(__name__)
     
