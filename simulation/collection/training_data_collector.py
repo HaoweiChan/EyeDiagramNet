@@ -8,42 +8,117 @@ import multiprocessing
 import concurrent.futures
 from tqdm import tqdm
 from pathlib import Path
+from collections import defaultdict
+import multiprocessing.shared_memory as shm
 
 from simulation.parameters.bound_param import PARAM_SETS_MAP
 from simulation.engine.eye_width_simulator import snp_eyewidth_simulation
 from simulation.io.config_utils import load_config, resolve_trace_pattern, resolve_vertical_dirs, build_argparser
 from simulation.io.snp_utils import parse_snps, generate_vertical_snp_pairs
 from simulation.parameters.param_utils import parse_param_types, modify_params_for_inductance
+from common.signal_utils import read_snp
 
-def init_worker():
-    """Initialize worker process - ignore ctrl+c in child workers so only main process sees it"""
+# Global shared memory registry for cleanup
+_shared_memory_blocks = []
+
+class VerticalSNPCache:
+    """Shared memory cache for vertical SNP files to avoid redundant loading across processes"""
+    
+    def __init__(self):
+        self.cache = {}  # {snp_path: (shared_memory_name, shape, dtype)}
+        self.memory_blocks = []
+    
+    def add_snp(self, snp_path):
+        """Load SNP file and store in shared memory"""
+        if str(snp_path) in self.cache:
+            return
+            
+        # Read SNP file
+        ntwk = read_snp(snp_path)
+        snp_data = ntwk.s  # Complex S-parameter data
+        
+        # Create shared memory block
+        nbytes = snp_data.nbytes
+        shm_block = shm.SharedMemory(create=True, size=nbytes)
+        
+        # Copy data to shared memory
+        shm_array = np.ndarray(snp_data.shape, dtype=snp_data.dtype, buffer=shm_block.buf)
+        shm_array[:] = snp_data[:]
+        
+        # Store metadata
+        self.cache[str(snp_path)] = {
+            'name': shm_block.name,
+            'shape': snp_data.shape,
+            'dtype': snp_data.dtype,
+            'frequencies': ntwk.f.copy()  # Also cache frequencies
+        }
+        
+        self.memory_blocks.append(shm_block)
+        _shared_memory_blocks.append(shm_block)
+    
+    def get_cache_info(self):
+        """Get cache information for passing to workers"""
+        return self.cache.copy()
+    
+    def cleanup(self):
+        """Clean up shared memory blocks"""
+        for block in self.memory_blocks:
+            try:
+                block.close()
+                block.unlink()
+            except:
+                pass
+
+def init_worker(vertical_cache_info):
+    """Initialize worker process with shared memory access"""
     import signal
     signal.signal(signal.SIGINT, signal.SIG_IGN)
+    
+    # Store cache info globally in worker
+    global _vertical_cache_info
+    _vertical_cache_info = vertical_cache_info
 
-def collect_snp_simulation_data(trace_snp_file, vertical_snp_pair, params_set, 
-                               pickle_dir, param_type_names, enable_direction=True, directions=None, debug=False):
+def get_vertical_snp_from_cache(snp_path):
+    """Get vertical SNP data from shared memory cache"""
+    cache_info = _vertical_cache_info[str(snp_path)]
+    
+    # Connect to existing shared memory
+    shm_block = shm.SharedMemory(name=cache_info['name'])
+    
+    # Create array view
+    snp_array = np.ndarray(
+        cache_info['shape'], 
+        dtype=cache_info['dtype'], 
+        buffer=shm_block.buf
+    )
+    
+    return snp_array.copy(), cache_info['frequencies']  # Return copy to avoid issues when shm_block closes
+
+def collect_snp_batch_simulation_data(task_batch, combined_params, pickle_dir, 
+                                    param_type_names, enable_direction=True, debug=False):
     """
-    Collect eye width simulation data for a single trace SNP with vertical SNP pair.
+    Process a batch of simulations for the same horizontal SNP file.
+    This reduces I/O overhead by loading the horizontal file once and writing results once.
     
     Args:
-        trace_snp_file: Path to trace SNP file
-        vertical_snp_pair: Tuple of (tx_snp, rx_snp) paths
-        params_set: ParameterSet containing all required parameters
+        task_batch: List of (trace_snp_file, vertical_snp_pair, sample_count) tuples for same trace file
+        combined_params: ParameterSet containing all required parameters  
         pickle_dir: Directory to save pickle files
         param_type_names: List of parameter type names
         enable_direction: Whether to use random directions (True) or all ones (False)
-        directions: Optional directions array
         debug: Debug mode flag
     """
-    snp_tx, snp_rx = vertical_snp_pair
+    if not task_batch:
+        return
+        
+    # All tasks in batch should have same trace_snp_file
+    trace_snp_file = task_batch[0][0]
     trace_snp_path = Path(trace_snp_file)
     pickle_file = Path(pickle_dir) / f"{trace_snp_path.stem}.pkl"
     
-    # Parse n_ports from SNP filename (e.g., "trace_8port.s8p" -> 8 ports)
+    # Parse n_ports from SNP filename once
     snp_filename = trace_snp_path.name.lower()
-    
     if '.s' in snp_filename and 'p' in snp_filename:
-        # Extract number from .sXp extension
         try:
             extension = snp_filename.split('.s')[-1]
             if not extension.endswith('p'):
@@ -55,25 +130,22 @@ def collect_snp_simulation_data(trace_snp_file, vertical_snp_pair, params_set,
         except (ValueError, IndexError):
             raise ValueError(f"Cannot parse port count from SNP extension in filename: {snp_filename}")
     else:
-        # Try to extract from filename pattern
         import re
         port_match = re.search(r'(\d+)port', snp_filename)
         if port_match:
             n_ports = int(port_match.group(1))
         else:
-            raise ValueError(f"Cannot determine number of ports from filename: {snp_filename}. "
-                           f"Filename must contain .sXp extension (e.g., .s8p) or 'Xport' pattern (e.g., 8port)")
+            raise ValueError(f"Cannot determine number of ports from filename: {snp_filename}")
     
-    # Calculate number of lines (differential pairs)
     n_lines = n_ports // 2
-    
     if n_lines == 0:
-        raise ValueError(f"Invalid n_ports={n_ports}, n_lines would be 0. Need at least 2 ports for differential pairs.")
+        raise ValueError(f"Invalid n_ports={n_ports}, n_lines would be 0")
     
     if debug:
-        print(f"Detected {n_ports} ports, {n_lines} lines from {snp_filename}")
+        print(f"Processing batch of {len(task_batch)} tasks for {trace_snp_path.name}")
+        print(f"Detected {n_ports} ports, {n_lines} lines")
     
-    # Load existing data if pickle file exists
+    # Load existing pickle data once
     if pickle_file.exists():
         with open(pickle_file, 'rb') as f:
             data = pickle.load(f)
@@ -84,70 +156,109 @@ def collect_snp_simulation_data(trace_snp_file, vertical_snp_pair, params_set,
             'snp_txs': [],
             'snp_rxs': [],
             'directions': [],
-            'meta': {}  # Parameter meta
+            'meta': {}
         }
     
-    # Sample all parameters from the combined parameter set
-    combined_config = params_set.sample()
+    # Process all tasks in batch
+    batch_results = []
     
-    try:
-        # Set directions based on enable_direction flag
-        if directions is None:
-            if enable_direction:
-                # Generate random directions (0 or 1) for each line
-                sim_directions = np.random.randint(0, 2, size=n_lines)
-            else:
-                # Use all ones for all lines
-                sim_directions = np.ones(n_lines, dtype=int)
-        else:
-            sim_directions = directions
+    for trace_snp_file, vertical_snp_pair, sample_count in task_batch:
+        snp_tx, snp_rx = vertical_snp_pair
+        
+        for _ in range(sample_count):
+            # Sample parameters
+            combined_config = combined_params.sample()
             
-        # Run eye width simulation using the correct function
-        line_ew = snp_eyewidth_simulation(
-            config=combined_config,
-            snp_files=(trace_snp_path, snp_tx, snp_rx),
-            directions=sim_directions
-        )
-        
-        # Handle case where line_ew might be a tuple (line_ew, directions)
-        if isinstance(line_ew, tuple):
-            line_ew, actual_directions = line_ew
-            sim_directions = actual_directions
-        
-        # Ensure line_ew is a numpy array and handle closed eyes
-        line_ew = np.array(line_ew)
-        line_ew[line_ew >= 99.9] = -0.1  # treating 99.9 data as closed eyes
-        
-        if debug:
-            print(f"Eye widths: {line_ew}")
-            print(f"Directions: {sim_directions}")
-            
-    except Exception as e:
-        print(f"Error in simulation for {trace_snp_path.name}: {e}")
-        raise
+            try:
+                # Set directions
+                if enable_direction:
+                    sim_directions = np.random.randint(0, 2, size=n_lines)
+                else:
+                    sim_directions = np.ones(n_lines, dtype=int)
+                
+                # Run simulation - the simulator will load SNP files as needed
+                # We could optimize this further by pre-loading the horizontal SNP
+                # but that would require more changes to the simulator
+                line_ew = snp_eyewidth_simulation(
+                    config=combined_config,
+                    snp_files=(trace_snp_path, snp_tx, snp_rx),
+                    directions=sim_directions
+                )
+                
+                # Handle tuple return
+                if isinstance(line_ew, tuple):
+                    line_ew, actual_directions = line_ew
+                    sim_directions = actual_directions
+                
+                # Process results
+                line_ew = np.array(line_ew)
+                line_ew[line_ew >= 99.9] = -0.1
+                
+                # Store result
+                config_values, config_keys = combined_config.to_list(return_keys=True)
+                batch_results.append({
+                    'config_values': config_values,
+                    'config_keys': config_keys,
+                    'line_ews': line_ew.tolist(),
+                    'snp_tx': snp_tx.as_posix(),
+                    'snp_rx': snp_rx.as_posix(),
+                    'directions': sim_directions.tolist()
+                })
+                
+                if debug:
+                    print(f"  Completed simulation: EW={line_ew}, Dir={sim_directions}")
+                    
+            except Exception as e:
+                print(f"Error in simulation for {trace_snp_path.name}: {e}")
+                if debug:
+                    import traceback
+                    traceback.print_exc()
+                continue
     
-    # Append new data
-    config_values, config_keys = combined_config.to_list(return_keys=True)
-    data['configs'].append(config_values)
-    data['line_ews'].append(line_ew.tolist())
-    data['snp_txs'].append(snp_tx.as_posix())
-    data['snp_rxs'].append(snp_rx.as_posix()) 
-    data['directions'].append(sim_directions.tolist())
+    # Append all batch results to data
+    for result in batch_results:
+        data['configs'].append(result['config_values'])
+        data['line_ews'].append(result['line_ews'])
+        data['snp_txs'].append(result['snp_tx'])
+        data['snp_rxs'].append(result['snp_rx'])
+        data['directions'].append(result['directions'])
     
-    # Update meta with parameter info (store once per file)
-    if not data['meta'].get('config_keys'):
+    # Update meta once per batch
+    if batch_results and not data['meta'].get('config_keys'):
         data['meta']['snp_horiz'] = str(trace_snp_path)
-        data['meta']['config_keys'] = config_keys
+        data['meta']['config_keys'] = batch_results[0]['config_keys']
         data['meta']['n_ports'] = n_ports
         data['meta']['param_types'] = param_type_names
     
-    # Save updated data
+    # Write updated data once per batch
     pickle_file.parent.mkdir(parents=True, exist_ok=True)
     with open(pickle_file, 'wb') as f:
         pickle.dump(data, f)
     
     if debug:
-        print(f"Saved data to {pickle_file}")
+        print(f"Batch completed: {len(batch_results)} simulations saved to {pickle_file}")
+
+def collect_snp_simulation_data(trace_snp_file, vertical_snp_pair, params_set, 
+                               pickle_dir, param_type_names, enable_direction=True, directions=None, debug=False):
+    """
+    Collect eye width simulation data for a single trace SNP with vertical SNP pair.
+    This is kept for backward compatibility and single-task processing.
+    """
+    # Use batch function with single task
+    task_batch = [(trace_snp_file, vertical_snp_pair, 1)]
+    collect_snp_batch_simulation_data(
+        task_batch, params_set, pickle_dir, param_type_names, enable_direction, debug
+    )
+
+def cleanup_shared_memory():
+    """Clean up all shared memory blocks"""
+    for block in _shared_memory_blocks:
+        try:
+            block.close()
+            block.unlink()
+        except:
+            pass
+    _shared_memory_blocks.clear()
 
 def main():
     """Main function for parallel data collection"""
@@ -198,7 +309,7 @@ def main():
     print(f"  Max workers: {max_workers}")
     
     # Create base output directory and trace-specific subdirectory
-    base_output_dir = output_dir # Save original output_dir as base
+    base_output_dir = output_dir
     trace_specific_output_dir = base_output_dir / trace_pattern_key
     trace_specific_output_dir.mkdir(parents=True, exist_ok=True)
     
@@ -232,18 +343,16 @@ def main():
     config_save_path = trace_specific_output_dir / 'collection_config.yaml'
     if not config_save_path.exists():
         try:
-            # Save the config that was used for this collection
             with open(config_save_path, 'w') as f:
                 yaml.dump(config, f, default_flow_style=False, indent=2)
             print(f"Saved collection config to: {config_save_path}")
         except Exception as e:
             print(f"Warning: Could not save config file: {e}")
     
-    # Prepare simulation tasks
-    simulation_tasks = []
+    # Build task batches grouped by trace SNP file
+    task_batches = defaultdict(list)  # {trace_snp_file: [(trace_snp, vertical_pair, samples_needed)]}
+    
     for trace_snp, vertical_pair in zip(trace_snps, vertical_pairs):
-        # Check if we need more samples for this trace SNP
-        # Note: pickle_file path is now relative to trace_specific_output_dir
         pickle_file = trace_specific_output_dir / f"{Path(trace_snp).stem}.pkl"
         current_samples = 0
         
@@ -255,76 +364,110 @@ def main():
             except:
                 current_samples = 0
         
-        # Only add task if we need more samples
         if current_samples < max_samples:
             samples_needed = max_samples - current_samples
-            for _ in range(samples_needed):
-                simulation_tasks.append((trace_snp, vertical_pair, combined_params, trace_specific_output_dir, param_types, enable_direction))
+            task_batches[trace_snp].append((trace_snp, vertical_pair, samples_needed))
     
-    print(f"Need to run {len(simulation_tasks)} simulations")
+    # Convert to list of batches
+    batch_list = [batch_tasks for batch_tasks in task_batches.values() if batch_tasks]
+    total_tasks = sum(sum(samples for _, _, samples in batch) for batch in batch_list)
     
-    if len(simulation_tasks) == 0:
+    print(f"Created {len(batch_list)} batches for {total_tasks} total simulations")
+    
+    if len(batch_list) == 0:
         print("All files already have sufficient samples")
         return
     
-    # Run simulations
-    if not debug:
-        # Use multiprocessing
-        num_workers = max_workers or multiprocessing.cpu_count()
-        multiprocessing.set_start_method("forkserver", force=True)
-        
-        with concurrent.futures.ProcessPoolExecutor(
-            max_workers=num_workers, 
-            initializer=init_worker
-        ) as executor:
-            futures = [
-                executor.submit(
-                    collect_snp_simulation_data,
-                    trace_snp, vertical_pair, combined_params,
-                    trace_specific_output_dir, param_types, enable_direction, None, False
-                )
-                for trace_snp, vertical_pair, combined_params, trace_specific_output_dir, param_types, enable_direction in simulation_tasks
-            ]
-            
-            try:
-                failed_tasks = []
-                for future in tqdm(
-                    concurrent.futures.as_completed(futures), 
-                    total=len(futures),
-                    desc="Collecting simulation data"
-                ):
-                    try:
-                        future.result()  # This will raise any exception that occurred
-                    except Exception as e:
-                        failed_tasks.append(str(e))
-                
-                if failed_tasks:
-                    print(f"\nWarning: {len(failed_tasks)} tasks failed:")
-                    for i, error in enumerate(failed_tasks[:5]):  # Show first 5 errors
-                        print(f"  {i+1}. {error}")
-                    if len(failed_tasks) > 5:
-                        print(f"  ... and {len(failed_tasks)-5} more errors")
-                        
-            except KeyboardInterrupt:
-                print("KeyboardInterrupt detected, shutting down...")
-                # Kill each process
-                for pid, proc in executor._processes.items():
-                    proc.terminate()
-                # Shutdown the pool
-                executor.shutdown(wait=False, cancel_futures=True)
-                sys.exit(1)
-    else:
-        # Debug mode - run sequentially
-        for i, (trace_snp, vertical_pair, combined_params, trace_specific_output_dir, param_types, enable_direction) in enumerate(
-            tqdm(simulation_tasks, desc="Debug simulation")
-        ):
-            print(f"\n--- Task {i+1}/{len(simulation_tasks)} ---")
-            collect_snp_simulation_data(
-                trace_snp, vertical_pair, combined_params,
-                trace_specific_output_dir, param_types, enable_direction, None, True
-            )
+    # Initialize shared memory cache for vertical SNPs (if not in debug mode)
+    vertical_cache = None
+    vertical_cache_info = {}
     
-    print(f"Data collection completed. Results saved to: {trace_specific_output_dir}")
+    if not debug and vertical_dirs:
+        print("Setting up shared memory cache for vertical SNP files...")
+        try:
+            vertical_cache = VerticalSNPCache()
+            
+            # Add all unique vertical SNP files to cache
+            unique_vertical_snps = set()
+            for batch_tasks in batch_list:
+                for _, vertical_pair, _ in batch_tasks:
+                    unique_vertical_snps.update(vertical_pair)
+            
+            for snp_path in unique_vertical_snps:
+                vertical_cache.add_snp(snp_path)
+            
+            vertical_cache_info = vertical_cache.get_cache_info()
+            print(f"Cached {len(vertical_cache_info)} vertical SNP files in shared memory")
+            
+        except Exception as e:
+            print(f"Warning: Could not set up shared memory cache: {e}")
+            if vertical_cache:
+                vertical_cache.cleanup()
+            vertical_cache = None
+            vertical_cache_info = {}
+    
+    # Run simulations
+    try:
+        if not debug:
+            # Use multiprocessing with batched tasks
+            num_workers = max_workers or multiprocessing.cpu_count()
+            multiprocessing.set_start_method("forkserver", force=True)
+            
+            with concurrent.futures.ProcessPoolExecutor(
+                max_workers=num_workers, 
+                initializer=init_worker,
+                initargs=(vertical_cache_info,)
+            ) as executor:
+                futures = [
+                    executor.submit(
+                        collect_snp_batch_simulation_data,
+                        batch_tasks, combined_params, trace_specific_output_dir, 
+                        param_types, enable_direction, False
+                    )
+                    for batch_tasks in batch_list
+                ]
+                
+                try:
+                    failed_batches = []
+                    for future in tqdm(
+                        concurrent.futures.as_completed(futures), 
+                        total=len(futures),
+                        desc="Processing batches"
+                    ):
+                        try:
+                            future.result()
+                        except Exception as e:
+                            failed_batches.append(str(e))
+                    
+                    if failed_batches:
+                        print(f"\nWarning: {len(failed_batches)} batches failed:")
+                        for i, error in enumerate(failed_batches[:5]):
+                            print(f"  {i+1}. {error}")
+                        if len(failed_batches) > 5:
+                            print(f"  ... and {len(failed_batches)-5} more errors")
+                            
+                except KeyboardInterrupt:
+                    print("KeyboardInterrupt detected, shutting down...")
+                    for pid, proc in executor._processes.items():
+                        proc.terminate()
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    raise
+        else:
+            # Debug mode - run sequentially
+            for i, batch_tasks in enumerate(tqdm(batch_list, desc="Debug processing batches")):
+                print(f"\n--- Batch {i+1}/{len(batch_list)} ---")
+                collect_snp_batch_simulation_data(
+                    batch_tasks, combined_params, trace_specific_output_dir,
+                    param_types, enable_direction, True
+                )
+        
+        print(f"Data collection completed. Results saved to: {trace_specific_output_dir}")
+        
+    finally:
+        # Clean up shared memory
+        if vertical_cache:
+            vertical_cache.cleanup()
+        cleanup_shared_memory()
 
 if __name__ == "__main__":
     main()
