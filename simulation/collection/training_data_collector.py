@@ -90,17 +90,6 @@ def collect_snp_simulation_data(trace_snp_file, vertical_snp_pair, params_set,
     # Sample all parameters from the combined parameter set
     combined_config = params_set.sample()
     
-    # Add SNP file paths to config
-    config_dict = combined_config.to_dict()
-    config_dict['snp_horiz'] = str(trace_snp_path)
-    config_dict['snp_tx'] = str(snp_tx)
-    config_dict['snp_rx'] = str(snp_rx)
-    
-    if debug:
-        print(f"\nProcessing {trace_snp_path.name}")
-        print(f"TX: {snp_tx.name}, RX: {snp_rx.name}")
-        print(f"Config: {config_dict}")
-    
     try:
         # Set directions based on enable_direction flag
         if directions is None:
@@ -147,6 +136,7 @@ def collect_snp_simulation_data(trace_snp_file, vertical_snp_pair, params_set,
     
     # Update meta with parameter info (store once per file)
     if not data['meta'].get('config_keys'):
+        data['meta']['snp_horiz'] = str(trace_snp_path)
         data['meta']['config_keys'] = config_keys
         data['meta']['n_ports'] = n_ports
         data['meta']['param_types'] = param_type_names
