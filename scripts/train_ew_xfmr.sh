@@ -5,7 +5,7 @@ source /proj/siaiadm/ew_predictor/.venv/sipi/bin/activate.csh
 
 bhosts GPU_3090_4
 set python_cmd = ( \
-    python3 -m ml.trainer fit --config configs/train_ew_xfmr.yaml \
+    python3 -m ml.trainer fit --config configs/training/train_ew_xfmr.yaml \
     --trainer.devices 1 --trainer.num_nodes 1 --trainer.limit_train_batches 1 \
     --trainer.limit_val_batches 1 --trainer.max_epochs 10 \
 )
