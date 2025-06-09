@@ -69,11 +69,17 @@ class VerticalSNPCache:
             except:
                 pass
 
-def init_worker(vertical_cache_info):
-    """Initialize worker process with shared memory access"""
+def init_worker_process(vertical_cache_info):
+    """Initialize worker process with shared memory access and signal handling"""
     import signal
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     
+    # Store cache info globally in worker
+    global _vertical_cache_info
+    _vertical_cache_info = vertical_cache_info
+
+def init_worker_thread(vertical_cache_info):
+    """Initialize worker thread with shared memory access (threads don't need signal handling)"""
     # Store cache info globally in worker
     global _vertical_cache_info
     _vertical_cache_info = vertical_cache_info
@@ -260,6 +266,106 @@ def cleanup_shared_memory():
             pass
     _shared_memory_blocks.clear()
 
+def run_with_executor(batch_list, combined_params, trace_specific_output_dir, param_types, 
+                     enable_direction, num_workers, executor_type="process", vertical_cache_info=None):
+    """
+    Run simulations using either ProcessPoolExecutor or ThreadPoolExecutor
+    
+    Args:
+        batch_list: List of task batches
+        combined_params: Parameter set
+        trace_specific_output_dir: Output directory
+        param_types: Parameter types
+        enable_direction: Direction flag
+        num_workers: Number of workers
+        executor_type: "process" or "thread"
+        vertical_cache_info: Shared memory cache info
+    """
+    
+    if executor_type == "thread":
+        print(f"Using ThreadPoolExecutor with {num_workers} threads...")
+        # For threads, shared memory won't work across processes, so we disable it
+        if vertical_cache_info:
+            print("Note: Shared memory cache disabled for thread mode")
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
+            futures = [
+                executor.submit(
+                    collect_snp_batch_simulation_data,
+                    batch_tasks, combined_params, trace_specific_output_dir, 
+                    param_types, enable_direction, False
+                )
+                for batch_tasks in batch_list
+            ]
+            
+            try:
+                failed_batches = []
+                for future in tqdm(
+                    concurrent.futures.as_completed(futures), 
+                    total=len(futures),
+                    desc="Processing batches (threads)"
+                ):
+                    try:
+                        future.result()
+                    except Exception as e:
+                        failed_batches.append(str(e))
+                
+                if failed_batches:
+                    print(f"\nWarning: {len(failed_batches)} batches failed:")
+                    for i, error in enumerate(failed_batches[:5]):
+                        print(f"  {i+1}. {error}")
+                    if len(failed_batches) > 5:
+                        print(f"  ... and {len(failed_batches)-5} more errors")
+                        
+            except KeyboardInterrupt:
+                print("KeyboardInterrupt detected, shutting down threads...")
+                # Threads will be terminated when executor exits
+                raise
+                
+    else:  # executor_type == "process"
+        print(f"Using ProcessPoolExecutor with {num_workers} processes...")
+        multiprocessing.set_start_method("forkserver", force=True)
+        
+        with concurrent.futures.ProcessPoolExecutor(
+            max_workers=num_workers, 
+            initializer=init_worker_process,
+            initargs=(vertical_cache_info or {},)
+        ) as executor:
+            futures = [
+                executor.submit(
+                    collect_snp_batch_simulation_data,
+                    batch_tasks, combined_params, trace_specific_output_dir, 
+                    param_types, enable_direction, False
+                )
+                for batch_tasks in batch_list
+            ]
+            
+            try:
+                failed_batches = []
+                for future in tqdm(
+                    concurrent.futures.as_completed(futures), 
+                    total=len(futures),
+                    desc="Processing batches (processes)"
+                ):
+                    try:
+                        future.result()
+                    except Exception as e:
+                        failed_batches.append(str(e))
+                
+                if failed_batches:
+                    print(f"\nWarning: {len(failed_batches)} batches failed:")
+                    for i, error in enumerate(failed_batches[:5]):
+                        print(f"  {i+1}. {error}")
+                    if len(failed_batches) > 5:
+                        print(f"  ... and {len(failed_batches)-5} more errors")
+                        
+            except KeyboardInterrupt:
+                print("KeyboardInterrupt detected, shutting down processes...")
+                for pid, proc in executor._processes.items():
+                    proc.terminate()
+                executor.shutdown(wait=False, cancel_futures=True)
+                raise
+
 def main():
     """Main function for parallel data collection"""
     args = build_argparser().parse_args()
@@ -296,6 +402,7 @@ def main():
     
     debug = args.debug if args.debug else config.get('debug', False)
     max_workers = args.max_workers if args.max_workers else config['runner'].get('max_workers')
+    executor_type = args.executor_type
     
     print(f"Using configuration:")
     print(f"  Trace pattern: {trace_pattern_key} -> {trace_pattern}")
@@ -307,6 +414,7 @@ def main():
     print(f"  Enable inductance: {enable_inductance}")
     print(f"  Debug mode: {debug}")
     print(f"  Max workers: {max_workers}")
+    print(f"  Executor type: {executor_type}")
     
     # Create base output directory and trace-specific subdirectory
     base_output_dir = output_dir
@@ -378,11 +486,11 @@ def main():
         print("All files already have sufficient samples")
         return
     
-    # Initialize shared memory cache for vertical SNPs (if not in debug mode)
+    # Initialize shared memory cache for vertical SNPs (only for process mode and not debug)
     vertical_cache = None
     vertical_cache_info = {}
     
-    if not debug and vertical_dirs:
+    if not debug and executor_type == "process" and vertical_dirs:
         print("Setting up shared memory cache for vertical SNP files...")
         try:
             vertical_cache = VerticalSNPCache()
@@ -409,49 +517,10 @@ def main():
     # Run simulations
     try:
         if not debug:
-            # Use multiprocessing with batched tasks
+            # Use either multiprocessing or multithreading based on executor_type
             num_workers = max_workers or multiprocessing.cpu_count()
-            multiprocessing.set_start_method("forkserver", force=True)
-            
-            with concurrent.futures.ProcessPoolExecutor(
-                max_workers=num_workers, 
-                initializer=init_worker,
-                initargs=(vertical_cache_info,)
-            ) as executor:
-                futures = [
-                    executor.submit(
-                        collect_snp_batch_simulation_data,
-                        batch_tasks, combined_params, trace_specific_output_dir, 
-                        param_types, enable_direction, False
-                    )
-                    for batch_tasks in batch_list
-                ]
-                
-                try:
-                    failed_batches = []
-                    for future in tqdm(
-                        concurrent.futures.as_completed(futures), 
-                        total=len(futures),
-                        desc="Processing batches"
-                    ):
-                        try:
-                            future.result()
-                        except Exception as e:
-                            failed_batches.append(str(e))
-                    
-                    if failed_batches:
-                        print(f"\nWarning: {len(failed_batches)} batches failed:")
-                        for i, error in enumerate(failed_batches[:5]):
-                            print(f"  {i+1}. {error}")
-                        if len(failed_batches) > 5:
-                            print(f"  ... and {len(failed_batches)-5} more errors")
-                            
-                except KeyboardInterrupt:
-                    print("KeyboardInterrupt detected, shutting down...")
-                    for pid, proc in executor._processes.items():
-                        proc.terminate()
-                    executor.shutdown(wait=False, cancel_futures=True)
-                    raise
+            run_with_executor(batch_list, combined_params, trace_specific_output_dir, param_types, 
+                             enable_direction, num_workers, executor_type, vertical_cache_info)
         else:
             # Debug mode - run sequentially
             for i, batch_tasks in enumerate(tqdm(batch_list, desc="Debug processing batches")):

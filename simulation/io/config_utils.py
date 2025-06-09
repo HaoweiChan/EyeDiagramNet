@@ -66,4 +66,8 @@ def build_argparser():
         '--max_workers', type=int,
         help="Maximum number of worker processes (overrides config)"
     )
+    parser.add_argument(
+        '--executor_type', type=str, choices=['process', 'thread'], default='process',
+        help="Executor type: 'process' for ProcessPoolExecutor, 'thread' for ThreadPoolExecutor (default: process)"
+    )
     return parser 

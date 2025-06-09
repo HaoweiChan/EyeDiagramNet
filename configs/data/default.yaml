@@ -32,3 +32,4 @@ boundary:
 # Runner configuration
 runner:
   max_workers: 8 
+  executor_type: process
