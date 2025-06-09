@@ -1,6 +1,5 @@
 import random
 import psutil
-import itertools
 import numpy as np
 from pathlib import Path, PosixPath
 
@@ -9,8 +8,9 @@ import torch.nn.functional as F
 import torch.multiprocessing as mp
 from torch.utils.data import Dataset, DataLoader
 
-from common.signal_utils import log_info, read_snp, flip_snp, renumber_snp, greedy_covering_design
-from .trace_processor import TraceSequenceProcessor
+from ..utils.visualization import log_info
+from .processors import TraceSequenceProcessor
+from common.signal_utils import read_snp, flip_snp, renumber_snp, greedy_covering_design
 
 def collate_fn(batch, pad_token=-1):
     sequences, labels, sel_ports = zip(*batch)

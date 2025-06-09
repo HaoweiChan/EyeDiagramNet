@@ -6,10 +6,11 @@ import torch.nn.functional as F
 import torchmetrics as tm
 from lightning import LightningModule
 
-from ml.utils import visualization as utils
-from ml.utils import losses
-from ml.utils.init_weights import init_weights
-from ..models.layers import UncertaintyWeightedLoss, LearnableLossWeighting, GradNormLossBalancer
+from ..models.layers import (GradNormLossBalancer, LearnableLossWeighting,
+                             UncertaintyWeightedLoss)
+from ..utils import losses
+from ..utils.init_weights import init_weights
+from ..utils.visualization import image_to_buffer, log_info, plot_ew_curve
 
 class TraceEWModule(LightningModule):
     def __init__(
@@ -65,13 +66,13 @@ class TraceEWModule(LightningModule):
             with torch.no_grad():
                 self(*forward_args)
         except (ValueError, RuntimeError) as e:
-            utils.log_info(traceback.format_exc())
+            log_info(traceback.format_exc())
             raise
         self.apply(init_weights('xavier'))
 
         # load model checkpoint
         if self.hparams.ckpt_path is not None:
-            utils.log_info(f'Loading model checkpoint: {self.hparams.ckpt_path}')
+            log_info(f'Loading model checkpoint: {self.hparams.ckpt_path}')
             ckpt = torch.load(self.hparams.ckpt_path, map_location=self.device)
             self.load_state_dict(ckpt['state_dict'], strict=self.hparams.strict)
         
@@ -80,21 +81,21 @@ class TraceEWModule(LightningModule):
             # Check if torch.compile is disabled globally
             import os
             if os.environ.get('TORCH_COMPILE_DISABLE') == '1':
-                utils.log_info("torch.compile is disabled globally - using eager mode")
+                log_info("torch.compile is disabled globally - using eager mode")
                 return
                 
             try:
-                utils.log_info("Attempting to compile model with torch.compile...")
+                log_info("Attempting to compile model with torch.compile...")
                 self.model = torch.compile(
                     self.model, 
                     mode="default",
                     dynamic=True,
                     fullgraph=False
                 )
-                utils.log_info("Model compilation completed successfully.")
+                log_info("Model compilation completed successfully.")
             except Exception as e:
-                utils.log_info(f"Model compilation failed: {str(e)}")
-                utils.log_info("Falling back to eager mode execution.")
+                log_info(f"Model compilation failed: {str(e)}")
+                log_info("Falling back to eager mode execution.")
                 # Ensure model is in eager mode if compilation fails
                 if hasattr(self.model, '_orig_mod'):
                     self.model = self.model._orig_mod
@@ -116,8 +117,8 @@ class TraceEWModule(LightningModule):
         except RuntimeError as e:
             # Check for torch.compile related errors
             if "torch.compile" in str(e) or "aot_autograd" in str(e) or "double backward" in str(e):
-                utils.log_info(f"torch.compile runtime error detected: {e}")
-                utils.log_info("Disabling torch.compile and falling back to eager mode")
+                log_info(f"torch.compile runtime error detected: {e}")
+                log_info("Disabling torch.compile and falling back to eager mode")
                 
                 # Disable compilation globally
                 import os
@@ -392,10 +393,10 @@ class TraceEWModule(LightningModule):
 
     def plot_sparam_curve(self, stage, log_metrics, outputs, dataloader_idx):
         tag = self.convert_metric_name(stage)
-        fig = utils.plot_ew_curve(outputs, log_metrics, self.hparams.ew_threshold)
+        fig = plot_ew_curve(outputs, log_metrics, self.hparams.ew_threshold)
         if self.logger:
             tag = "_".join(['sparam', str(dataloader_idx)])
-            self.logger.experiment.add_image(f'{stage}/{tag}', utils.image_to_buffer(fig), self.current_epoch)
+            self.logger.experiment.add_image(f'{stage}/{tag}', image_to_buffer(fig), self.current_epoch)
 
     def on_before_optimizer_step(self, optimizer):
         """Debug: Track which parameters receive gradients after backward pass"""

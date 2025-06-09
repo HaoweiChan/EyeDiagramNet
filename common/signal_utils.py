@@ -1,15 +1,10 @@
 import json
 import torch
-import loguru
 import skrf as rf
 import numpy as np
 from pathlib import Path, PosixPath
 from itertools import combinations
-from lightning.pytorch.utilities import rank_zero_only
 
-@rank_zero_only
-def log_info(msg):
-    loguru.logger.info(msg)
 
 def read_snp(snp_file: PosixPath):
     if snp_file.suffix != '.npz':

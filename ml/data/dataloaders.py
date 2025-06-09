@@ -1,22 +1,21 @@
 import json
+import time
 import torch
 import pickle
 import numpy as np
 import pandas as pd
 import lightning.pytorch as pl
 from pathlib import Path
-from typing import Union, Dict, List, Tuple
+from typing import Dict, List
 from sklearn.model_selection import train_test_split
 from lightning.pytorch.utilities import CombinedLoader
-import time
-from torch.utils.data import DataLoader
 
+from ..utils.scaler import MinMaxScaler
+from ..utils.visualization import log_info
 from .datasets import TraceDataset, TraceEWDataset, InferenceTraceDataset, InferenceTraceEWDataset, get_loader_from_dataset
-from .processors import CSVProcessor
+from .processors import CSVProcessor, TraceSequenceProcessor
 from simulation.parameters.bound_param import SampleResult
-from ml.utils.scaler import MinMaxScaler
-from common.signal_utils import log_info, parse_snps, read_snp
-from .trace_processor import TraceSequenceProcessor
+from common.signal_utils import parse_snps, read_snp
 
 class TimedDataLoader:
     def __init__(self, dataloader):
