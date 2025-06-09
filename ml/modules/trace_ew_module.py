@@ -22,6 +22,7 @@ class TraceEWModule(LightningModule):
         ew_threshold: float = 0.3,
         mc_samples: int = 50,
         use_mc_validation: bool = True,
+        compile_model: bool = False,
     ):
         super().__init__()
         self.save_hyperparameters(ignore=['model'])
@@ -77,7 +78,7 @@ class TraceEWModule(LightningModule):
             self.load_state_dict(ckpt['state_dict'], strict=self.hparams.strict)
         
         # Compile model for performance optimization after setup
-        if stage in ('fit', None):
+        if stage in ('fit', None) and self.hparams.compile_model:
             # Check if torch.compile is disabled globally
             import os
             if os.environ.get('TORCH_COMPILE_DISABLE') == '1':
@@ -105,6 +106,8 @@ class TraceEWModule(LightningModule):
                 os.environ['TORCH_COMPILE_DISABLE'] = '1'
                 torch._dynamo.config.suppress_errors = True
                 torch._dynamo.config.disable = True
+        elif stage in ('fit', None) and not self.hparams.compile_model:
+            log_info("Model compilation disabled by compile_model=False - using eager mode")
 
     def forward(self, *args, **kwargs):
         return self.model(*args, **kwargs)

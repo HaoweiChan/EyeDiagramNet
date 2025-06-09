@@ -5,7 +5,7 @@ trainer:
   strategy:
     class_path: lightning.pytorch.strategies.DDPStrategy
     init_args:
-      find_unused_parameters: true
+      find_unused_parameters: false
   devices: -1
   num_nodes: 8
   precision: 16-mixed
@@ -64,10 +64,13 @@ trainer:
 model:
   class_path: ml.modules.trace_ew_module.TraceEWModule
   init_args:
-    ew_scaler: 50
-    ew_threshold: 0.1
     ckpt_path: ./saved/ew_xfmr/version_0/checkpoints/last.ckpt
     strict: false
+    ew_scaler: 50
+    ew_threshold: 0.1
+    compile_model: true
+    mc_samples: 50
+    use_mc_validation: false
     model:
       class_path: ml.models.eye_width_model.EyeWidthRegressor
       init_args:
