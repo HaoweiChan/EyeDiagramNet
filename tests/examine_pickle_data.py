@@ -409,10 +409,9 @@ def main():
                     pickle_ew = np.array(data['line_ews'][sample_idx])
                     directions = np.array(data['directions'][sample_idx]) if data['directions'][sample_idx] else None
                     
-                    # Get SNP file paths
-                    snp_horiz = Path(data.get('snp_horiz', [''])[sample_idx] 
-                                   if isinstance(data.get('snp_horiz', []), list) 
-                                   else pfile.parent / f"{pfile.stem}.s4p")
+                    # Get SNP file paths - use n_ports from metadata to construct correct filename
+                    n_ports = data.get('metadata', {}).get('n_ports', 4)  # Default to 4 if not found
+                    snp_horiz = pfile.parent / f"{pfile.stem}.s{n_ports}p"
                     snp_tx = Path(data['snp_txs'][sample_idx])
                     snp_rx = Path(data['snp_rxs'][sample_idx])
                     
@@ -422,9 +421,9 @@ def main():
                         
                         # Run fresh simulation
                         result = snp_eyewidth_simulation(
-                            config=config,
-                            snp_files=(snp_horiz, snp_tx, snp_rx),
-                            directions=directions,
+                            config,
+                            (snp_horiz, snp_tx, snp_rx),
+                            directions,
                             device="cuda"
                         )
                         

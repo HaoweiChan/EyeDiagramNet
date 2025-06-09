@@ -317,3 +317,11 @@ def constraint_fp2_ge_fp1(sample):
     return sample["fp2"] >= sample["fp1"]
 
 CTLE_PARAMS.add_constraint(constraint_fp2_ge_fp1)
+
+PARAM_SETS_MAP = {
+    'DDR_PARAMS': DDR_PARAMS,
+    'HBM2_PARAMS': HBM2_PARAMS, 
+    'UCIE_PARAMS': UCIE_PARAMS,
+    'MIX_PARAMS': MIX_PARAMS,
+    'CTLE_PARAMS': CTLE_PARAMS
+}

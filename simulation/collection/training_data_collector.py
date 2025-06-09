@@ -1,6 +1,7 @@
 """Main training data collector orchestrating eye width simulation data collection."""
 
 import sys
+import yaml
 import pickle
 import numpy as np
 import multiprocessing
@@ -8,7 +9,7 @@ import concurrent.futures
 from tqdm import tqdm
 from pathlib import Path
 
-from simulation.parameters.bound_param import DDR_PARAMS, HBM2_PARAMS, UCIE_PARAMS, MIX_PARAMS, CTLE_PARAMS
+from simulation.parameters.bound_param import PARAM_SETS_MAP
 from simulation.engine.eye_width_simulator import snp_eyewidth_simulation
 from simulation.io.config_utils import load_config, resolve_trace_pattern, resolve_vertical_dirs, build_argparser
 from simulation.io.snp_utils import parse_snps, generate_vertical_snp_pairs
@@ -20,7 +21,7 @@ def init_worker():
     signal.signal(signal.SIGINT, signal.SIG_IGN)
 
 def collect_snp_simulation_data(trace_snp_file, vertical_snp_pair, params_set, 
-                               pickle_dir, enable_direction=True, directions=None, debug=False):
+                               pickle_dir, param_type_names, enable_direction=True, directions=None, debug=False):
     """
     Collect eye width simulation data for a single trace SNP with vertical SNP pair.
     
@@ -29,6 +30,7 @@ def collect_snp_simulation_data(trace_snp_file, vertical_snp_pair, params_set,
         vertical_snp_pair: Tuple of (tx_snp, rx_snp) paths
         params_set: ParameterSet containing all required parameters
         pickle_dir: Directory to save pickle files
+        param_type_names: List of parameter type names
         enable_direction: Whether to use random directions (True) or all ones (False)
         directions: Optional directions array
         debug: Debug mode flag
@@ -75,16 +77,9 @@ def collect_snp_simulation_data(trace_snp_file, vertical_snp_pair, params_set,
     if pickle_file.exists():
         with open(pickle_file, 'rb') as f:
             data = pickle.load(f)
-        # Check if this is an old format file
-        if 'config_dicts' not in data or 'metadata' not in data:
-            raise ValueError(
-                f"Existing pickle file {pickle_file} uses old format. "
-                f"Please delete it and regenerate with the updated collector."
-            )
     else:
         data = {
-            'configs': [],  # Keep for backward compatibility tools
-            'config_dicts': [],  # Primary robust format
+            'configs': [],
             'line_ews': [], 
             'snp_txs': [],
             'snp_rxs': [],
@@ -130,37 +125,31 @@ def collect_snp_simulation_data(trace_snp_file, vertical_snp_pair, params_set,
             line_ew, actual_directions = line_ew
             sim_directions = actual_directions
         
-        # Use the final directions (either from simulation return or what we passed)
-        final_directions = sim_directions
-        
         # Ensure line_ew is a numpy array and handle closed eyes
         line_ew = np.array(line_ew)
         line_ew[line_ew >= 99.9] = -0.1  # treating 99.9 data as closed eyes
         
         if debug:
             print(f"Eye widths: {line_ew}")
-            print(f"Directions: {final_directions}")
+            print(f"Directions: {sim_directions}")
             
     except Exception as e:
         print(f"Error in simulation for {trace_snp_path.name}: {e}")
-        # Re-raise the exception instead of using fallback data
         raise
     
-    # Append new data - save both list and dict formats for compatibility
+    # Append new data
     config_values, config_keys = combined_config.to_list(return_keys=True)
-    data['configs'].append(config_values)  # Keep for backward compatibility
-    data['config_dicts'].append(combined_config.to_dict())  # Robust format
+    data['configs'].append(config_values)
     data['line_ews'].append(line_ew.tolist())
     data['snp_txs'].append(snp_tx.as_posix())
     data['snp_rxs'].append(snp_rx.as_posix()) 
-    data['directions'].append(final_directions.tolist() if final_directions is not None else [])
+    data['directions'].append(sim_directions.tolist())
     
     # Update metadata with parameter info (store once per file)
     if not data['metadata'].get('config_keys'):
         data['metadata']['config_keys'] = config_keys
         data['metadata']['n_ports'] = n_ports
-        data['metadata']['n_lines'] = n_lines
-        data['metadata']['param_types'] = [type(params_set).__name__]
+        data['metadata']['param_types'] = param_type_names
     
     # Save updated data
     pickle_file.parent.mkdir(parents=True, exist_ok=True)
@@ -237,19 +226,10 @@ def main():
     else:
         print(f"Generated {len(vertical_pairs)} vertical SNP pairs from {len(vertical_dirs)} directories")
     
-    # Get parameter sets
-    param_sets_map = {
-        'DDR_PARAMS': DDR_PARAMS,
-        'HBM2_PARAMS': HBM2_PARAMS, 
-        'UCIE_PARAMS': UCIE_PARAMS,
-        'MIX_PARAMS': MIX_PARAMS,
-        'CTLE_PARAMS': CTLE_PARAMS
-    }
-    
     # Combine all requested parameter sets
     combined_params = None
     for param_type in param_types:
-        param_set = param_sets_map[param_type]
+        param_set = PARAM_SETS_MAP[param_type]
         if combined_params is None:
             combined_params = param_set
         else:
@@ -257,6 +237,17 @@ def main():
     
     # Apply inductance modification if needed
     combined_params = modify_params_for_inductance(combined_params, enable_inductance)
+    
+    # Save the collection config to pickle directory for reference
+    config_save_path = trace_specific_output_dir / 'collection_config.yaml'
+    if not config_save_path.exists():
+        try:
+            # Save the config that was used for this collection
+            with open(config_save_path, 'w') as f:
+                yaml.dump(config, f, default_flow_style=False, indent=2)
+            print(f"Saved collection config to: {config_save_path}")
+        except Exception as e:
+            print(f"Warning: Could not save config file: {e}")
     
     # Prepare simulation tasks
     simulation_tasks = []
@@ -278,7 +269,7 @@ def main():
         if current_samples < max_samples:
             samples_needed = max_samples - current_samples
             for _ in range(samples_needed):
-                simulation_tasks.append((trace_snp, vertical_pair, combined_params, trace_specific_output_dir, enable_direction))
+                simulation_tasks.append((trace_snp, vertical_pair, combined_params, trace_specific_output_dir, param_types, enable_direction))
     
     print(f"Need to run {len(simulation_tasks)} simulations")
     
@@ -300,9 +291,9 @@ def main():
                 executor.submit(
                     collect_snp_simulation_data,
                     trace_snp, vertical_pair, combined_params,
-                    trace_specific_output_dir, enable_direction, None, False
+                    trace_specific_output_dir, param_types, enable_direction, None, False
                 )
-                for trace_snp, vertical_pair, combined_params, trace_specific_output_dir, enable_direction in simulation_tasks
+                for trace_snp, vertical_pair, combined_params, trace_specific_output_dir, param_types, enable_direction in simulation_tasks
             ]
             
             try:
@@ -334,13 +325,13 @@ def main():
                 sys.exit(1)
     else:
         # Debug mode - run sequentially
-        for i, (trace_snp, vertical_pair, combined_params, trace_specific_output_dir, enable_direction) in enumerate(
+        for i, (trace_snp, vertical_pair, combined_params, trace_specific_output_dir, param_types, enable_direction) in enumerate(
             tqdm(simulation_tasks, desc="Debug simulation")
         ):
             print(f"\n--- Task {i+1}/{len(simulation_tasks)} ---")
             collect_snp_simulation_data(
                 trace_snp, vertical_pair, combined_params,
-                trace_specific_output_dir, enable_direction, None, True
+                trace_specific_output_dir, param_types, enable_direction, None, True
             )
     
     print(f"Data collection completed. Results saved to: {trace_specific_output_dir}")
