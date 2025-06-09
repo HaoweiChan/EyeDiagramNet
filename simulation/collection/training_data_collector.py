@@ -84,7 +84,7 @@ def collect_snp_simulation_data(trace_snp_file, vertical_snp_pair, params_set,
             'snp_txs': [],
             'snp_rxs': [],
             'directions': [],
-            'metadata': {}  # Parameter metadata
+            'meta': {}  # Parameter meta
         }
     
     # Sample all parameters from the combined parameter set
@@ -145,11 +145,11 @@ def collect_snp_simulation_data(trace_snp_file, vertical_snp_pair, params_set,
     data['snp_rxs'].append(snp_rx.as_posix()) 
     data['directions'].append(sim_directions.tolist())
     
-    # Update metadata with parameter info (store once per file)
-    if not data['metadata'].get('config_keys'):
-        data['metadata']['config_keys'] = config_keys
-        data['metadata']['n_ports'] = n_ports
-        data['metadata']['param_types'] = param_type_names
+    # Update meta with parameter info (store once per file)
+    if not data['meta'].get('config_keys'):
+        data['meta']['config_keys'] = config_keys
+        data['meta']['n_ports'] = n_ports
+        data['meta']['param_types'] = param_type_names
     
     # Save updated data
     pickle_file.parent.mkdir(parents=True, exist_ok=True)

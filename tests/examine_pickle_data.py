@@ -37,19 +37,49 @@ plt.rcParams['figure.figsize'] = (12, 8)
 
 def reconstruct_config(data, sample_idx):
     """
-    Reconstruct configuration from pickle data (new format only).
+    Reconstruct configuration from pickle data.
     
     Args:
         data: Pickle data dictionary
         sample_idx: Sample index to reconstruct
         
     Returns:
-        SampleResult object with configuration
+        SampleResult object with configuration or dict if SampleResult not available
         
     Raises:
-        ValueError: If data is in old/unsupported format
+        ValueError: If data is in old/unsupported format or sample index is out of range
     """
-    # Check for new format (config_dicts)
+    # Check for new format using configs list and meta
+    if 'configs' in data and 'meta' in data and 'config_keys' in data['meta']:
+        configs_list = data['configs']
+        config_keys = data['meta']['config_keys']
+        
+        # Check if sample index is out of range
+        if sample_idx >= len(configs_list):
+            raise ValueError(
+                f"Sample index {sample_idx} out of range. "
+                f"File contains {len(configs_list)} samples."
+            )
+        
+        # Get config values for this sample
+        config_values = configs_list[sample_idx]
+        
+        # Combine keys and values into a dictionary
+        if len(config_keys) != len(config_values):
+            raise ValueError(
+                f"Mismatch between config_keys length ({len(config_keys)}) "
+                f"and config_values length ({len(config_values)})"
+            )
+        
+        config_dict = dict(zip(config_keys, config_values))
+        
+        if VALIDATION_AVAILABLE:
+            from simulation.parameters.bound_param import SampleResult
+            return SampleResult.from_dict(config_dict)
+        else:
+            return config_dict  # Return dict if SampleResult not available
+    
+    # Check for legacy format (config_dicts) - kept for backward compatibility
     if 'config_dicts' in data and len(data['config_dicts']) > sample_idx:
         config_dict = data['config_dicts'][sample_idx]
         if VALIDATION_AVAILABLE:
@@ -58,23 +88,8 @@ def reconstruct_config(data, sample_idx):
         else:
             return config_dict  # Return dict if SampleResult not available
     
-    # Check if this is an old format file and provide clear error
-    if 'configs' in data and 'config_dicts' not in data:
-        raise ValueError(
-            f"This pickle file uses an old format that is no longer supported. "
-            f"Please regenerate the training data using the updated collector. "
-            f"File contains {len(data['configs'])} samples in legacy format."
-        )
-    
-    # Check if sample index is out of range
-    if 'config_dicts' in data:
-        if sample_idx >= len(data['config_dicts']):
-            raise ValueError(
-                f"Sample index {sample_idx} out of range. "
-                f"File contains {len(data['config_dicts'])} samples."
-            )
-    
-    raise ValueError(f"No valid config data found for sample {sample_idx}")
+    raise ValueError(f"No valid config data found for sample {sample_idx}. "
+                    f"Expected 'configs' list with 'config_keys' in meta, or 'config_dicts'.")
 
 def main():
     """Main function to run the complete analysis"""
@@ -141,7 +156,7 @@ def main():
                             print(f"    Line EW shape: {np.array(value[0]).shape}")
                 elif isinstance(value, dict):
                     print(f"  {key}: dict with keys: {list(value.keys())}")
-                    if key == 'metadata':
+                    if key == 'meta':
                         for meta_key, meta_value in value.items():
                             print(f"    {meta_key}: {meta_value}")
                 else:
@@ -409,8 +424,8 @@ def main():
                     pickle_ew = np.array(data['line_ews'][sample_idx])
                     directions = np.array(data['directions'][sample_idx]) if data['directions'][sample_idx] else None
                     
-                    # Get SNP file paths - use n_ports from metadata to construct correct filename
-                    n_ports = data.get('metadata', {}).get('n_ports', 4)  # Default to 4 if not found
+                    # Get SNP file paths - use n_ports from meta to construct correct filename
+                    n_ports = data.get('meta', {}).get('n_ports', 4)  # Default to 4 if not found
                     snp_horiz = pfile.parent / f"{pfile.stem}.s{n_ports}p"
                     snp_tx = Path(data['snp_txs'][sample_idx])
                     snp_rx = Path(data['snp_rxs'][sample_idx])
