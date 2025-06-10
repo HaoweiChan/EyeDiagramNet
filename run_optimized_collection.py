@@ -31,9 +31,9 @@ def run_collection_with_monitoring(config_file, executor_type="thread", max_samp
     # Calculate optimal workers
     optimal_workers = get_optimal_workers()
     
-    # Build command
+    # Build command - use optimized collector
     cmd = [
-        sys.executable, "-m", "simulation.collection.training_data_collector",
+        sys.executable, "-m", "simulation.collection.training_data_collector_optimized",
         "--config", str(config_file),
         "--executor_type", executor_type,
         "--max_workers", str(optimal_workers),
