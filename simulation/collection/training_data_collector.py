@@ -167,22 +167,12 @@ def collect_snp_batch_simulation_data(task_batch, combined_params, pickle_dir,
     if not task_batch:
         return
         
-    batch_start_time = time.time()
-    profile_print(f"Starting batch with {len(task_batch)} tasks")
-        
     # All tasks in batch should have same trace_snp_file
     trace_snp_file = task_batch[0][0]
     trace_snp_path = Path(trace_snp_file)
     pickle_file = Path(pickle_dir) / f"{trace_snp_path.stem}.pkl"
     
-    try:
-        file_size_mb = trace_snp_path.stat().st_size / (1024*1024)
-        profile_print(f"Processing {trace_snp_path.name} ({file_size_mb:.1f} MB)")
-    except:
-        profile_print(f"Processing {trace_snp_path.name}")
-    
     # Parse n_ports from SNP filename once
-    with time_block("Parse SNP filename"):
     snp_filename = trace_snp_path.name.lower()
     if '.s' in snp_filename and 'p' in snp_filename:
         try:
@@ -201,20 +191,20 @@ def collect_snp_batch_simulation_data(task_batch, combined_params, pickle_dir,
         if port_match:
             n_ports = int(port_match.group(1))
         else:
-                raise ValueError(f"Cannot determine number of ports from filename: {snp_filename}")
+            raise ValueError(f"Cannot determine number of ports from filename: {snp_filename}")
     
     n_lines = n_ports // 2
     if n_lines == 0:
-            raise ValueError(f"Invalid n_ports={n_ports}, n_lines would be 0")
+        raise ValueError(f"Invalid n_ports={n_ports}, n_lines would be 0")
     
-        profile_print(f"Detected {n_ports} ports, {n_lines} lines")
+    if debug:
+        print(f"Processing batch of {len(task_batch)} tasks for {trace_snp_path.name}")
+        print(f"Detected {n_ports} ports, {n_lines} lines")
     
     # Load existing pickle data once
-    with time_block("Load existing pickle data"):
     if pickle_file.exists():
         with open(pickle_file, 'rb') as f:
             data = pickle.load(f)
-            profile_print(f"Loaded existing pickle with {len(data.get('configs', []))} samples")
     else:
         data = {
             'configs': [],
@@ -222,108 +212,87 @@ def collect_snp_batch_simulation_data(task_batch, combined_params, pickle_dir,
             'snp_txs': [],
             'snp_rxs': [],
             'directions': [],
-                'meta': {}
-            }
-            profile_print("Created new pickle data structure")
+            'meta': {}
+        }
     
     # Process all tasks in batch
     batch_results = []
-    total_samples = sum(sample_count for _, _, sample_count in task_batch)
-    profile_print(f"Processing {total_samples} simulations in batch")
     
-    simulation_times = []
-    
-    for task_idx, (trace_snp_file, vertical_snp_pair, sample_count) in enumerate(task_batch):
+    for trace_snp_file, vertical_snp_pair, sample_count in task_batch:
         snp_tx, snp_rx = vertical_snp_pair
-        profile_print(f"Task {task_idx+1}/{len(task_batch)}: {sample_count} samples with {snp_tx.name}, {snp_rx.name}")
         
-        for sample_idx in range(sample_count):
-            sample_start_time = time.time()
-            
+        for _ in range(sample_count):
             # Sample parameters
-            with time_block("Sample parameters"):
-                combined_config = combined_params.sample()
-    
-    try:
+            combined_config = combined_params.sample()
+            
+            try:
                 # Set directions
-                with time_block("Set directions"):
-            if enable_direction:
-                sim_directions = np.random.randint(0, 2, size=n_lines)
-            else:
-                sim_directions = np.ones(n_lines, dtype=int)
-            
-                # Run simulation - the main bottleneck
-                with time_block(f"Eye width simulation (sample {sample_idx+1}/{sample_count})"):
-        line_ew = snp_eyewidth_simulation(
-            config=combined_config,
-            snp_files=(trace_snp_path, snp_tx, snp_rx),
-            directions=sim_directions
-        )
-        
-                # Handle tuple return
-                with time_block("Process simulation results"):
-        if isinstance(line_ew, tuple):
-            line_ew, actual_directions = line_ew
-            sim_directions = actual_directions
-        
-                    # Process results
-        line_ew = np.array(line_ew)
-                    line_ew[line_ew >= 99.9] = -0.1
-                    
-                    # Store result
-                    config_values, config_keys = combined_config.to_list(return_keys=True)
-                    batch_results.append({
-                        'config_values': config_values,
-                        'config_keys': config_keys,
-                        'line_ews': line_ew.tolist(),
-                        'snp_tx': snp_tx.as_posix(),
-                        'snp_rx': snp_rx.as_posix(),
-                        'directions': sim_directions.tolist()
-                    })
+                if enable_direction:
+                    sim_directions = np.random.randint(0, 2, size=n_lines)
+                else:
+                    sim_directions = np.ones(n_lines, dtype=int)
                 
-                sample_time = time.time() - sample_start_time
-                simulation_times.append(sample_time)
-                profile_print(f"Sample {sample_idx+1} completed, EW range: [{line_ew.min():.2f}, {line_ew.max():.2f}]", sample_time)
-            
-    except Exception as e:
-                sample_time = time.time() - sample_start_time
-                profile_print(f"Sample {sample_idx+1} failed: {e}", sample_time)
+                # Run simulation - the simulator will load SNP files as needed
+                # We could optimize this further by pre-loading the horizontal SNP
+                # but that would require more changes to the simulator
+                line_ew = snp_eyewidth_simulation(
+                    config=combined_config,
+                    snp_files=(trace_snp_path, snp_tx, snp_rx),
+                    directions=sim_directions
+                )
+                
+                # Handle tuple return
+                if isinstance(line_ew, tuple):
+                    line_ew, actual_directions = line_ew
+                    sim_directions = actual_directions
+                
+                # Process results
+                line_ew = np.array(line_ew)
+                line_ew[line_ew >= 99.9] = -0.1
+                
+                # Store result
+                config_values, config_keys = combined_config.to_list(return_keys=True)
+                batch_results.append({
+                    'config_values': config_values,
+                    'config_keys': config_keys,
+                    'line_ews': line_ew.tolist(),
+                    'snp_tx': snp_tx.as_posix(),
+                    'snp_rx': snp_rx.as_posix(),
+                    'directions': sim_directions.tolist()
+                })
+                
+                if debug:
+                    print(f"  Completed simulation: EW={line_ew}, Dir={sim_directions}")
+                    
+            except Exception as e:
+                print(f"Error in simulation for {trace_snp_path.name}: {e}")
                 if debug:
                     import traceback
                     traceback.print_exc()
                 continue
     
-    # Statistics
-    if simulation_times:
-        avg_sim_time = np.mean(simulation_times)
-        profile_print(f"Simulation stats: avg={avg_sim_time:.2f}s, min={min(simulation_times):.2f}s, max={max(simulation_times):.2f}s")
-    
     # Append all batch results to data
-    with time_block("Append results to data structure"):
-        for result in batch_results:
-            data['configs'].append(result['config_values'])
-            data['line_ews'].append(result['line_ews'])
-            data['snp_txs'].append(result['snp_tx'])
-            data['snp_rxs'].append(result['snp_rx'])
-            data['directions'].append(result['directions'])
+    for result in batch_results:
+        data['configs'].append(result['config_values'])
+        data['line_ews'].append(result['line_ews'])
+        data['snp_txs'].append(result['snp_tx'])
+        data['snp_rxs'].append(result['snp_rx'])
+        data['directions'].append(result['directions'])
     
     # Update meta once per batch
-    with time_block("Update metadata"):
-        if batch_results and not data['meta'].get('config_keys'):
+    if batch_results and not data['meta'].get('config_keys'):
         data['meta']['snp_horiz'] = str(trace_snp_path)
-            data['meta']['config_keys'] = batch_results[0]['config_keys']
+        data['meta']['config_keys'] = batch_results[0]['config_keys']
         data['meta']['n_ports'] = n_ports
         data['meta']['param_types'] = param_type_names
     
     # Write updated data once per batch
-    with time_block("Save pickle file"):
     pickle_file.parent.mkdir(parents=True, exist_ok=True)
     with open(pickle_file, 'wb') as f:
         pickle.dump(data, f)
-        profile_print(f"Saved {len(batch_results)} new samples to {pickle_file}")
     
-    batch_total_time = time.time() - batch_start_time
-    profile_print(f"Batch completed: {len(batch_results)} simulations", batch_total_time)
+    if debug:
+        print(f"Batch completed: {len(batch_results)} simulations saved to {pickle_file}")
 
 def collect_snp_simulation_data(trace_snp_file, vertical_snp_pair, params_set, 
                                pickle_dir, param_type_names, enable_direction=True, directions=None, debug=False):
@@ -625,30 +594,21 @@ def main():
     
     # Run simulations
     try:
-    if not debug:
+        if not debug:
             # Use either multiprocessing or multithreading based on executor_type
-        num_workers = max_workers or multiprocessing.cpu_count()
+            num_workers = max_workers or multiprocessing.cpu_count()
             run_with_executor(batch_list, combined_params, trace_specific_output_dir, param_types, 
                              enable_direction, num_workers, executor_type, vertical_cache_info)
         else:
-            # Debug mode - run sequentially with profiling
-            debug_start_time = time.time()
-            print(f"Running in debug mode with {len(batch_list)} batches")
-            
+            # Debug mode - run sequentially
             for i, batch_tasks in enumerate(tqdm(batch_list, desc="Debug processing batches")):
                 print(f"\n--- Batch {i+1}/{len(batch_list)} ---")
-                batch_start = time.time()
                 collect_snp_batch_simulation_data(
                     batch_tasks, combined_params, trace_specific_output_dir,
                     param_types, enable_direction, True
                 )
-                batch_time = time.time() - batch_start
-                print(f"Batch {i+1} completed in {batch_time:.2f}s")
-            
-            total_debug_time = time.time() - debug_start_time
-            print(f"Debug mode completed in {total_debug_time:.2f}s, avg rate: {len(batch_list)/total_debug_time:.2f} batches/sec")
-    
-    print(f"Data collection completed. Results saved to: {trace_specific_output_dir}")
+        
+        print(f"Data collection completed. Results saved to: {trace_specific_output_dir}")
         
     finally:
         # Clean up shared memory

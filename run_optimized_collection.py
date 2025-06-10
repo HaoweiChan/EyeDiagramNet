@@ -155,9 +155,16 @@ def run_collection_with_monitoring(config_file, executor_type="thread", max_samp
         time.sleep(5)
         if process.poll() is None:
             process.kill()
+
+    # Make sure all output is consumed to avoid deadlocks
+    output, _ = process.communicate()
+    if output:
+        print("--- Process Output ---")
+        print(output.strip())
+        print("----------------------")
     
     # Get final return code
-    return_code = process.wait()
+    return_code = process.returncode
     total_time = time.time() - start_time
     
     print(f"\nCollection completed in {total_time:.1f}s with return code: {return_code}")
