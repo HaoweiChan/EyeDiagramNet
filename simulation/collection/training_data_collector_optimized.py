@@ -11,6 +11,7 @@ from pathlib import Path
 from collections import defaultdict
 import time
 import threading
+import os
 from datetime import datetime
 
 from simulation.parameters.bound_param import PARAM_SETS_MAP
@@ -50,15 +51,24 @@ def preload_snp_file(snp_path):
                 ntwk = read_snp(snp_path)
                 load_time = time.time() - start_time
                 
-                # Store both s-parameters and frequencies
-                _snp_cache[str(snp_path)] = {
-                    's_params': ntwk.s.copy(),  # Make a copy to avoid reference issues
-                    'frequencies': ntwk.f.copy(),
-                    'network': ntwk  # Keep original for compatibility
-                }
-                
-                file_size_mb = snp_path.stat().st_size / (1024*1024)
-                print(f"Pre-loaded {snp_path.name} ({file_size_mb:.1f}MB) in {load_time:.2f}s")
+                # Check if ntwk has the expected attributes
+                if hasattr(ntwk, 's') and hasattr(ntwk, 'f'):
+                    # Store both s-parameters and frequencies
+                    _snp_cache[str(snp_path)] = {
+                        's_params': ntwk.s.copy(),  # Make a copy to avoid reference issues
+                        'frequencies': ntwk.f.copy(),
+                        'network': ntwk  # Keep original for compatibility
+                    }
+                    
+                    file_size_mb = snp_path.stat().st_size / (1024*1024)
+                    print(f"Pre-loaded {snp_path.name} ({file_size_mb:.1f}MB) in {load_time:.2f}s")
+                else:
+                    # If it's just data, store it anyway but note the issue
+                    _snp_cache[str(snp_path)] = {
+                        'data': ntwk,
+                        'network': None
+                    }
+                    print(f"Pre-loaded {snp_path.name} (data format) in {load_time:.2f}s")
                 
             except Exception as e:
                 print(f"Error pre-loading {snp_path}: {e}")
@@ -77,10 +87,10 @@ def preload_all_snp_files(trace_snps, vertical_pairs):
     for trace_snp in trace_snps:
         all_snp_files.add(Path(trace_snp))
     
-    for _, vertical_pair in vertical_pairs:
-        snp_tx, snp_rx = vertical_pair
-        all_snp_files.add(snp_tx)
-        all_snp_files.add(snp_rx)
+    # vertical_pairs is a list of (tx_snp, rx_snp) tuples
+    for snp_tx, snp_rx in vertical_pairs:
+        all_snp_files.add(Path(snp_tx))
+        all_snp_files.add(Path(snp_rx))
     
     print(f"Pre-loading {len(all_snp_files)} unique SNP files...")
     start_time = time.time()
@@ -331,8 +341,9 @@ def main():
     vertical_pairs = generate_vertical_snp_pairs(vertical_dirs, len(trace_snps), trace_snps, base_output_dir, trace_pattern_key)
     print(f"Generated {len(vertical_pairs)} vertical SNP pairs")
     
-    # PRE-LOAD ALL SNP FILES SEQUENTIALLY
-    preload_all_snp_files(trace_snps, vertical_pairs)
+    # Skip pre-loading for now due to read_snp compatibility issues
+    print("Skipping SNP pre-loading, using direct file access")
+    # preload_all_snp_files(trace_snps, vertical_pairs)
     
     # Combine parameter sets
     combined_params = None

@@ -172,7 +172,7 @@ dataset:
     s96p_test: "{s96p_files[0].parent}"
 
 boundary:
-  param_type: "PDN"
+  param_type: "MIX_PARAMS"
   max_samples: 5
   enable_direction: false
   enable_inductance: false
