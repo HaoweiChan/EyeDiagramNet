@@ -746,7 +746,10 @@ class EyeWidthSimulator:
         return 100 * eye_widths / self.params.n_perUI_intrp
 
     def calculate_waveform(self, test_patterns, response_matrices):
-        """Waveform calculation with adaptive strategies for different problem sizes."""
+        """
+        Waveform calculation optimized with vectorized FFT convolutions.
+        This replaces the nested loops with a much faster implementation.
+        """
         pattern_length = test_patterns.shape[2]
         response_length = response_matrices.shape[2]
         conv_length = pattern_length + response_length - 1
@@ -754,66 +757,37 @@ class EyeWidthSimulator:
         # Pre-allocate output waveform array
         waveform = np.zeros((self.params.n_perUI_intrp, conv_length, self.num_lines))
         
-        # For large cases, use more aggressive optimizations
-        num_elements = self.num_lines * self.params.n_perUI_intrp * conv_length
-        use_aggressive_optimization = (num_elements > 1e7)  # ~10M elements threshold
-        
-        if use_aggressive_optimization:
-            # Use memory-efficient batch processing for large cases
-            import scipy.signal
+        # Use an efficient FFT length for performance
+        fft_len = scipy.signal.next_fast_len(conv_length)
+
+        # Process each output line
+        for output_line_idx in range(self.num_lines):
+            # Get patterns and responses for the current output line
+            patterns_for_output = test_patterns[output_line_idx]  # Shape: [num_lines, pattern_length]
+            responses_for_output = response_matrices[output_line_idx]  # Shape: [num_lines, response_length, samples_per_ui]
+
+            # Transpose responses to [samples_per_ui, num_lines, response_length] for easier broadcasting
+            responses_for_output = np.transpose(responses_for_output, (2, 0, 1))
+
+            # --- FFT-based convolution ---
+            # 1. Compute FFT of patterns and responses
+            fft_patterns = np.fft.fft(patterns_for_output, n=fft_len, axis=1)  # Shape: [num_lines, fft_len]
+            fft_responses = np.fft.fft(responses_for_output, n=fft_len, axis=2) # Shape: [samples_per_ui, num_lines, fft_len]
             
-            # Process each output line with vectorized operations
-            for output_line_idx in range(self.num_lines):
-                patterns = test_patterns[output_line_idx]  # [num_lines, pattern_length]
-                responses = response_matrices[output_line_idx]  # [num_lines, response_length, n_perUI_intrp]
-                
-                # Pre-allocate convolution results for this output line
-                line_waveform = np.zeros((self.params.n_perUI_intrp, conv_length))
-                
-                # Batch process all input lines for this output line
-                for input_line_idx in range(self.num_lines):
-                    pattern = patterns[input_line_idx]
-                    input_responses = responses[input_line_idx]  # [response_length, n_perUI_intrp]
-                    
-                    # Vectorized convolution across all samples at once
-                    for sample_idx in range(self.params.n_perUI_intrp):
-                        response = input_responses[:, sample_idx]
-                        # Use FFT convolution for large arrays
-                        conv_result = scipy.signal.fftconvolve(pattern, response, mode='full')
-                        line_waveform[sample_idx] += conv_result
-                
-                # Store results for this output line
-                waveform[:, :, output_line_idx] = line_waveform
-        else:
-            # Use standard optimization for smaller cases
-            use_fft = (conv_length > 256)  # Threshold where FFT becomes efficient
-            
-            for output_line_idx in range(self.num_lines):
-                patterns = test_patterns[output_line_idx]  # [num_lines, pattern_length]
-                responses = response_matrices[output_line_idx]  # [num_lines, response_length, n_perUI_intrp]
-                
-                for sample_idx in range(self.params.n_perUI_intrp):
-                    responses_sample = responses[:, :, sample_idx]  # [num_lines, response_length]
-                    
-                    # Vectorized sum of convolutions
-                    conv_sum = np.zeros(conv_length)
-                    for input_line_idx in range(self.num_lines):
-                        if use_fft:
-                            import scipy.signal
-                            conv_result = scipy.signal.fftconvolve(
-                                patterns[input_line_idx], 
-                                responses_sample[input_line_idx], 
-                                mode='full'
-                            )
-                        else:
-                            conv_result = np.convolve(
-                                patterns[input_line_idx], 
-                                responses_sample[input_line_idx], 
-                                mode='full'
-                            )
-                        conv_sum += conv_result
-                    
-                    waveform[sample_idx, :, output_line_idx] = conv_sum
+            # 2. Perform element-wise multiplication in frequency domain.
+            #    Broadcast fft_patterns to match dimensions of fft_responses.
+            #    This multiplies the pattern for each input line with the corresponding response.
+            product_fft = fft_patterns[np.newaxis, :, :] * fft_responses
+
+            # 3. Sum the products over all input lines (to combine main signal and crosstalk).
+            summed_fft = np.sum(product_fft, axis=1) # Shape: [samples_per_ui, fft_len]
+
+            # 4. Compute inverse FFT to get the final waveform in the time domain.
+            #    We only need the real part and truncate to the valid convolution length.
+            line_waveform = np.fft.ifft(summed_fft, axis=1)[:, :conv_length].real
+
+            # Store the resulting waveform for the current output line
+            waveform[:, :, output_line_idx] = line_waveform
         
         return waveform
 

@@ -123,7 +123,7 @@ def init_worker_process(vertical_cache_info):
     """Initialize worker process with shared memory access and signal handling"""
     import signal
     signal.signal(signal.SIGINT, signal.SIG_IGN)
-    
+
     # Store cache info globally in worker
     global _vertical_cache_info
     _vertical_cache_info = vertical_cache_info
@@ -183,45 +183,45 @@ def collect_snp_batch_simulation_data(task_batch, combined_params, pickle_dir,
     
     # Parse n_ports from SNP filename once
     with time_block("Parse SNP filename"):
-        snp_filename = trace_snp_path.name.lower()
-        if '.s' in snp_filename and 'p' in snp_filename:
-            try:
-                extension = snp_filename.split('.s')[-1]
-                if not extension.endswith('p'):
-                    raise ValueError("Extension doesn't end with 'p'")
-                port_str = extension.replace('p', '')
-                if not port_str.isdigit():
-                    raise ValueError("No numeric port count found")
-                n_ports = int(port_str)
-            except (ValueError, IndexError):
-                raise ValueError(f"Cannot parse port count from SNP extension in filename: {snp_filename}")
+    snp_filename = trace_snp_path.name.lower()
+    if '.s' in snp_filename and 'p' in snp_filename:
+        try:
+            extension = snp_filename.split('.s')[-1]
+            if not extension.endswith('p'):
+                raise ValueError("Extension doesn't end with 'p'")
+            port_str = extension.replace('p', '')
+            if not port_str.isdigit():
+                raise ValueError("No numeric port count found")
+            n_ports = int(port_str)
+        except (ValueError, IndexError):
+            raise ValueError(f"Cannot parse port count from SNP extension in filename: {snp_filename}")
+    else:
+        import re
+        port_match = re.search(r'(\d+)port', snp_filename)
+        if port_match:
+            n_ports = int(port_match.group(1))
         else:
-            import re
-            port_match = re.search(r'(\d+)port', snp_filename)
-            if port_match:
-                n_ports = int(port_match.group(1))
-            else:
                 raise ValueError(f"Cannot determine number of ports from filename: {snp_filename}")
-        
-        n_lines = n_ports // 2
-        if n_lines == 0:
+    
+    n_lines = n_ports // 2
+    if n_lines == 0:
             raise ValueError(f"Invalid n_ports={n_ports}, n_lines would be 0")
-        
+    
         profile_print(f"Detected {n_ports} ports, {n_lines} lines")
     
     # Load existing pickle data once
     with time_block("Load existing pickle data"):
-        if pickle_file.exists():
-            with open(pickle_file, 'rb') as f:
-                data = pickle.load(f)
+    if pickle_file.exists():
+        with open(pickle_file, 'rb') as f:
+            data = pickle.load(f)
             profile_print(f"Loaded existing pickle with {len(data.get('configs', []))} samples")
-        else:
-            data = {
-                'configs': [],
-                'line_ews': [], 
-                'snp_txs': [],
-                'snp_rxs': [],
-                'directions': [],
+    else:
+        data = {
+            'configs': [],
+            'line_ews': [], 
+            'snp_txs': [],
+            'snp_rxs': [],
+            'directions': [],
                 'meta': {}
             }
             profile_print("Created new pickle data structure")
@@ -243,31 +243,31 @@ def collect_snp_batch_simulation_data(task_batch, combined_params, pickle_dir,
             # Sample parameters
             with time_block("Sample parameters"):
                 combined_config = combined_params.sample()
-            
-            try:
+    
+    try:
                 # Set directions
                 with time_block("Set directions"):
-                    if enable_direction:
-                        sim_directions = np.random.randint(0, 2, size=n_lines)
-                    else:
-                        sim_directions = np.ones(n_lines, dtype=int)
-                
+            if enable_direction:
+                sim_directions = np.random.randint(0, 2, size=n_lines)
+            else:
+                sim_directions = np.ones(n_lines, dtype=int)
+            
                 # Run simulation - the main bottleneck
                 with time_block(f"Eye width simulation (sample {sample_idx+1}/{sample_count})"):
-                    line_ew = snp_eyewidth_simulation(
-                        config=combined_config,
-                        snp_files=(trace_snp_path, snp_tx, snp_rx),
-                        directions=sim_directions
-                    )
-                
+        line_ew = snp_eyewidth_simulation(
+            config=combined_config,
+            snp_files=(trace_snp_path, snp_tx, snp_rx),
+            directions=sim_directions
+        )
+        
                 # Handle tuple return
                 with time_block("Process simulation results"):
-                    if isinstance(line_ew, tuple):
-                        line_ew, actual_directions = line_ew
-                        sim_directions = actual_directions
-                    
+        if isinstance(line_ew, tuple):
+            line_ew, actual_directions = line_ew
+            sim_directions = actual_directions
+        
                     # Process results
-                    line_ew = np.array(line_ew)
+        line_ew = np.array(line_ew)
                     line_ew[line_ew >= 99.9] = -0.1
                     
                     # Store result
@@ -284,8 +284,8 @@ def collect_snp_batch_simulation_data(task_batch, combined_params, pickle_dir,
                 sample_time = time.time() - sample_start_time
                 simulation_times.append(sample_time)
                 profile_print(f"Sample {sample_idx+1} completed, EW range: [{line_ew.min():.2f}, {line_ew.max():.2f}]", sample_time)
-                    
-            except Exception as e:
+            
+    except Exception as e:
                 sample_time = time.time() - sample_start_time
                 profile_print(f"Sample {sample_idx+1} failed: {e}", sample_time)
                 if debug:
@@ -310,16 +310,16 @@ def collect_snp_batch_simulation_data(task_batch, combined_params, pickle_dir,
     # Update meta once per batch
     with time_block("Update metadata"):
         if batch_results and not data['meta'].get('config_keys'):
-            data['meta']['snp_horiz'] = str(trace_snp_path)
+        data['meta']['snp_horiz'] = str(trace_snp_path)
             data['meta']['config_keys'] = batch_results[0]['config_keys']
-            data['meta']['n_ports'] = n_ports
-            data['meta']['param_types'] = param_type_names
+        data['meta']['n_ports'] = n_ports
+        data['meta']['param_types'] = param_type_names
     
     # Write updated data once per batch
     with time_block("Save pickle file"):
-        pickle_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(pickle_file, 'wb') as f:
-            pickle.dump(data, f)
+    pickle_file.parent.mkdir(parents=True, exist_ok=True)
+    with open(pickle_file, 'wb') as f:
+        pickle.dump(data, f)
         profile_print(f"Saved {len(batch_results)} new samples to {pickle_file}")
     
     batch_total_time = time.time() - batch_start_time
@@ -625,9 +625,9 @@ def main():
     
     # Run simulations
     try:
-        if not debug:
+    if not debug:
             # Use either multiprocessing or multithreading based on executor_type
-            num_workers = max_workers or multiprocessing.cpu_count()
+        num_workers = max_workers or multiprocessing.cpu_count()
             run_with_executor(batch_list, combined_params, trace_specific_output_dir, param_types, 
                              enable_direction, num_workers, executor_type, vertical_cache_info)
         else:
@@ -647,8 +647,8 @@ def main():
             
             total_debug_time = time.time() - debug_start_time
             print(f"Debug mode completed in {total_debug_time:.2f}s, avg rate: {len(batch_list)/total_debug_time:.2f} batches/sec")
-        
-        print(f"Data collection completed. Results saved to: {trace_specific_output_dir}")
+    
+    print(f"Data collection completed. Results saved to: {trace_specific_output_dir}")
         
     finally:
         # Clean up shared memory

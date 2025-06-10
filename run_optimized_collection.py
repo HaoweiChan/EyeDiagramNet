@@ -5,6 +5,7 @@ import subprocess
 import sys
 import psutil
 import time
+import os
 from pathlib import Path
 
 def get_optimal_workers():
@@ -31,9 +32,9 @@ def run_collection_with_monitoring(config_file, executor_type="thread", max_samp
     # Calculate optimal workers
     optimal_workers = get_optimal_workers()
     
-    # Build command - use optimized collector
+    # Build command
     cmd = [
-        sys.executable, "-m", "simulation.collection.training_data_collector_optimized",
+        sys.executable, "-m", "simulation.collection.training_data_collector",
         "--config", str(config_file),
         "--executor_type", executor_type,
         "--max_workers", str(optimal_workers),
@@ -44,13 +45,25 @@ def run_collection_with_monitoring(config_file, executor_type="thread", max_samp
     print(f"Starting data collection at {time.strftime('%H:%M:%S')}")
     print("-" * 60)
     
+    # Set environment variables to prevent nested parallelism from numpy/scipy
+    env = os.environ.copy()
+    env["OMP_NUM_THREADS"] = "1"
+    env["MKL_NUM_THREADS"] = "1"
+    env["OPENBLAS_NUM_THREADS"] = "1"
+    env["VECLIB_MAXIMUM_THREADS"] = "1"
+    env["NUMEXPR_NUM_THREADS"] = "1"
+    
+    print("Setting environment variables to prevent nested parallelism:")
+    print(f"  OMP_NUM_THREADS=1, MKL_NUM_THREADS=1, OPENBLAS_NUM_THREADS=1")
+    
     # Start the process
     process = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         universal_newlines=True,
-        bufsize=1
+        bufsize=1,
+        env=env  # Pass the modified environment
     )
     
     # Monitor the process
@@ -172,7 +185,7 @@ dataset:
     s96p_test: "{s96p_files[0].parent}"
 
 boundary:
-  param_type: "MIX_PARAMS"
+  param_type: "PDN"
   max_samples: 5
   enable_direction: false
   enable_inductance: false
