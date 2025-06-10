@@ -18,11 +18,11 @@ class TraceEWModule(LightningModule):
         model: nn.Module,
         ckpt_path: str = None,
         strict: bool = False,
+        compile_model: bool = False,
         ew_scaler: int = 50,
         ew_threshold: float = 0.3,
         mc_samples: int = 50,
         use_mc_validation: bool = True,
-        compile_model: bool = False,
     ):
         super().__init__()
         self.save_hyperparameters(ignore=['model'])

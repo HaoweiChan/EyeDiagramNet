@@ -69,9 +69,9 @@ def generate_thru_snp(reference_trace_snp_file, base_output_dir, trace_pattern_k
     # Extract frequency points from the reference trace SNP to ensure matching frequencies
     try:
         ref_net = Network(str(reference_trace_snp_file))
-        freq = ref_net.frequency
-        n_freq_points = len(freq.f_scaled)
-        print(f"Using {n_freq_points} frequency points from reference trace SNP ({freq.f_scaled.min()/1e9:.2f} - {freq.f_scaled.max()/1e9:.2f} GHz)")
+        freq = ref_net.f
+        n_freq_points = len(freq)
+        print(f"Using {n_freq_points} frequency points from reference trace SNP ({freq.min()/1e9:.2f} - {freq.max()/1e9:.2f} GHz)")
     except Exception as e:
         raise ValueError(
             f"Could not extract frequency from reference SNP {reference_trace_snp_file}: {e}"
@@ -88,7 +88,7 @@ def generate_thru_snp(reference_trace_snp_file, base_output_dir, trace_pattern_k
     z0_array = np.full(n_ports, 50) # Standard 50 Ohm impedance for all ports
 
     try:
-        thru_net = Network(frequency=freq.f_scaled, s=s_matrix, z0=z0_array) # Use freq.f_scaled for raw numpy array
+        thru_net = Network(frequency=freq, s=s_matrix, z0=z0_array)
         thru_net.name = f'auto_thru_{n_ports}port'
         thru_net.write_touchstone(filename=str(thru_snp_path), write_z0=True)
         print(f"Successfully generated auto-thru SNP: {thru_snp_path}")
