@@ -14,6 +14,7 @@ import time
 import threading
 import os
 from datetime import datetime
+import psutil
 
 from simulation.parameters.bound_param import PARAM_SETS_MAP
 from simulation.engine.eye_width_simulator import snp_eyewidth_simulation
@@ -77,6 +78,24 @@ def time_block(description):
 
 # Global shared memory registry for cleanup
 _shared_memory_blocks = []
+
+def get_optimal_workers():
+    """Calculate optimal number of workers based on system resources"""
+    # Get system info
+    cpu_count = psutil.cpu_count()
+    memory_gb = psutil.virtual_memory().total / (1024**3)
+    
+    print(f"System: {cpu_count} CPUs, {memory_gb:.1f}GB RAM")
+    
+    # For large S96P files (~66MB each), be conservative
+    # Each worker can use 500MB-1GB during processing
+    memory_based_workers = max(1, int(memory_gb / 2))  # 2GB per worker
+    cpu_based_workers = min(8, cpu_count)  # Cap at 8 for I/O limits
+    
+    optimal_workers = min(memory_based_workers, cpu_based_workers)
+    print(f"Optimal workers determined: {optimal_workers} (memory-based: {memory_based_workers}, cpu-based: {cpu_based_workers})")
+    
+    return optimal_workers
 
 class VerticalSNPCache:
     """Shared memory cache for vertical SNP files to avoid redundant loading across processes"""
@@ -239,11 +258,9 @@ def collect_snp_batch_simulation_data(task_batch, combined_params, pickle_dir,
                 else:
                     sim_directions = np.ones(n_lines, dtype=int)
                 
-                # Run simulation - the simulator will load SNP files as needed
-                # We could optimize this further by pre-loading the horizontal SNP
-                # but that would require more changes to the simulator
+                # Run simulation, limiting threads with threadpoolctl
                 if threadpoolctl:
-                    with threadpoolctl.threadpool_limits(limits=1, user_api='all'):
+                    with threadpoolctl.threadpool_limits(limits=1):
                         line_ew = snp_eyewidth_simulation(
                             config=combined_config,
                             snp_files=(trace_snp_path, snp_tx, snp_rx),
@@ -461,6 +478,14 @@ def run_with_executor(batch_list, combined_params, trace_specific_output_dir, pa
 
 def main():
     """Main function for parallel data collection"""
+    # Set environment variables to prevent nested parallelism before doing anything else
+    os.environ["OMP_NUM_THREADS"] = "1"
+    os.environ["MKL_NUM_THREADS"] = "1"
+    os.environ["OPENBLAS_NUM_THREADS"] = "1"
+    os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+    os.environ["NUMEXPR_NUM_THREADS"] = "1"
+    print("Set environment variables to prevent nested parallelism (OMP_NUM_THREADS, etc. = 1)")
+    
     args = build_argparser().parse_args()
     
     # Load configuration
@@ -494,8 +519,18 @@ def main():
     enable_inductance = args.enable_inductance or config['boundary'].get('enable_inductance', False)
     
     debug = args.debug if args.debug else config.get('debug', False)
-    max_workers = args.max_workers if args.max_workers else config['runner'].get('max_workers')
-    executor_type = args.executor_type
+    
+    # Determine number of workers: Command-line -> Config file -> Optimal calculation
+    config_workers = config.get('runner', {}).get('max_workers')
+    if args.max_workers:
+        max_workers = args.max_workers
+        print(f"Using max_workers from command line: {max_workers}")
+    elif config_workers:
+        max_workers = config_workers
+        print(f"Using max_workers from config file: {max_workers}")
+    else:
+        print("max_workers not specified, calculating optimal number...")
+        max_workers = get_optimal_workers()
     
     print(f"Using configuration:")
     print(f"  Trace pattern: {trace_pattern_key} -> {trace_pattern}")
@@ -507,7 +542,6 @@ def main():
     print(f"  Enable inductance: {enable_inductance}")
     print(f"  Debug mode: {debug}")
     print(f"  Max workers: {max_workers}")
-    print(f"  Executor type: {executor_type}")
     
     # Create base output directory and trace-specific subdirectory
     base_output_dir = output_dir
@@ -610,10 +644,8 @@ def main():
     # Run simulations
     try:
         if not debug:
-            # Use either multiprocessing or multithreading based on executor_type
-            num_workers = max_workers or multiprocessing.cpu_count()
             run_with_executor(batch_list, combined_params, trace_specific_output_dir, param_types, 
-                             enable_direction, num_workers, executor_type, vertical_cache_info)
+                             enable_direction, max_workers, executor_type, vertical_cache_info)
         else:
             # Debug mode - run sequentially
             for i, batch_tasks in enumerate(tqdm(batch_list, desc="Debug processing batches")):
