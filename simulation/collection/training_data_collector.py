@@ -267,6 +267,13 @@ def collect_snp_batch_simulation_data(task_batch, combined_params, pickle_dir,
     
     # Load horizontal SNP from cache (or disk if not available)
     trace_ntwk = get_snp_from_cache(trace_snp_file, _horizontal_cache_info)
+
+    # Defensive check: if the object from cache/read is not a network, it's an error.
+    # This can happen if an old cache is used or if read_snp fails.
+    if not isinstance(trace_ntwk, rf.Network):
+        print(f"Warning: Expected a Network object for {trace_snp_file}, but got {type(trace_ntwk)}. Re-reading from disk.", flush=True)
+        trace_ntwk = read_snp(trace_snp_file)
+
     n_ports = trace_ntwk.nports
     n_lines = n_ports // 2
     if n_lines == 0:
@@ -723,8 +730,12 @@ def main():
                              horizontal_cache_info, vertical_cache_info)
         else:
             # Debug mode - run sequentially
-            # For debug, we need to populate worker globals manually for get_snp_from_cache
-            init_worker_process(horizontal_cache_info, vertical_cache_info)
+            # In debug mode, we are in the main process, so worker globals are not set.
+            # We need to manually use the cache info.
+            global _horizontal_cache_info, _vertical_cache_info
+            _horizontal_cache_info = horizontal_cache_info
+            _vertical_cache_info = vertical_cache_info
+
             for i, batch_tasks in enumerate(tqdm(batch_list, desc="Debug processing batches")):
                 print(f"\n--- Batch {i+1}/{len(batch_list)} ---")
                 collect_snp_batch_simulation_data(
