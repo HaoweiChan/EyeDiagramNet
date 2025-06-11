@@ -15,6 +15,7 @@ from tqdm import tqdm
 from pathlib import Path
 from datetime import datetime
 from collections import defaultdict
+import skrf as rf
 
 from simulation.parameters.bound_param import PARAM_SETS_MAP
 from simulation.engine.eye_width_simulator import snp_eyewidth_simulation
@@ -26,8 +27,7 @@ from common.signal_utils import read_snp
 # Global profiling state
 _profiling_data = threading.local()
 # Global monitoring control
-_monitoring_stop_event = threading.Event()
-_monitoring_thread = None
+_monitor_proc = None
 
 def get_worker_id():
     """Get unique worker identifier for profiling"""
@@ -72,15 +72,11 @@ def time_block(description):
     
     return TimeBlock(description)
 
-def monitor_system_resources(interval=10, use_tqdm_for_output=True):
-    """Background monitoring of system resources."""
-    # Use tqdm.write to prevent display conflicts with progress bars,
-    # or use plain print if tqdm might be stuck.
-    output_func = tqdm.write if use_tqdm_for_output else lambda msg: print(msg, flush=True)
-
-    output_func(f"[MONITOR] Starting system resource monitoring (interval: {interval}s)")
+def monitor_system_resources(interval=10):
+    """Background monitoring of system resources in a separate process."""
+    print(f"[MONITOR] Starting system resource monitoring (interval: {interval}s)", flush=True)
     
-    while not _monitoring_stop_event.is_set():
+    while True:
         try:
             # CPU usage
             cpu_percent_per_core = psutil.cpu_percent(interval=1, percpu=True)
@@ -110,35 +106,34 @@ def monitor_system_resources(interval=10, use_tqdm_for_output=True):
                        f"CPU: {cpu_overall:.1f}% | "
                        f"RAM: {memory_used_gb:.1f}/{memory_total_gb:.1f}GB ({memory_percent:.1f}%)"
                        f"{load_str} | Cores: [{cores_str}]")
-            output_func(message)
+            print(message, flush=True)
             
-            _monitoring_stop_event.wait(interval - 1)
+            time.sleep(interval - 1)
             
         except Exception as e:
-            output_func(f"[MONITOR] Error: {e}")
-            _monitoring_stop_event.wait(interval)
+            print(f"[MONITOR] Error: {e}", flush=True)
+            time.sleep(interval)
 
-def start_background_monitoring(interval=10, use_tqdm_for_output=True):
-    """Start background system monitoring thread."""
-    global _monitoring_thread
-    if _monitoring_thread is None:
-        _monitoring_stop_event.clear()
-        _monitoring_thread = threading.Thread(
+def start_background_monitoring(interval=10):
+    """Start background system monitoring in a separate process."""
+    global _monitor_proc
+    if _monitor_proc is None:
+        _monitor_proc = multiprocessing.Process(
             target=monitor_system_resources, 
-            args=(interval, use_tqdm_for_output),
+            args=(interval,),
             daemon=True,
-            name="SystemMonitor"
+            name="SystemMonitorProc"
         )
-        _monitoring_thread.start()
+        _monitor_proc.start()
 
 def stop_background_monitoring():
-    """Stop background system monitoring thread."""
-    global _monitoring_thread
-    if _monitoring_thread is not None:
+    """Stop background system monitoring process."""
+    global _monitor_proc
+    if _monitor_proc is not None:
         print("[MONITOR] Stopping system resource monitoring...", flush=True)
-        _monitoring_stop_event.set()
-        _monitoring_thread.join(timeout=2)
-        _monitoring_thread = None
+        _monitor_proc.terminate()
+        _monitor_proc.join(timeout=2)
+        _monitor_proc = None
         print("[MONITOR] System resource monitoring stopped.", flush=True)
 
 # Global shared memory registry for cleanup
@@ -162,84 +157,93 @@ def get_optimal_workers():
     
     return optimal_workers
 
-class VerticalSNPCache:
-    """Shared memory cache for vertical SNP files to avoid redundant loading across processes"""
+class SNPCache:
+    """Shared memory cache for SNP files to avoid redundant loading across processes."""
     
     def __init__(self):
-        self.cache = {}  # {snp_path: (shared_memory_name, shape, dtype)}
+        self.cache = {}  # {snp_path: metadata}
         self.memory_blocks = []
     
     def add_snp(self, snp_path):
-        """Load SNP file and store in shared memory"""
+        """Load SNP file and store its data in shared memory."""
         if str(snp_path) in self.cache:
             return
             
-        # Read SNP file
         ntwk = read_snp(snp_path)
-        snp_data = ntwk.s  # Complex S-parameter data
+        s_data = ntwk.s
+        f_data = ntwk.f
         
-        # Create shared memory block
-        nbytes = snp_data.nbytes
-        shm_block = shm.SharedMemory(create=True, size=nbytes)
+        # Create shared memory for s-parameters
+        s_shm = shm.SharedMemory(create=True, size=s_data.nbytes)
+        s_shm_array = np.ndarray(s_data.shape, dtype=s_data.dtype, buffer=s_shm.buf)
+        s_shm_array[:] = s_data[:]
         
-        # Copy data to shared memory
-        shm_array = np.ndarray(snp_data.shape, dtype=snp_data.dtype, buffer=shm_block.buf)
-        shm_array[:] = snp_data[:]
+        # Create shared memory for frequencies
+        f_shm = shm.SharedMemory(create=True, size=f_data.nbytes)
+        f_shm_array = np.ndarray(f_data.shape, dtype=f_data.dtype, buffer=f_shm.buf)
+        f_shm_array[:] = f_data[:]
         
-        # Store metadata
         self.cache[str(snp_path)] = {
-            'name': shm_block.name,
-            'shape': snp_data.shape,
-            'dtype': snp_data.dtype,
-            'frequencies': ntwk.f.copy()  # Also cache frequencies
+            's_name': s_shm.name, 's_shape': s_data.shape, 's_dtype': s_data.dtype,
+            'f_name': f_shm.name, 'f_shape': f_data.shape, 'f_dtype': f_data.dtype,
+            'nports': ntwk.nports, 'z0': ntwk.z0.tolist() if isinstance(ntwk.z0, np.ndarray) else ntwk.z0
         }
         
-        self.memory_blocks.append(shm_block)
-        _shared_memory_blocks.append(shm_block)
+        self.memory_blocks.extend([s_shm, f_shm])
+        _shared_memory_blocks.extend([s_shm, f_shm])
     
     def get_cache_info(self):
-        """Get cache information for passing to workers"""
+        """Get cache information for passing to workers."""
         return self.cache.copy()
     
     def cleanup(self):
-        """Clean up shared memory blocks"""
+        """Clean up shared memory blocks."""
         for block in self.memory_blocks:
             try:
                 block.close()
                 block.unlink()
-            except:
+            except FileNotFoundError:
+                pass # Already unlinked
+            except Exception:
                 pass
+        self.memory_blocks.clear()
 
-def init_worker_process(vertical_cache_info):
-    """Initialize worker process with shared memory access and signal handling"""
+def init_worker_process(horizontal_cache_info, vertical_cache_info):
+    """Initialize worker process with shared memory access and signal handling."""
     import signal
     signal.signal(signal.SIGINT, signal.SIG_IGN)
 
     # Store cache info globally in worker
-    global _vertical_cache_info
+    global _horizontal_cache_info, _vertical_cache_info
+    _horizontal_cache_info = horizontal_cache_info
     _vertical_cache_info = vertical_cache_info
 
-def init_worker_thread(vertical_cache_info):
-    """Initialize worker thread with shared memory access (threads don't need signal handling)"""
-    # Store cache info globally in worker
-    global _vertical_cache_info
+def init_worker_thread(horizontal_cache_info, vertical_cache_info):
+    """Initialize worker thread with shared memory access (no-op for threads)."""
+    global _horizontal_cache_info, _vertical_cache_info
+    _horizontal_cache_info = horizontal_cache_info
     _vertical_cache_info = vertical_cache_info
 
-def get_vertical_snp_from_cache(snp_path):
-    """Get vertical SNP data from shared memory cache"""
-    cache_info = _vertical_cache_info[str(snp_path)]
+def get_snp_from_cache(snp_path, cache_info):
+    """Get SNP data from a shared memory cache, or read from disk as a fallback."""
+    if not cache_info or str(snp_path) not in cache_info:
+        return read_snp(snp_path) # Fallback for thread mode or uncached files
+
+    shm_info = cache_info[str(snp_path)]
     
-    # Connect to existing shared memory
-    shm_block = shm.SharedMemory(name=cache_info['name'])
+    s_shm = shm.SharedMemory(name=shm_info['s_name'])
+    s_array = np.ndarray(shm_info['s_shape'], dtype=shm_info['s_dtype'], buffer=s_shm.buf)
     
-    # Create array view
-    snp_array = np.ndarray(
-        cache_info['shape'], 
-        dtype=cache_info['dtype'], 
-        buffer=shm_block.buf
-    )
+    f_shm = shm.SharedMemory(name=shm_info['f_name'])
+    f_array = np.ndarray(shm_info['f_shape'], dtype=shm_info['f_dtype'], buffer=f_shm.buf)
+
+    ntwk = rf.Network()
+    ntwk.s = s_array.copy()
+    ntwk.f = f_array.copy()
+    ntwk.z0 = shm_info['z0']
     
-    return snp_array.copy(), cache_info['frequencies']  # Return copy to avoid issues when shm_block closes
+    # We don't need to close the shm blocks here, they live for the worker's lifetime
+    return ntwk
 
 def collect_snp_batch_simulation_data(task_batch, combined_params, pickle_dir, 
                                     param_type_names, enable_direction=True, debug=False):
@@ -258,39 +262,22 @@ def collect_snp_batch_simulation_data(task_batch, combined_params, pickle_dir,
     if not task_batch:
         return
         
-    # All tasks in batch should have same trace_snp_file
+    # All tasks in batch share the same horizontal trace SNP
     trace_snp_file = task_batch[0][0]
-    trace_snp_path = Path(trace_snp_file)
-    pickle_file = Path(pickle_dir) / f"{trace_snp_path.stem}.pkl"
     
-    # Parse n_ports from SNP filename once
-    snp_filename = trace_snp_path.name.lower()
-    if '.s' in snp_filename and 'p' in snp_filename:
-        try:
-            extension = snp_filename.split('.s')[-1]
-            if not extension.endswith('p'):
-                raise ValueError("Extension doesn't end with 'p'")
-            port_str = extension.replace('p', '')
-            if not port_str.isdigit():
-                raise ValueError("No numeric port count found")
-            n_ports = int(port_str)
-        except (ValueError, IndexError):
-            raise ValueError(f"Cannot parse port count from SNP extension in filename: {snp_filename}")
-    else:
-        import re
-        port_match = re.search(r'(\d+)port', snp_filename)
-        if port_match:
-            n_ports = int(port_match.group(1))
-        else:
-            raise ValueError(f"Cannot determine number of ports from filename: {snp_filename}")
-    
+    # Load horizontal SNP from cache (or disk if not available)
+    trace_ntwk = get_snp_from_cache(trace_snp_file, _horizontal_cache_info)
+    n_ports = trace_ntwk.nports
     n_lines = n_ports // 2
     if n_lines == 0:
         raise ValueError(f"Invalid n_ports={n_ports}, n_lines would be 0")
     
+    trace_snp_path = Path(trace_snp_file) # Still need path for pickle filename
+    pickle_file = Path(pickle_dir) / f"{trace_snp_path.stem}.pkl"
+    
     if debug:
         print(f"Processing batch of {len(task_batch)} tasks for {trace_snp_path.name}")
-        print(f"Detected {n_ports} ports, {n_lines} lines")
+        print(f"Detected {n_ports} ports ({n_lines} lines) from cached network")
     
     # Load existing pickle data once
     if pickle_file.exists():
@@ -309,8 +296,11 @@ def collect_snp_batch_simulation_data(task_batch, combined_params, pickle_dir,
     # Process all tasks in batch
     batch_results = []
     
-    for trace_snp_file, vertical_snp_pair, sample_count in task_batch:
-        snp_tx, snp_rx = vertical_snp_pair
+    for _, vertical_snp_pair, sample_count in task_batch:
+        # Load vertical SNPs from cache
+        snp_tx_path, snp_rx_path = vertical_snp_pair
+        tx_ntwk = get_snp_from_cache(snp_tx_path, _vertical_cache_info)
+        rx_ntwk = get_snp_from_cache(snp_rx_path, _vertical_cache_info)
         
         for _ in range(sample_count):
             # Sample parameters
@@ -328,13 +318,13 @@ def collect_snp_batch_simulation_data(task_batch, combined_params, pickle_dir,
                     with threadpoolctl.threadpool_limits(limits=1):
                         line_ew = snp_eyewidth_simulation(
                             config=combined_config,
-                            snp_files=(trace_snp_path, snp_tx, snp_rx),
+                            snp_files=(trace_ntwk, tx_ntwk, rx_ntwk),
                             directions=sim_directions
                         )
                 else:
                     line_ew = snp_eyewidth_simulation(
                         config=combined_config,
-                        snp_files=(trace_snp_path, snp_tx, snp_rx),
+                        snp_files=(trace_ntwk, tx_ntwk, rx_ntwk),
                         directions=sim_directions
                     )
                 
@@ -353,8 +343,8 @@ def collect_snp_batch_simulation_data(task_batch, combined_params, pickle_dir,
                     'config_values': config_values,
                     'config_keys': config_keys,
                     'line_ews': line_ew.tolist(),
-                    'snp_tx': snp_tx.as_posix(),
-                    'snp_rx': snp_rx.as_posix(),
+                    'snp_tx': snp_tx_path.as_posix(),
+                    'snp_rx': snp_rx_path.as_posix(),
                     'directions': sim_directions.tolist()
                 })
                 
@@ -414,7 +404,8 @@ def cleanup_shared_memory():
     _shared_memory_blocks.clear()
 
 def run_with_executor(batch_list, combined_params, trace_specific_output_dir, param_types, 
-                     enable_direction, num_workers, executor_type="process", vertical_cache_info=None):
+                     enable_direction, num_workers, executor_type="process", 
+                     horizontal_cache_info=None, vertical_cache_info=None):
     """
     Run simulations using either ProcessPoolExecutor or ThreadPoolExecutor
     
@@ -426,18 +417,22 @@ def run_with_executor(batch_list, combined_params, trace_specific_output_dir, pa
         enable_direction: Direction flag
         num_workers: Number of workers
         executor_type: "process" or "thread"
-        vertical_cache_info: Shared memory cache info
+        horizontal_cache_info: Shared memory cache info for horizontal SNPs
+        vertical_cache_info: Shared memory cache info for vertical SNPs
     """
     
     if executor_type == "thread":
         print(f"Using ThreadPoolExecutor with {num_workers} threads...")
-        # For threads, shared memory won't work across processes, so we disable it
-        if vertical_cache_info:
-            print("Note: Shared memory cache disabled for thread mode")
+        if horizontal_cache_info or vertical_cache_info:
+            print("Note: Shared memory cache is disabled for thread mode")
         
         executor_start_time = time.time()
         
-        with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=num_workers,
+            initializer=init_worker_thread,
+            initargs=({}, {}) # No cache for threads
+        ) as executor:
             futures = [
                 executor.submit(
                     collect_snp_batch_simulation_data,
@@ -492,7 +487,7 @@ def run_with_executor(batch_list, combined_params, trace_specific_output_dir, pa
         with concurrent.futures.ProcessPoolExecutor(
             max_workers=num_workers, 
             initializer=init_worker_process,
-            initargs=(vertical_cache_info or {},)
+            initargs=(horizontal_cache_info or {}, vertical_cache_info or {})
         ) as executor:
             futures = [
                 executor.submit(
@@ -610,10 +605,8 @@ def main():
     print(f"  Max workers: {max_workers}")
     print(f"  Executor type: {executor_type}")
     
-    # Start background system monitoring
-    # When using threads, tqdm can get stuck. Use plain print for reliable periodic output.
-    use_tqdm_for_monitor = executor_type != "thread"
-    start_background_monitoring(interval=15, use_tqdm_for_output=use_tqdm_for_monitor)
+    # Start background system monitoring in a separate process
+    start_background_monitoring(interval=15)
     
     # Create base output directory and trace-specific subdirectory
     base_output_dir = output_dir
@@ -683,43 +676,55 @@ def main():
     
     if len(batch_list) == 0:
         print("All files already have sufficient samples")
+        stop_background_monitoring()
         return
     
-    # Initialize shared memory cache for vertical SNPs (only for process mode and not debug)
-    vertical_cache = None
-    vertical_cache_info = {}
+    # Initialize shared memory caches for process mode
+    horizontal_cache, vertical_cache = None, None
+    horizontal_cache_info, vertical_cache_info = {}, {}
     
-    if not debug and executor_type == "process" and vertical_dirs:
-        print("Setting up shared memory cache for vertical SNP files...")
+    if not debug and executor_type == "process":
+        print("Setting up shared memory cache for SNP files...")
         try:
-            vertical_cache = VerticalSNPCache()
-            
-            # Add all unique vertical SNP files to cache
-            unique_vertical_snps = set()
-            for batch_tasks in batch_list:
-                for _, vertical_pair, _ in batch_tasks:
-                    unique_vertical_snps.update(vertical_pair)
-            
-            for snp_path in unique_vertical_snps:
-                vertical_cache.add_snp(snp_path)
-            
-            vertical_cache_info = vertical_cache.get_cache_info()
-            print(f"Cached {len(vertical_cache_info)} vertical SNP files in shared memory")
+            # Horizontal (trace) SNP cache
+            horizontal_cache = SNPCache()
+            unique_horizontal_snps = set(task_batches.keys())
+            for snp_path in tqdm(unique_horizontal_snps, desc="Caching horizontal SNPs"):
+                horizontal_cache.add_snp(snp_path)
+            horizontal_cache_info = horizontal_cache.get_cache_info()
+            print(f"Cached {len(horizontal_cache_info)} horizontal SNP files in shared memory.")
+
+            # Vertical SNP cache (if applicable)
+            if vertical_dirs:
+                vertical_cache = SNPCache()
+                unique_vertical_snps = set()
+                for batch_tasks in batch_list:
+                    for _, vertical_pair, _ in batch_tasks:
+                        unique_vertical_snps.update(vertical_pair)
+                
+                for snp_path in tqdm(unique_vertical_snps, desc="Caching vertical SNPs"):
+                    vertical_cache.add_snp(snp_path)
+                
+                vertical_cache_info = vertical_cache.get_cache_info()
+                print(f"Cached {len(vertical_cache_info)} vertical SNP files in shared memory.")
             
         except Exception as e:
             print(f"Warning: Could not set up shared memory cache: {e}")
-            if vertical_cache:
-                vertical_cache.cleanup()
-            vertical_cache = None
-            vertical_cache_info = {}
+            if horizontal_cache: horizontal_cache.cleanup()
+            if vertical_cache: vertical_cache.cleanup()
+            horizontal_cache, vertical_cache = None, None
+            horizontal_cache_info, vertical_cache_info = {}, {}
     
     # Run simulations
     try:
         if not debug:
             run_with_executor(batch_list, combined_params, trace_specific_output_dir, param_types, 
-                             enable_direction, max_workers, executor_type, vertical_cache_info)
+                             enable_direction, max_workers, executor_type, 
+                             horizontal_cache_info, vertical_cache_info)
         else:
             # Debug mode - run sequentially
+            # For debug, we need to populate worker globals manually for get_snp_from_cache
+            init_worker_process(horizontal_cache_info, vertical_cache_info)
             for i, batch_tasks in enumerate(tqdm(batch_list, desc="Debug processing batches")):
                 print(f"\n--- Batch {i+1}/{len(batch_list)} ---")
                 collect_snp_batch_simulation_data(
@@ -734,6 +739,8 @@ def main():
         stop_background_monitoring()
         
         # Clean up shared memory
+        if horizontal_cache:
+            horizontal_cache.cleanup()
         if vertical_cache:
             vertical_cache.cleanup()
         cleanup_shared_memory()
