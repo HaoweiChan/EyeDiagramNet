@@ -72,9 +72,13 @@ def time_block(description):
     
     return TimeBlock(description)
 
-def monitor_system_resources(interval=10):
-    """Background monitoring of system resources using tqdm.write to prevent display conflicts."""
-    tqdm.write(f"[MONITOR] Starting system resource monitoring (interval: {interval}s)")
+def monitor_system_resources(interval=10, use_tqdm_for_output=True):
+    """Background monitoring of system resources."""
+    # Use tqdm.write to prevent display conflicts with progress bars,
+    # or use plain print if tqdm might be stuck.
+    output_func = tqdm.write if use_tqdm_for_output else lambda msg: print(msg, flush=True)
+
+    output_func(f"[MONITOR] Starting system resource monitoring (interval: {interval}s)")
     
     while not _monitoring_stop_event.is_set():
         try:
@@ -106,22 +110,22 @@ def monitor_system_resources(interval=10):
                        f"CPU: {cpu_overall:.1f}% | "
                        f"RAM: {memory_used_gb:.1f}/{memory_total_gb:.1f}GB ({memory_percent:.1f}%)"
                        f"{load_str} | Cores: [{cores_str}]")
-            tqdm.write(message)
+            output_func(message)
             
             _monitoring_stop_event.wait(interval - 1)
             
         except Exception as e:
-            tqdm.write(f"[MONITOR] Error: {e}")
+            output_func(f"[MONITOR] Error: {e}")
             _monitoring_stop_event.wait(interval)
 
-def start_background_monitoring(interval=10):
+def start_background_monitoring(interval=10, use_tqdm_for_output=True):
     """Start background system monitoring thread."""
     global _monitoring_thread
     if _monitoring_thread is None:
         _monitoring_stop_event.clear()
         _monitoring_thread = threading.Thread(
             target=monitor_system_resources, 
-            args=(interval,),
+            args=(interval, use_tqdm_for_output),
             daemon=True,
             name="SystemMonitor"
         )
@@ -131,11 +135,11 @@ def stop_background_monitoring():
     """Stop background system monitoring thread."""
     global _monitoring_thread
     if _monitoring_thread is not None:
-        tqdm.write("[MONITOR] Stopping system resource monitoring...")
+        print("[MONITOR] Stopping system resource monitoring...", flush=True)
         _monitoring_stop_event.set()
         _monitoring_thread.join(timeout=2)
         _monitoring_thread = None
-        tqdm.write("[MONITOR] System resource monitoring stopped.")
+        print("[MONITOR] System resource monitoring stopped.", flush=True)
 
 # Global shared memory registry for cleanup
 _shared_memory_blocks = []
@@ -607,7 +611,9 @@ def main():
     print(f"  Executor type: {executor_type}")
     
     # Start background system monitoring
-    start_background_monitoring(interval=15)
+    # When using threads, tqdm can get stuck. Use plain print for reliable periodic output.
+    use_tqdm_for_monitor = executor_type != "thread"
+    start_background_monitoring(interval=15, use_tqdm_for_output=use_tqdm_for_monitor)
     
     # Create base output directory and trace-specific subdirectory
     base_output_dir = output_dir
