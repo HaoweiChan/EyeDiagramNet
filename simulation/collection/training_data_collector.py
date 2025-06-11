@@ -519,6 +519,7 @@ def main():
     enable_inductance = args.enable_inductance or config['boundary'].get('enable_inductance', False)
     
     debug = args.debug if args.debug else config.get('debug', False)
+    executor_type = args.executor_type
     
     # Determine number of workers: Command-line -> Config file -> Optimal calculation
     config_workers = config.get('runner', {}).get('max_workers')
@@ -542,6 +543,7 @@ def main():
     print(f"  Enable inductance: {enable_inductance}")
     print(f"  Debug mode: {debug}")
     print(f"  Max workers: {max_workers}")
+    print(f"  Executor type: {executor_type}")
     
     # Create base output directory and trace-specific subdirectory
     base_output_dir = output_dir
