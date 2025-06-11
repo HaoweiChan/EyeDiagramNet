@@ -9,9 +9,9 @@ from pathlib import Path
 from typing import Dict, List
 from sklearn.model_selection import train_test_split
 from lightning.pytorch.utilities import CombinedLoader
+from lightning.pytorch.utilities.rank_zero import rank_zero_info
 
 from ..utils.scaler import MinMaxScaler
-from ..utils.visualization import log_info
 from .datasets import TraceDataset, TraceEWDataset, InferenceTraceDataset, InferenceTraceEWDataset, get_loader_from_dataset
 from .processors import CSVProcessor, TraceSequenceProcessor
 from simulation.parameters.bound_param import SampleResult
@@ -66,12 +66,12 @@ class TraceSeqEWDataloader(pl.LightningDataModule):
         fit_scaler = True
         try:
             self.seq_scaler, self.fix_scaler = torch.load(self.scaler_path)
-            log_info(f"Loaded scalers from {self.scaler_path}")
+            rank_zero_info(f"Loaded scalers from {self.scaler_path}")
             fit_scaler = False
-        except (FileNotFoundError, AttributeError):
+        except (FileNotFoundError, AttributeError, EOFError):
             self.seq_scaler = MinMaxScaler(ignore_value=padding_value)
             self.fix_scaler = MinMaxScaler(ignore_value=padding_value)
-            log_info("Could not find scalers on disk, creating new ones.")
+            rank_zero_info("Could not find scalers on disk, creating new ones.")
 
         # locate every CSV once via processor
         processor = CSVProcessor()
@@ -112,11 +112,13 @@ class TraceSeqEWDataloader(pl.LightningDataModule):
             eye_widths = np.asarray(eye_widths)
             eye_widths[eye_widths < 0] = 0 # Make -0.1 eye_widths to 0
 
-            log_info(f"{name}| input_seq {input_arr.shape} | eye_width {eye_widths.shape}")
+            rank_zero_info(f"{name}| input_seq {input_arr.shape} | eye_width {eye_widths.shape}")
 
             # train/val split
             indices = np.arange(len(input_arr))
-            train_idx, val_idx = train_test_split(indices, test_size=self.test_size, shuffle=True)
+            train_idx, val_idx = train_test_split(
+                indices, test_size=self.test_size, shuffle=True, random_state=42
+            )
 
             def _split(arr):
                 return arr[train_idx], arr[val_idx]
@@ -155,9 +157,10 @@ class TraceSeqEWDataloader(pl.LightningDataModule):
             )
 
         # persist scalers for future runs
-        if self.trainer and self.trainer.logger:
+        if fit_scaler and self.trainer and self.trainer.is_global_zero and self.trainer.logger:
             save_path = Path(self.trainer.logger.log_dir) / "scaler.pth"
             torch.save((self.seq_scaler, self.fix_scaler), save_path)
+            rank_zero_info(f"Saved scalers to {save_path}")
 
     def train_dataloader(self):
         per_loader_bs = self.batch_size // max(1, len(self.train_dataset))
@@ -202,7 +205,7 @@ class InferenceTraceSeqEWDataloader(pl.LightningDataModule):
 
         # Load scaler
         scalers = torch.load(self.scaler_path)
-        log_info(f"Loaded scaler object from {self.scaler_path}")
+        rank_zero_info(f"Loaded scaler object from {self.scaler_path}")
 
         tx = read_snp(Path(self.tx_snp))
         rx = read_snp(Path(self.rx_snp))
@@ -220,7 +223,7 @@ class InferenceTraceSeqEWDataloader(pl.LightningDataModule):
         self.predict_dataset = []
         for csv_path in csv_paths:
             case_id, input_arr = processor.parse(csv_path)
-            log_info(f"Input array: {input_arr.shape}")
+            rank_zero_info(f"Input array: {input_arr.shape}")
             # Use structured boundary array for the new processor
             ds = InferenceTraceEWDataset(input_arr, directions, self.boundary.to_structured_array(), tx, rx)
             self.predict_dataset.append(ds.transform(*scalers))
