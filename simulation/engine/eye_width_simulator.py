@@ -433,7 +433,7 @@ class EyeWidthSimulator:
         R_tx = ntwk.z0[0, 0].real
         R_rx = ntwk.z0[0, n_line].real
 
-        # Create frequency axis directly from time axis (simplified)
+        # Create frequency axis directly from time axis
         time_axis = self.params.time_axis_sbr
         if not (time_axis.start == 0 and time_axis.endpoint == True):
             raise RuntimeError('time_axis.start == 0 and time_axis.endpoint == True should be true.')
@@ -445,38 +445,39 @@ class EyeWidthSimulator:
         f_stop = (f_num - 1) * f_step
         f_ax_sp_new = Axis(start=0, stop=f_stop, num=f_num, endpoint=True)
 
-        # single bit pulse in frequency domain: first find of FT of pulse (voltage at source)
+        # single bit pulse in frequency domain
         pulse_f_volt_at_source = self.params.pulse.freq_dom(f_ax_sp_new.array)
-        # single bit pulse in frequency domain (incident wave at port)
         pulse_f_wave_at_port = pulse_f_volt_at_source / (2 * np.sqrt(R_tx))
 
-        # SBR in frequency and time domain
-        sbr_f_dom = np.zeros((f_ax_sp_new.num, n_line, n_line), dtype=np.cdouble)
-        sbr_t_dom = np.zeros((2 * f_ax_sp_new.num - 1, n_line, n_line))
-
-        # S-parameter interpolation - efficient inline implementation  
+        # --- Fully vectorized S-parameter interpolation ---
         new_freq_array = f_ax_sp_new.array
-        s_param_interp = np.zeros((f_ax_sp_new.num, n_line, n_line), dtype=np.cdouble)
-        for idx_output_line, idx_input_line in np.ndindex(n_line, n_line):
-            s_data = ntwk.s[:, idx_output_line + n_line, idx_input_line]
-            magnitude, phase = np.abs(s_data), np.unwrap(np.angle(s_data))
-            magnitude_interp = np.interp(new_freq_array, ntwk.f, magnitude, left=0, right=0)
-            phase_interp = np.interp(new_freq_array, ntwk.f, phase, left=0, right=0)
-            s_param_interp[:, idx_output_line, idx_input_line] = magnitude_interp * np.exp(1j * phase_interp)
+        s_data_all = ntwk.s[:, n_line:, :n_line]  # Shape: [nfreq, n_line, n_line]
+        
+        magnitude_all = np.abs(s_data_all)
+        phase_all = np.unwrap(np.angle(s_data_all), axis=0)
 
+        mag_reshaped = magnitude_all.reshape(ntwk.f.size, -1)
+        phase_reshaped = phase_all.reshape(ntwk.f.size, -1)
+
+        magnitude_interp_flat = np.array([np.interp(new_freq_array, ntwk.f, mag_reshaped[:, i], left=0, right=0) for i in range(mag_reshaped.shape[1])]).T
+        phase_interp_flat = np.array([np.interp(new_freq_array, ntwk.f, phase_reshaped[:, i], left=0, right=0) for i in range(phase_reshaped.shape[1])]).T
+        
+        s_param_interp = (magnitude_interp_flat * np.exp(1j * phase_interp_flat)).reshape(f_ax_sp_new.num, n_line, n_line)
+        
         # Vectorized operation to obtain SBR in frequency domain
-        pulse_f_wave_at_port = pulse_f_wave_at_port[:, np.newaxis, np.newaxis]
-        sbr_f_dom = pulse_f_wave_at_port * s_param_interp * np.sqrt(R_rx)
+        pulse_f_wave_at_port_bcast = pulse_f_wave_at_port[:, np.newaxis, np.newaxis]
+        sbr_f_dom = pulse_f_wave_at_port_bcast * s_param_interp * np.sqrt(R_rx)
 
-        # Simplified inverse continuous FT - inlined for better performance
-        def inverse_ft(f_data):
-            M = f_data.shape[0]
-            f_data_ext = np.zeros(2 * M - 1, dtype=np.cdouble)
-            f_data_ext[:M] = f_data
-            f_data_ext[M:] = np.conj(np.flip(f_data))[:M - 1]
-            return np.real((2 * f_ax_sp_new.num - 1) * f_ax_sp_new.step * np.fft.ifft(f_data_ext))
-
-        sbr_t_dom = np.apply_along_axis(inverse_ft, 0, sbr_f_dom)
+        # --- Vectorized inverse continuous FT ---
+        M = sbr_f_dom.shape[0]
+        sbr_f_flat = sbr_f_dom.reshape(M, -1)
+        
+        f_data_ext = np.zeros((2 * M - 1, sbr_f_flat.shape[1]), dtype=np.cdouble)
+        f_data_ext[:M, :] = sbr_f_flat
+        f_data_ext[M:, :] = np.conj(np.flip(sbr_f_flat, axis=0))[:M - 1, :]
+        
+        sbr_t_flat = np.real((2 * f_ax_sp_new.num - 1) * f_ax_sp_new.step * np.fft.ifft(f_data_ext, axis=0))
+        sbr_t_dom = sbr_t_flat.reshape((2 * M - 1, n_line, n_line))
 
         line_sbrs = []
         for idx_line in range(sbr_t_dom.shape[1]):

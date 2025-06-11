@@ -22,6 +22,13 @@ from simulation.io.snp_utils import parse_snps, generate_vertical_snp_pairs
 from simulation.parameters.param_utils import parse_param_types, modify_params_for_inductance
 from common.signal_utils import read_snp
 
+try:
+    import threadpoolctl
+    print(f"threadpoolctl imported successfully. Version: {threadpoolctl.__version__}")
+except ImportError:
+    threadpoolctl = None
+    print("Warning: threadpoolctl not found. Install it with 'pip install threadpoolctl' for optimal multi-threading performance.")
+
 # Global profiling state
 _profiling_data = threading.local()
 
@@ -235,11 +242,19 @@ def collect_snp_batch_simulation_data(task_batch, combined_params, pickle_dir,
                 # Run simulation - the simulator will load SNP files as needed
                 # We could optimize this further by pre-loading the horizontal SNP
                 # but that would require more changes to the simulator
-                line_ew = snp_eyewidth_simulation(
-                    config=combined_config,
-                    snp_files=(trace_snp_path, snp_tx, snp_rx),
-                    directions=sim_directions
-                )
+                if threadpoolctl:
+                    with threadpoolctl.threadpool_limits(limits=1, user_api='all'):
+                        line_ew = snp_eyewidth_simulation(
+                            config=combined_config,
+                            snp_files=(trace_snp_path, snp_tx, snp_rx),
+                            directions=sim_directions
+                        )
+                else:
+                    line_ew = snp_eyewidth_simulation(
+                        config=combined_config,
+                        snp_files=(trace_snp_path, snp_tx, snp_rx),
+                        directions=sim_directions
+                    )
                 
                 # Handle tuple return
                 if isinstance(line_ew, tuple):

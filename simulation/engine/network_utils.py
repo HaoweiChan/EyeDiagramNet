@@ -158,10 +158,8 @@ def s2z(s: np.ndarray, z0: np.ndarray) -> np.ndarray:
     lhs = nudge_eig((Id - s) @ F)
     rhs = (s @ G + G.conj()) @ F
     
-    # Vectorized solve for all frequency points
-    z = np.zeros_like(s)
-    for i in range(nfreqs):
-        z[i] = np.linalg.solve(lhs[i], rhs[i])
+    # Use vectorized solve for all frequency points
+    z = np.linalg.solve(lhs, rhs)
     
     return z
 
