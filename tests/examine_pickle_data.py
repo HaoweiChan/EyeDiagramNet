@@ -438,7 +438,7 @@ def main():
                             config,
                             (snp_horiz, snp_tx, snp_rx),
                             directions,
-                            device="cuda"
+                            device="cpu"
                         )
                         
                         # Handle return format
