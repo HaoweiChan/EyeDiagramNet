@@ -72,6 +72,71 @@ def time_block(description):
     
     return TimeBlock(description)
 
+def monitor_system_resources(interval=10):
+    """Background monitoring of system resources using tqdm.write to prevent display conflicts."""
+    tqdm.write(f"[MONITOR] Starting system resource monitoring (interval: {interval}s)")
+    
+    while not _monitoring_stop_event.is_set():
+        try:
+            # CPU usage
+            cpu_percent_per_core = psutil.cpu_percent(interval=1, percpu=True)
+            cpu_overall = psutil.cpu_percent(interval=0)
+            
+            # Memory info
+            memory = psutil.virtual_memory()
+            memory_percent = memory.percent
+            memory_used_gb = memory.used / (1024**3)
+            memory_total_gb = memory.total / (1024**3)
+            
+            # Load average
+            load_str = ""
+            if hasattr(psutil, "getloadavg"):
+                load_avg = psutil.getloadavg()
+                load_str = f" | Load: {load_avg[0]:.2f}, {load_avg[1]:.2f}, {load_avg[2]:.2f}"
+            
+            # Format CPU cores string
+            if len(cpu_percent_per_core) > 8:
+                cores_str = ", ".join([f"{p:.1f}%" for p in cpu_percent_per_core[:4]])
+                cores_str += f" ... " + ", ".join([f"{p:.1f}%" for p in cpu_percent_per_core[-4:]])
+            else:
+                cores_str = ", ".join([f"{p:.1f}%" for p in cpu_percent_per_core])
+
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            message = (f"[MONITOR {timestamp}] "
+                       f"CPU: {cpu_overall:.1f}% | "
+                       f"RAM: {memory_used_gb:.1f}/{memory_total_gb:.1f}GB ({memory_percent:.1f}%)"
+                       f"{load_str} | Cores: [{cores_str}]")
+            tqdm.write(message)
+            
+            _monitoring_stop_event.wait(interval - 1)
+            
+        except Exception as e:
+            tqdm.write(f"[MONITOR] Error: {e}")
+            _monitoring_stop_event.wait(interval)
+
+def start_background_monitoring(interval=10):
+    """Start background system monitoring thread."""
+    global _monitoring_thread
+    if _monitoring_thread is None:
+        _monitoring_stop_event.clear()
+        _monitoring_thread = threading.Thread(
+            target=monitor_system_resources, 
+            args=(interval,),
+            daemon=True,
+            name="SystemMonitor"
+        )
+        _monitoring_thread.start()
+
+def stop_background_monitoring():
+    """Stop background system monitoring thread."""
+    global _monitoring_thread
+    if _monitoring_thread is not None:
+        tqdm.write("[MONITOR] Stopping system resource monitoring...")
+        _monitoring_stop_event.set()
+        _monitoring_thread.join(timeout=2)
+        _monitoring_thread = None
+        tqdm.write("[MONITOR] System resource monitoring stopped.")
+
 # Global shared memory registry for cleanup
 _shared_memory_blocks = []
 
@@ -472,75 +537,6 @@ def run_with_executor(batch_list, combined_params, trace_specific_output_dir, pa
                 executor.shutdown(wait=False, cancel_futures=True)
                 raise
 
-def monitor_system_resources(interval=10):
-    """Background monitoring of system resources"""
-    print(f"[MONITOR] Starting system resource monitoring (interval: {interval}s)")
-    
-    while not _monitoring_stop_event.is_set():
-        try:
-            # Get CPU usage per core
-            cpu_percent_per_core = psutil.cpu_percent(interval=1, percpu=True)
-            cpu_overall = psutil.cpu_percent(interval=0)
-            
-            # Get memory info  
-            memory = psutil.virtual_memory()
-            memory_percent = memory.percent
-            memory_used_gb = memory.used / (1024**3)
-            memory_total_gb = memory.total / (1024**3)
-            
-            # Get load average (Unix/Linux only)
-            try:
-                load_avg = psutil.getloadavg()
-                load_str = f", Load: {load_avg[0]:.2f}/{load_avg[1]:.2f}/{load_avg[2]:.2f}"
-            except:
-                load_str = ""
-            
-            # Format CPU per-core info (show only first 8 cores if more than 8)
-            if len(cpu_percent_per_core) <= 8:
-                cpu_cores_str = ", ".join([f"C{i}:{cpu:.1f}%" for i, cpu in enumerate(cpu_percent_per_core)])
-            else:
-                cpu_cores_str = ", ".join([f"C{i}:{cpu:.1f}%" for i, cpu in enumerate(cpu_percent_per_core[:8])])
-                cpu_cores_str += f", ... ({len(cpu_percent_per_core)} cores total)"
-            
-            timestamp = datetime.now().strftime("%H:%M:%S")
-            print(f"[MONITOR {timestamp}] CPU: {cpu_overall:.1f}% overall | Cores: {cpu_cores_str} | "
-                  f"RAM: {memory_used_gb:.1f}/{memory_total_gb:.1f}GB ({memory_percent:.1f}%){load_str}", 
-                  flush=True)
-            
-            # Wait for the remaining interval time or until stop event
-            _monitoring_stop_event.wait(interval - 1)  # -1 because cpu_percent already waited 1s
-            
-        except Exception as e:
-            print(f"[MONITOR] Error in monitoring: {e}")
-            _monitoring_stop_event.wait(interval)
-
-def start_background_monitoring(interval=10):
-    """Start background system monitoring thread"""
-    global _monitoring_thread
-    if _monitoring_thread is not None:
-        return  # Already started
-    
-    _monitoring_stop_event.clear()
-    _monitoring_thread = threading.Thread(
-        target=monitor_system_resources, 
-        args=(interval,),
-        daemon=True,
-        name="SystemMonitor"
-    )
-    _monitoring_thread.start()
-
-def stop_background_monitoring():
-    """Stop background system monitoring thread"""
-    global _monitoring_thread
-    if _monitoring_thread is None:
-        return
-    
-    print("[MONITOR] Stopping system resource monitoring...")
-    _monitoring_stop_event.set()
-    _monitoring_thread.join(timeout=2)
-    _monitoring_thread = None
-    print("[MONITOR] System resource monitoring stopped")
-
 def main():
     """Main function for parallel data collection"""
     # Set environment variables to prevent nested parallelism before doing anything else
@@ -584,7 +580,7 @@ def main():
     enable_inductance = args.enable_inductance or config['boundary'].get('enable_inductance', False)
     
     debug = args.debug if args.debug else config.get('debug', False)
-    executor_type = args.executor_type
+    executor_type = args.executor_type if args.executor_type else config.get('runner', {}).get('executor_type', 'process')
     
     # Determine number of workers: Command-line -> Config file -> Optimal calculation
     config_workers = config.get('runner', {}).get('max_workers')
@@ -611,8 +607,7 @@ def main():
     print(f"  Executor type: {executor_type}")
     
     # Start background system monitoring
-    monitoring_interval = 15  # Monitor every 15 seconds
-    start_background_monitoring(monitoring_interval)
+    start_background_monitoring(interval=15)
     
     # Create base output directory and trace-specific subdirectory
     base_output_dir = output_dir
