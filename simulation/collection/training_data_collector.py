@@ -1,20 +1,20 @@
 """Main training data collector orchestrating eye width simulation data collection."""
 
-import sys
+import os
+import time
 import yaml
 import pickle
+import psutil
+import threading
 import numpy as np
 import multiprocessing
 import concurrent.futures
+import threadpoolctl
+import multiprocessing.shared_memory as shm
 from tqdm import tqdm
 from pathlib import Path
-from collections import defaultdict
-import multiprocessing.shared_memory as shm
-import time
-import threading
-import os
 from datetime import datetime
-import psutil
+from collections import defaultdict
 
 from simulation.parameters.bound_param import PARAM_SETS_MAP
 from simulation.engine.eye_width_simulator import snp_eyewidth_simulation
@@ -22,13 +22,6 @@ from simulation.io.config_utils import load_config, resolve_trace_pattern, resol
 from simulation.io.snp_utils import parse_snps, generate_vertical_snp_pairs
 from simulation.parameters.param_utils import parse_param_types, modify_params_for_inductance
 from common.signal_utils import read_snp
-
-try:
-    import threadpoolctl
-    print(f"threadpoolctl imported successfully. Version: {threadpoolctl.__version__}")
-except ImportError:
-    threadpoolctl = None
-    print("Warning: threadpoolctl not found. Install it with 'pip install threadpoolctl' for optimal multi-threading performance.")
 
 # Global profiling state
 _profiling_data = threading.local()

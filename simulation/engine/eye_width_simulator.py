@@ -759,7 +759,7 @@ class EyeWidthSimulator:
         waveform = np.zeros((self.params.n_perUI_intrp, conv_length, self.num_lines))
         
         # Use an efficient FFT length for performance
-        fft_len = scipy.signal.next_fast_len(conv_length)
+        fft_len = scipy.fft.next_fast_len(conv_length)
 
         # Process each output line
         for output_line_idx in range(self.num_lines):

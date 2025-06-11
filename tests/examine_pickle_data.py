@@ -410,6 +410,7 @@ def main():
                 with open(pfile, 'rb') as f:
                     data = pickle.load(f)
                 
+                snp_horiz = Path(data['meta']['snp_horiz'])
                 n_samples = len(data.get('configs', []))
                 print(f"  Found {n_samples} samples")
                 
@@ -425,8 +426,6 @@ def main():
                     directions = np.array(data['directions'][sample_idx]) if data['directions'][sample_idx] else None
                     
                     # Get SNP file paths - use n_ports from meta to construct correct filename
-                    n_ports = data.get('meta', {}).get('n_ports', 4)  # Default to 4 if not found
-                    snp_horiz = pfile.parent / f"{pfile.stem}.s{n_ports}p"
                     snp_tx = Path(data['snp_txs'][sample_idx])
                     snp_rx = Path(data['snp_rxs'][sample_idx])
                     
