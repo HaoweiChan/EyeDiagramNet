@@ -200,10 +200,8 @@ class SNPCache:
         """Clean up shared memory blocks."""
         for block in self.memory_blocks:
             try:
-                if hasattr(block, 'close'):
-                    block.close()
-                if hasattr(block, 'unlink'):
-                    block.unlink()
+                block.close()
+                block.unlink()
             except FileNotFoundError:
                 pass # Already unlinked
             except Exception:
@@ -400,11 +398,9 @@ def cleanup_shared_memory():
     """Clean up all shared memory blocks"""
     for block in _shared_memory_blocks:
         try:
-            if hasattr(block, 'close'):
-                block.close()
-            if hasattr(block, 'unlink'):
-                block.unlink()
-        except Exception:
+            block.close()
+            block.unlink()
+        except:
             pass
     _shared_memory_blocks.clear()
 

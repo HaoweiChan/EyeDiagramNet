@@ -690,105 +690,42 @@ class EyeWidthSimulator:
     def calculate_eyewidth_percentage(self, half_steady, waveform, vref_num=None):
         """Eye width percentage calculation with adaptive strategies."""
         # For large cases (many lines), reduce vref search more aggressively
-        if vref_num is None:
-            if self.num_lines > 20:
-                vref_num = 5  # More aggressive reduction for large cases
-            else:
-                vref_num = 7  # Standard reduction for smaller cases
-            
+        vref_scale_factor = 0.5 if self.num_lines > 16 else 1.0
+
         # Use adaptive vref range based on problem size
         vref_step = 0.005
         vref_test_center = vref_step * round(half_steady / vref_step)
         
         # Smaller range for large cases to save computation
-        range_multiplier = 2 if self.num_lines > 20 else 3
-        vref_test_values = np.linspace(
-            start=vref_test_center - range_multiplier * vref_step,
-            stop=vref_test_center + range_multiplier * vref_step,
-            num=vref_num,
-            endpoint=True
+        if vref_num is None:
+            vref_num = int(vref_test_center / vref_step * 0.4 * vref_scale_factor)
+        
+        vrefs = np.linspace(
+            vref_test_center - vref_num * vref_step,
+            vref_test_center + vref_num * vref_step,
+            2 * vref_num + 1
         )
         
-        # Pre-allocate results
-        eye_width_results = np.zeros((vref_num, self.num_lines), dtype=int)
+        # Calculate eye widths for all vrefs in a vectorized way
+        eye_widths = self.calculate_eye_widths_for_vref(waveform, vrefs)
         
-        # Vectorized processing for all cases
-        for vref_idx in range(vref_num):
-            vih = vref_test_values[vref_idx] + self.params.vmask
-            vil = vref_test_values[vref_idx] - self.params.vmask
-            
-            # Vectorized comparison across all lines
-            valid_points_all = (waveform > vih) | (waveform < vil)  # [samples, conv_length, num_lines]
-            eye_indices_all = np.all(valid_points_all, axis=1)  # [samples, num_lines]
-            
-            # Calculate eye widths for all lines
-            for line_idx in range(self.num_lines):
-                eye_width_results[vref_idx, line_idx] = self.calculate_eye_width_vectorized(
-                    eye_indices_all[:, line_idx])
-        
-        # Find best vref
-        min_eye_width_per_vref = np.min(eye_width_results, axis=1)
-        best_vref_idx = np.argmax(min_eye_width_per_vref)
-        
-        if min_eye_width_per_vref[best_vref_idx] == -1:
-            # Vectorized fallback to default vref
-            vih_default = self.params.vref_dfl + self.params.vmask
-            vil_default = self.params.vref_dfl - self.params.vmask
-            
-            valid_points_default = (waveform > vih_default) | (waveform < vil_default)
-            eye_indices_default = np.all(valid_points_default, axis=1)
-            
-            eye_widths = np.zeros(self.num_lines, dtype=int)
-            for line_idx in range(self.num_lines):
-                eye_widths[line_idx] = self.calculate_eye_width_vectorized(eye_indices_default[:, line_idx])
-        else:
-            eye_widths = eye_width_results[best_vref_idx]
-        
-        return 100 * eye_widths / self.params.n_perUI_intrp
+        # Return max eye width and corresponding vref
+        max_ew = np.max(eye_widths)
+        max_vref = vrefs[np.argmax(eye_widths)]
+        return max_ew, max_vref
 
     def calculate_waveform(self, test_patterns, response_matrices):
-        """
-        Waveform calculation optimized with vectorized FFT convolutions.
-        This replaces the nested loops with a much faster implementation.
-        """
-        pattern_length = test_patterns.shape[2]
-        response_length = response_matrices.shape[2]
-        conv_length = pattern_length + response_length - 1
-        
-        # Pre-allocate output waveform array
-        waveform = np.zeros((self.params.n_perUI_intrp, conv_length, self.num_lines))
-        
-        # Use an efficient FFT length for performance
-        fft_len = scipy.fft.next_fast_len(conv_length)
+        """Calculate the final waveform from test patterns and response matrices."""
+        num_patterns, num_lines, pattern_len = test_patterns.shape
+        waveform = np.zeros((num_patterns, pattern_len + response_matrices.shape[2] - 1))
 
-        # Process each output line
-        for output_line_idx in range(self.num_lines):
-            # Get patterns and responses for the current output line
-            patterns_for_output = test_patterns[output_line_idx]  # Shape: [num_lines, pattern_length]
-            responses_for_output = response_matrices[output_line_idx]  # Shape: [num_lines, response_length, samples_per_ui]
-
-            # Transpose responses to [samples_per_ui, num_lines, response_length] for easier broadcasting
-            responses_for_output = np.transpose(responses_for_output, (2, 0, 1))
-
-            # --- FFT-based convolution ---
-            # 1. Compute FFT of patterns and responses
-            fft_patterns = np.fft.fft(patterns_for_output, n=fft_len, axis=1)  # Shape: [num_lines, fft_len]
-            fft_responses = np.fft.fft(responses_for_output, n=fft_len, axis=2) # Shape: [samples_per_ui, num_lines, fft_len]
+        for i in range(num_lines):
+            line_pattern = test_patterns[:, i, :]
+            line_response_matrix = response_matrices[i, :, :]
             
-            # 2. Perform element-wise multiplication in frequency domain.
-            #    Broadcast fft_patterns to match dimensions of fft_responses.
-            #    This multiplies the pattern for each input line with the corresponding response.
-            product_fft = fft_patterns[np.newaxis, :, :] * fft_responses
-
-            # 3. Sum the products over all input lines (to combine main signal and crosstalk).
-            summed_fft = np.sum(product_fft, axis=1) # Shape: [samples_per_ui, fft_len]
-
-            # 4. Compute inverse FFT to get the final waveform in the time domain.
-            #    We only need the real part and truncate to the valid convolution length.
-            line_waveform = np.fft.ifft(summed_fft, axis=1)[:, :conv_length].real
-
-            # Store the resulting waveform for the current output line
-            waveform[:, :, output_line_idx] = line_waveform
+            # Use convolution for each pattern with its corresponding response matrix
+            for j in range(num_patterns):
+                waveform[j, :] += np.convolve(line_pattern[j, :], line_response_matrix[j, :])
         
         return waveform
 
@@ -811,15 +748,29 @@ class EyeWidthSimulator:
             raise e
 
     def _load_and_cascade_networks(self):
-        ntwk_horiz = rf.Network(self.params.snp_horiz)
+        """
+        Load S-parameter files and cascade them.
+        Handles both file paths and pre-loaded skrf.Network objects.
+        """
+        # Load networks, checking if they are already network objects
+        ntwk_horiz = self.params.snp_horiz if isinstance(self.params.snp_horiz, rf.Network) else rf.Network(self.params.snp_horiz)
+        
         if self.params.snp_tx and self.params.snp_rx:
-            ntwk_tx = rf.Network(self.params.snp_tx)
-            ntwk_rx = rf.Network(self.params.snp_rx)
+            ntwk_tx = self.params.snp_tx if isinstance(self.params.snp_tx, rf.Network) else rf.Network(self.params.snp_tx)
+            ntwk_rx = self.params.snp_rx if isinstance(self.params.snp_rx, rf.Network) else rf.Network(self.params.snp_rx)
+            
+            # Apply inductance before cascading
             ntwk_horiz = self.add_inductance(ntwk_horiz, self.params.L_tx, self.params.L_rx)
+            
+            # Flip RX network for cascading
             ntwk_rx.flip()
+            
+            # Cascade the networks
             ntwk = ntwk_tx ** ntwk_horiz ** ntwk_rx
         else:
+            # Apply inductance directly if no vertical networks
             ntwk = self.add_inductance(ntwk_horiz, self.params.L_tx, self.params.L_rx)
+            
         return ntwk
 
     def _assign_tx_rx_directions(self):
