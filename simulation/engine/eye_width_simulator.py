@@ -712,27 +712,51 @@ class EyeWidthSimulator:
         # Return max eye width and corresponding vref
         max_ew = np.max(eye_widths)
         max_vref = vrefs[np.argmax(eye_widths)]
-        return max_ew, max_vref
+        return 100 * max_ew / self.params.n_perUI_intrp, max_vref
 
     def calculate_waveform(self, test_patterns, response_matrices):
-        """Calculate the final waveform from test patterns and response matrices."""
-        num_patterns, num_lines, pattern_len = test_patterns.shape
-        response_len_flat = response_matrices.shape[2] * response_matrices.shape[3]
-        conv_len = pattern_len + response_len_flat - 1
+        """
+        Waveform calculation optimized with vectorized FFT convolutions.
+        This replaces the nested loops with a much faster implementation.
+        """
+        pattern_length = test_patterns.shape[2]
+        response_length = response_matrices.shape[2]
+        conv_length = pattern_length + response_length - 1
         
-        waveform = np.zeros((num_patterns, conv_len, num_lines))
+        # Pre-allocate output waveform array
+        waveform = np.zeros((self.params.n_perUI_intrp, conv_length, self.num_lines))
+        
+        # Use an efficient FFT length for performance
+        fft_len = scipy.fft.next_fast_len(conv_length)
 
-        for i in range(num_lines):  # For each output line
-            for k in range(num_patterns):  # For each test pattern
-                # The total waveform on output line i is the sum of convolutions from all input lines
-                total_conv = np.zeros(conv_len)
-                for j in range(num_lines):  # From each input line
-                    # Response of output i to input j, flattened to 1D
-                    response = response_matrices[i, j, :, :].flatten()
-                    # Pattern for input j for this test pattern
-                    pattern = test_patterns[k, j, :]
-                    total_conv += np.convolve(pattern, response)
-                waveform[k, :, i] = total_conv
+        # Process each output line
+        for output_line_idx in range(self.num_lines):
+            # Get patterns and responses for the current output line
+            patterns_for_output = test_patterns[output_line_idx]  # Shape: [num_lines, pattern_length]
+            responses_for_output = response_matrices[output_line_idx]  # Shape: [num_lines, response_length, samples_per_ui]
+
+            # Transpose responses to [samples_per_ui, num_lines, response_length] for easier broadcasting
+            responses_for_output = np.transpose(responses_for_output, (2, 0, 1))
+
+            # --- FFT-based convolution ---
+            # 1. Compute FFT of patterns and responses
+            fft_patterns = np.fft.fft(patterns_for_output, n=fft_len, axis=1)  # Shape: [num_lines, fft_len]
+            fft_responses = np.fft.fft(responses_for_output, n=fft_len, axis=2) # Shape: [samples_per_ui, num_lines, fft_len]
+            
+            # 2. Perform element-wise multiplication in frequency domain.
+            #    Broadcast fft_patterns to match dimensions of fft_responses.
+            #    This multiplies the pattern for each input line with the corresponding response.
+            product_fft = fft_patterns[np.newaxis, :, :] * fft_responses
+
+            # 3. Sum the products over all input lines (to combine main signal and crosstalk).
+            summed_fft = np.sum(product_fft, axis=1) # Shape: [samples_per_ui, fft_len]
+
+            # 4. Compute inverse FFT to get the final waveform in the time domain.
+            #    We only need the real part and truncate to the valid convolution length.
+            line_waveform = np.fft.ifft(summed_fft, axis=1)[:, :conv_length].real
+
+            # Store the resulting waveform for the current output line
+            waveform[:, :, output_line_idx] = line_waveform
         
         return waveform
 
