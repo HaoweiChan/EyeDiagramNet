@@ -12,6 +12,39 @@ from ..utils import losses
 from ..utils.init_weights import init_weights
 from ..utils.visualization import image_to_buffer, plot_ew_curve
 
+@torch.jit.script
+def _augment_sequence_jit(seq: torch.Tensor, insert_frac: int = 10) -> torch.Tensor:
+    """
+    TorchScript-friendly augmentation used by TraceEWModule.  
+    Inserts a small random gap inside each sequence and pads new timesteps with -1.
+
+    Args
+    ----
+    seq : Tensor[B, L, C]  - original input sequence  
+    insert_frac : int      - the divisor controlling maximum insertion length  
+                             (default keeps the old “L // 10” behaviour)
+
+    Returns
+    -------
+    Tensor[B, L+δ, C]  - augmented sequence
+    """
+    B, L, C = seq.shape
+    max_insert_len = L // insert_frac
+    if max_insert_len == 0:
+        return seq
+
+    insert_len = torch.randint(1, max_insert_len + 1, (1,), device=seq.device).item()
+    if insert_len == 0:
+        return seq
+
+    new_L = L + insert_len
+    out = torch.full((B, new_L, C), -1.0, dtype=seq.dtype, device=seq.device)
+
+    keep = torch.randperm(new_L, device=seq.device)[:L]
+    keep, _ = torch.sort(keep)
+    out.index_copy_(1, keep, seq)
+    return out
+
 class TraceEWModule(LightningModule):
     def __init__(
         self,
@@ -207,41 +240,8 @@ class TraceEWModule(LightningModule):
         return (self.current_epoch * max_batches, max_batches - 1)
 
     def augment_input_sequence(self, seq):
-        batch_size, seq_len, feat_dim = seq.shape
-        max_insert_len = seq_len // 10
-        
-        if max_insert_len == 0:
-            return seq
-        
-        # Use a fixed augmentation strategy for better performance
-        insert_len = torch.randint(1, max_insert_len + 1, (1,), device=seq.device).item()
-        
-        if insert_len == 0:
-            return seq
-        
-        new_seq_len = seq_len + insert_len
-        
-        # More efficient: use torch.full with specific dtype to avoid conversions
-        extended_seq = torch.full(
-            (batch_size, new_seq_len, feat_dim),
-            -1.0, device=seq.device, dtype=seq.dtype
-        )
-        
-        # Generate random positions more efficiently - avoid sorting overhead for large sequences
-        if new_seq_len > 1000:
-            # For large sequences, use reservoir sampling approach
-            keep_positions = torch.arange(seq_len, device=seq.device)
-            # Add random offsets
-            offsets = torch.randperm(insert_len, device=seq.device)[:seq_len] if insert_len < seq_len else torch.zeros(seq_len, device=seq.device)
-            keep_positions = keep_positions + torch.cumsum(torch.bincount(keep_positions + offsets, minlength=new_seq_len)[:new_seq_len], dim=0)[:seq_len]
-        else:
-            # Original approach for smaller sequences
-            keep_positions = torch.sort(torch.randperm(new_seq_len, device=seq.device)[:seq_len])[0]
-        
-        # Use index_copy_ for better performance
-        extended_seq.index_copy_(1, keep_positions, seq)
-        
-        return extended_seq
+        # TorchScript-accelerated implementation (see _augment_sequence_jit above)
+        return _augment_sequence_jit(seq, 10)
 
     def step(self, batch, batch_idx, stage, dataloader_idx):
         """
