@@ -3,8 +3,7 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 from typing import Dict, List, Tuple, Union
-
-from ..utils.visualization import log_info
+from lightning.pytorch.utilities.rank_zero import rank_zero_info
 
 class CSVProcessor:
     def __init__(self, patterns: List[str] = None, padding_value: int = -1):
@@ -22,7 +21,7 @@ class CSVProcessor:
         items = data_dirs.items() if is_dict else enumerate(data_dirs)
 
         for key, dir_path in items:
-            log_info(f"Parsing data from {dir_path}")
+            rank_zero_info(f"Parsing data from {dir_path}")
             matches = [
                 p
                 for pat in self.patterns

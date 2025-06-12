@@ -5,12 +5,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchmetrics as tm
 from lightning import LightningModule
+from lightning.pytorch.utilities.rank_zero import rank_zero_info
 
-from ..models.layers import (GradNormLossBalancer, LearnableLossWeighting,
-                             UncertaintyWeightedLoss)
+from ..models.layers import LearnableLossWeighting
 from ..utils import losses
 from ..utils.init_weights import init_weights
-from ..utils.visualization import image_to_buffer, log_info, plot_ew_curve
+from ..utils.visualization import image_to_buffer, plot_ew_curve
 
 class TraceEWModule(LightningModule):
     def __init__(
@@ -67,13 +67,13 @@ class TraceEWModule(LightningModule):
             with torch.no_grad():
                 self(*forward_args)
         except (ValueError, RuntimeError) as e:
-            log_info(traceback.format_exc())
+            rank_zero_info(traceback.format_exc())
             raise
         self.apply(init_weights('xavier'))
 
         # load model checkpoint
         if self.hparams.ckpt_path is not None:
-            log_info(f'Loading model checkpoint: {self.hparams.ckpt_path}')
+            rank_zero_info(f'Loading model checkpoint: {self.hparams.ckpt_path}')
             ckpt = torch.load(self.hparams.ckpt_path, map_location=self.device)
             self.load_state_dict(ckpt['state_dict'], strict=self.hparams.strict)
         
@@ -82,21 +82,21 @@ class TraceEWModule(LightningModule):
             # Check if torch.compile is disabled globally
             import os
             if os.environ.get('TORCH_COMPILE_DISABLE') == '1':
-                log_info("torch.compile is disabled globally - using eager mode")
+                rank_zero_info("torch.compile is disabled globally - using eager mode")
                 return
                 
             try:
-                log_info("Attempting to compile model with torch.compile...")
+                rank_zero_info("Attempting to compile model with torch.compile...")
                 self.model = torch.compile(
                     self.model, 
                     mode="default",
                     dynamic=True,
                     fullgraph=False
                 )
-                log_info("Model compilation completed successfully.")
+                rank_zero_info("Model compilation completed successfully.")
             except Exception as e:
-                log_info(f"Model compilation failed: {str(e)}")
-                log_info("Falling back to eager mode execution.")
+                rank_zero_info(f"Model compilation failed: {str(e)}")
+                rank_zero_info("Falling back to eager mode execution.")
                 # Ensure model is in eager mode if compilation fails
                 if hasattr(self.model, '_orig_mod'):
                     self.model = self.model._orig_mod
@@ -107,7 +107,7 @@ class TraceEWModule(LightningModule):
                 torch._dynamo.config.suppress_errors = True
                 torch._dynamo.config.disable = True
         elif stage in ('fit', None) and not self.hparams.compile_model:
-            log_info("Model compilation disabled by compile_model=False - using eager mode")
+            rank_zero_info("Model compilation disabled by compile_model=False - using eager mode")
 
     def forward(self, *args, **kwargs):
         return self.model(*args, **kwargs)
@@ -120,8 +120,8 @@ class TraceEWModule(LightningModule):
         except RuntimeError as e:
             # Check for torch.compile related errors
             if "torch.compile" in str(e) or "aot_autograd" in str(e) or "double backward" in str(e):
-                log_info(f"torch.compile runtime error detected: {e}")
-                log_info("Disabling torch.compile and falling back to eager mode")
+                rank_zero_info(f"torch.compile runtime error detected: {e}")
+                rank_zero_info("Disabling torch.compile and falling back to eager mode")
                 
                 # Disable compilation globally
                 import os

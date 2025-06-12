@@ -1,16 +1,10 @@
 import torch
-import loguru
 import numpy as np
 import matplotlib.pyplot as plt
 import torch.nn.functional as F
 from PIL import Image
 from io import BytesIO
 from einops import rearrange, repeat
-from lightning.pytorch.utilities import rank_zero_only
-
-@rank_zero_only
-def log_info(msg):
-    loguru.logger.info(msg)
 
 def complex_to_db(x):
     if not torch.is_complex(x):

@@ -255,7 +255,7 @@ class TraceSeqDataLoader(pl.LightningDataModule):
     def locate_input_csv_files(self, data_dir):
         self.input_csv_dir = {}
         for name, csv_dir in data_dir.items():
-            log_info(f"Parsing data from {csv_dir}")
+            rank_zero_info(f"Parsing data from {csv_dir}")
             patterns = ["input for AI*.csv", "*AI input data*.csv"]
             input_csv_dir = [
                 d for pattern in patterns for d in Path(csv_dir).glob(pattern)
@@ -341,11 +341,11 @@ class TraceSeqDataLoader(pl.LightningDataModule):
         fit_scaler = True
         try:
             self.seq_scaler = torch.load(self.scaler_path)
-            log_info(f'Loaded scaler object from {self.scaler_path}')
+            rank_zero_info(f'Loaded scaler object from {self.scaler_path}')
             fit_scaler = False
         except (FileNotFoundError, AttributeError):
             self.seq_scaler = MinMaxScaler()
-            log_info('Could not find scaler file in {self.scaler_path}, initiating new scaler object.')
+            rank_zero_info('Could not find scaler file in {self.scaler_path}, initiating new scaler object.')
 
         for name, csv_dir in self.input_csv_dir.items():
             input_arr, sample_idx = self.parse_input_csv(csv_dir)
@@ -371,7 +371,7 @@ class TraceSeqDataLoader(pl.LightningDataModule):
             # indices = np.arange(1000)
             snps = [snps[i] for i in indices]
             input_arr = input_arr[indices]
-            log_info(f'{name}| input_arr: {input_arr.shape}, SNP: ({len(snps)}*{one_snp.s.shape})')
+            rank_zero_info(f'{name}| input_arr: {input_arr.shape}, SNP: ({len(snps)}*{one_snp.s.shape})')
 
             # Split train and validation set
             x_train, x_val, y_train, y_val = train_test_split(input_arr, snps, test_size=self.test_size)
@@ -388,7 +388,7 @@ class TraceSeqDataLoader(pl.LightningDataModule):
             self.train_dataset[name] = TraceDataset(x_train, y_train, self.max_ports)
             self.val_dataset[name] = TraceDataset(x_val, y_val, self.max_ports)
 
-        log_info(f'-----------Scaler-----------\n\
+        rank_zero_info(f'-----------Scaler-----------\n\
 samples seen: {self.seq_scaler.n_samples_seen_}\n\
 minimum: {self.seq_scaler.min_.round(decimals=2).tolist()}\n\
 maximum: {self.seq_scaler.max_.round(decimals=2).tolist()}')
@@ -436,7 +436,7 @@ class InferenceTraceSeqDataLoader(TraceSeqDataLoader):
 
     def setup(self, stage=None):
         self.seq_scaler = torch.load(self.scaler_path)
-        log_info(f'Loaded scaler object from {self.scaler_path}')
+        rank_zero_info(f'Loaded scaler object from {self.scaler_path}')
 
         for name, csv_dir in self.input_csv_dir.items():
             input_arr, df = self.parse_input_csv(csv_dir)
@@ -444,11 +444,11 @@ class InferenceTraceSeqDataLoader(TraceSeqDataLoader):
             # np.random.seed(seed)
             # indices = np.random.choice(input_arr.shape[0], 100, replace=False)
             input_arr = input_arr[:100]
-            log_info(f'{name}| input_arr: {input_arr.shape}')
+            rank_zero_info(f'{name}| input_arr: {input_arr.shape}')
 
             # store dataset
             self.predict_dataset[name] = InferenceTraceDataset(input_arr, self.max_ports)
-        log_info(f'-----------Scaler-----------\n\
+        rank_zero_info(f'-----------Scaler-----------\n\
 samples seen: {self.seq_scaler.n_samples_seen_}\n\
 minimum: {self.seq_scaler.min_.round(decimals=2).tolist()}\n\
 maximum: {self.seq_scaler.max_.round(decimals=2).tolist()}')

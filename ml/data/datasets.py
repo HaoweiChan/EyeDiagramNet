@@ -1,6 +1,5 @@
 import random
 import psutil
-import itertools
 import numpy as np
 from pathlib import Path, PosixPath
 
@@ -8,8 +7,8 @@ import torch
 import torch.nn.functional as F
 import torch.multiprocessing as mp
 from torch.utils.data import Dataset, DataLoader
+from lightning.pytorch.utilities.rank_zero import rank_zero_info
 
-from ..utils.visualization import log_info
 from .processors import TraceSequenceProcessor
 from common.signal_utils import read_snp, flip_snp, greedy_covering_design
 
@@ -242,7 +241,7 @@ class TraceDataset(Dataset):
 
         self.pair_combinations = greedy_covering_design(self.num_ports // 2, self.max_ports // 2)
         self.pairs_per_seq = min(pairs_per_seq, len(self.pair_combinations))
-        log_info(f'Comb({self.num_ports}, {self.max_ports}): {len(self.pair_combinations)}. Used pairs per sequence: {self.pairs_per_seq}')
+        rank_zero_info(f'Comb({self.num_ports}, {self.max_ports}): {len(self.pair_combinations)}. Used pairs per sequence: {self.pairs_per_seq}')
 
     def __len__(self):
         return len(self.trace_seqs) * self.pairs_per_seq
@@ -371,7 +370,7 @@ class InferenceTraceDataset(Dataset):
 
         num_ports = (self.trace_seqs[0,:,1] == 0).sum()
         self.pair_combinations = greedy_covering_design(num_ports // 2, max_ports // 2)
-        log_info(f'Comb({num_ports}, {max_ports}): {len(self.pair_combinations)}')
+        rank_zero_info(f'Comb({num_ports}, {max_ports}): {len(self.pair_combinations)}')
 
     def __len__(self):
         return len(self.trace_seqs) * len(self.pair_combinations)
