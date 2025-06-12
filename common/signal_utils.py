@@ -25,6 +25,7 @@ def read_snp(snp_file: PosixPath):
     if ntwk.s is not None and ntwk.s.ndim > 0:
         npoints = ntwk.s.shape[0]
         ntwk.frequency = rf.Frequency(1, npoints, npoints, unit='GHz')
+        ntwk.f = ntwk.frequency.f
 
     return ntwk
 
