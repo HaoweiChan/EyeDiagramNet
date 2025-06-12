@@ -225,20 +225,31 @@ def get_snp_from_cache(snp_path, cache_info):
         return read_snp(snp_path) # Fallback for thread mode or uncached files
 
     shm_info = cache_info[str(snp_path)]
-    
-    s_shm = shm.SharedMemory(name=shm_info['s_name'])
-    s_array = np.ndarray(shm_info['s_shape'], dtype=shm_info['s_dtype'], buffer=s_shm.buf)
-    
-    f_shm = shm.SharedMemory(name=shm_info['f_name'])
-    f_array = np.ndarray(shm_info['f_shape'], dtype=shm_info['f_dtype'], buffer=f_shm.buf)
 
+    s_shm = shm.SharedMemory(name=shm_info['s_name'])
+    s_array = np.ndarray(shm_info['s_shape'],
+                         dtype=shm_info['s_dtype'],
+                         buffer=s_shm.buf)
+
+    f_shm = shm.SharedMemory(name=shm_info['f_name'])
+    f_array = np.ndarray(shm_info['f_shape'],
+                         dtype=shm_info['f_dtype'],
+                         buffer=f_shm.buf)
+
+    # Construct Network object without duplicating the underlying data.
+    # The S‑parameter and frequency arrays now *share* the same shared‑memory
+    # buffers across all worker processes, eliminating the per‑process copy
+    # that was previously blowing up RAM usage.
     ntwk = rf.Network()
-    ntwk.s = s_array.copy()
-    ntwk.f = f_array.copy()
-    ntwk.z0 = shm_info['z0']
-    
-    # We don't need to close the shm blocks here, they live for the worker's lifetime
-    _shared_memory_blocks.clear()
+    ntwk.s = s_array            # <‑‑ no `.copy()` – stay in shared memory
+    ntwk.f = f_array
+    ntwk.z0 = np.asarray(shm_info['z0'])
+
+    # Keep shared‑memory segments alive for the lifetime of `ntwk`
+    # so they are not freed prematurely.
+    ntwk._s_shm = s_shm
+    ntwk._f_shm = f_shm
+
     return ntwk
 
 def collect_snp_batch_simulation_data(task_batch, combined_params, pickle_dir, 
