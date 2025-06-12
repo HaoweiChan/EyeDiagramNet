@@ -6,6 +6,7 @@ import yaml
 import pickle
 import psutil
 import threading
+import traceback
 import numpy as np
 import multiprocessing
 import concurrent.futures
@@ -454,15 +455,18 @@ def run_with_executor(batch_list, combined_params, trace_specific_output_dir, pa
                     total=len(futures),
                     desc="Processing batches (threads)"
                 ):
-                    try:
-                        future.result()
+                    exc = future.exception()
+                    if exc is not None:
+                        print("\n--- batch failed ------------------------------------")
+                        print("Exception:\n", exc)
+                        print("Traceback:\n", "".join(traceback.format_exception(exc)))
+                        failed_batches.append(exc)
+                    else:
                         completed_batches += 1
                         if completed_batches % 10 == 0 or completed_batches <= 5:
                             elapsed = time.time() - executor_start_time
                             rate = completed_batches / elapsed
                             print(f"Completed {completed_batches}/{len(futures)} batches, rate: {rate:.2f} batches/sec")
-                    except Exception as e:
-                        failed_batches.append(str(e))
                 
                 total_time = time.time() - executor_start_time
                 print(f"ThreadPoolExecutor completed in {total_time:.2f}s, avg rate: {len(futures)/total_time:.2f} batches/sec")
@@ -510,15 +514,18 @@ def run_with_executor(batch_list, combined_params, trace_specific_output_dir, pa
                     total=len(futures),
                     desc="Processing batches (processes)"
                 ):
-                    try:
-                        future.result()
+                    exc = future.exception()
+                    if exc is not None:
+                        print("\n--- batch failed ------------------------------------")
+                        print("Exception:\n", exc)
+                        print("Traceback:\n", "".join(traceback.format_exception(exc)))
+                        failed_batches.append(exc)
+                    else:
                         completed_batches += 1
                         if completed_batches % 10 == 0 or completed_batches <= 5:
                             elapsed = time.time() - executor_start_time
                             rate = completed_batches / elapsed
                             print(f"Completed {completed_batches}/{len(futures)} batches, rate: {rate:.2f} batches/sec")
-                    except Exception as e:
-                        failed_batches.append(str(e))
                 
                 total_time = time.time() - executor_start_time
                 print(f"ProcessPoolExecutor completed in {total_time:.2f}s, avg rate: {len(futures)/total_time:.2f} batches/sec")
