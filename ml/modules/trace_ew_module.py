@@ -23,7 +23,7 @@ def _augment_sequence_jit(seq: torch.Tensor, insert_frac: int = 10) -> torch.Ten
     ----
     seq : Tensor[B, L, C]  - original input sequence  
     insert_frac : int      - the divisor controlling maximum insertion length  
-                             (default keeps the old “L // 10” behaviour)
+                             (default keeps the old "L // 10" behaviour)
 
     Returns
     -------
@@ -67,7 +67,7 @@ class TraceEWModule(LightningModule):
         ew_scaler: int = 50,
         ew_threshold: float = 0.3,
         mc_samples: int = 50,
-        use_mc_validation: bool = True,
+        use_laplace_on_fit_end: bool = True,
     ):
         super().__init__()
         self.save_hyperparameters(ignore=['model'])
@@ -154,6 +154,37 @@ class TraceEWModule(LightningModule):
         elif stage in ('fit', None) and not self.hparams.compile_model:
             rank_zero_info("Model compilation disabled by compile_model=False - using eager mode")
 
+    def on_fit_end(self):
+        """Fit the last-layer Laplace approximation after the main training."""
+        if not self.hparams.use_laplace_on_fit_end or self.trainer.global_rank != 0:
+            return
+            
+        rank_zero_info("Fitting Laplace approximation on the last layer...")
+        # The dataloader needs to be wrapped to yield (X, y) tuples
+        # where X is a tuple of the model's inputs.
+        class LaplaceDataLoaderWrapper:
+            def __init__(self, dataloader, device):
+                self.dataloader = dataloader
+                self.device = device
+
+            def __iter__(self):
+                for batch in self.dataloader:
+                    key = next(iter(batch.keys()))
+                    raw_data = batch[key]
+                    inputs = tuple(d.to(self.device) for d in raw_data[:-1])
+                    # Ensure targets are correctly shaped for regression
+                    targets = raw_data[-1].to(self.device).squeeze()
+                    yield inputs, targets
+            
+            def __len__(self):
+                return len(self.dataloader)
+
+        train_loader = self.trainer.datamodule.train_dataloader()
+        laplace_loader = LaplaceDataLoaderWrapper(train_loader, self.device)
+        
+        self.model.fit_laplace(laplace_loader)
+        rank_zero_info("Laplace approximation fitting complete.")
+
     def forward(self, *args, **kwargs):
         return self.model(*args, **kwargs)
 
@@ -205,14 +236,11 @@ class TraceEWModule(LightningModule):
     ############################ INFERENCE ############################
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
-        if hasattr(self.model, 'predict_with_uncertainty'):
-            pred_ew, total_var, aleatoric_var, epistemic_var, pred_logits = self.model.predict_with_uncertainty(
-                *batch, n_samples=self.hparams.mc_samples
-            )
-            pred_prob = torch.sigmoid(pred_logits)
-        else:
-            pred_ew, pred_logvar, pred_logits = self(*batch)
-            pred_prob = torch.sigmoid(pred_logits)
+        # Model handles uncertainty method internally
+        pred_ew, _, _, _, pred_logits = self.model.predict_with_uncertainty(
+            *batch, n_samples=self.hparams.mc_samples
+        )
+        pred_prob = torch.sigmoid(pred_logits)
         
         pred_ew = pred_ew * self.ew_scaler
         pred_ew[pred_prob < self.hparams.ew_threshold] = -0.1
@@ -264,9 +292,8 @@ class TraceEWModule(LightningModule):
             * 'train':   tensors that carry gradients (used for loss)
             * 'eval':    tensors used only for metrics / logging
         """
-        # Optional MC inference during validation
-        if stage == "val" and self.hparams.use_mc_validation and hasattr(self.model, 'predict_with_uncertainty'):
-            # Non-grad evaluation for better uncertainty estimation
+        # Use the model's internal uncertainty logic (Laplace or MC)
+        if stage == "val" and hasattr(self.model, 'predict_with_uncertainty'):
             pred_ew_eval, total_var, _, _, pred_logits_eval = self.model.predict_with_uncertainty(
                 item.trace_seq, item.direction, item.boundary, item.snp_vert,
                 n_samples=self.hparams.mc_samples
@@ -283,7 +310,7 @@ class TraceEWModule(LightningModule):
         )
         pred_prob = torch.sigmoid(pred_logits)
 
-        # Fallback to eager outputs for metric display when MC not used
+        # Fallback to eager outputs for metric display when MC/Laplace not used
         if pred_ew_eval is None:
             pred_ew_eval, pred_logvar_eval, pred_prob_eval = pred_ew, pred_logvar, pred_prob
 
@@ -307,7 +334,7 @@ class TraceEWModule(LightningModule):
             'bce': F.binary_cross_entropy_with_logits(pred_prob, true_prob, weight=weight_prob)
         }, hidden_states)
 
-        # Use the eval tensors (may come from MC inference) for metrics
+        # Use the eval tensors (may come from MC/Laplace inference) for metrics
         pred_ew_eval, pred_logvar_eval, pred_prob_eval = forward_out["eval"]
 
         # Rescale / post-process for logging

@@ -1,10 +1,29 @@
 import torch
 import torch.nn as nn
+from laplace import Laplace
 from einops import rearrange
+from torch.utils.data import DataLoader
 
 from .layers import RMSNorm, positional_encoding_1d, MCDropout, RotaryTransformerEncoder, StructuredGatedBoundaryProcessor
 from .snp_model import SNPEmbedding
 from .trace_model import TraceSeqTransformer
+
+# ---------------------------------------------------------------------------
+# Wrapper so that Laplace can treat a multi-argument forward() as a single x
+# ---------------------------------------------------------------------------
+class _ForwardWrapper(nn.Module):
+    """
+    Laplace-torch assumes model(x) where x is a single tensor.
+    We wrap EyeWidthRegressor so that x is a *tuple* of the four usual inputs.
+    """
+    def __init__(self, base: nn.Module):
+        super().__init__()
+        self.base = base
+
+    def forward(self, x):
+        trace_seq, direction, boundary, snp_vert = x
+        # For likelihood='regression', Laplace expects a single output (mean)
+        return self.base(trace_seq, direction, boundary, snp_vert)[0]
 
 class EyeWidthRegressor(nn.Module):
     def __init__(
@@ -94,6 +113,10 @@ class EyeWidthRegressor(nn.Module):
             nn.Linear(model_dim, output_dim),
         )
 
+        # ----------  Laplace placeholders  ----------
+        self._laplace_model = None        # will hold Laplace object
+        self._laplace_wrapper = _ForwardWrapper(self)
+
     def forward(
         self,
         trace_seq: torch.Tensor,
@@ -177,7 +200,7 @@ class EyeWidthRegressor(nn.Module):
         direction: torch.Tensor,
         boundary: torch.Tensor,
         snp_vert: torch.Tensor,
-        n_samples: int = 50
+        n_samples: int = 50,
     ):
         """
         Perform Monte Carlo inference to estimate both aleatoric and epistemic uncertainty
@@ -193,6 +216,10 @@ class EyeWidthRegressor(nn.Module):
             epistemic_var: Model uncertainty only
             mean_logits: Mean logits for probability prediction
         """
+        if self._laplace_model is not None:
+            # Delegate to Laplace for fast uncertainty
+            return self.laplace_predict(trace_seq, direction, boundary, snp_vert)
+        
         self.train()  # Enable dropout for MC sampling
         
         predictions = []
@@ -220,3 +247,70 @@ class EyeWidthRegressor(nn.Module):
         mean_logits = logits_list.mean(dim=0)  # (B, P)
         
         return mean_values, total_var, aleatoric_var, epistemic_var, mean_logits
+
+    # -----------------------------------------------------------------------
+    #  Fast Last-Layer Laplace (LLLA) uncertainty
+    # -----------------------------------------------------------------------
+    def fit_laplace(
+        self,
+        train_loader: DataLoader,
+        hessian_structure: str = "diag",
+        prior_var: float | None = None,
+    ):
+        """
+        Fit a last-layer Laplace approximation **after training**.
+        Call once and then use `laplace_predict` for fast epistemic + aleatoric
+        variance without MC-Dropout.
+
+        Args
+        ----
+        train_loader : torch DataLoader yielding the same 4-tuple input as normal
+        hessian_structure : 'diag' | 'kron' | 'full'
+        prior_var : if None, will be optimised by marginal likelihood
+        """
+        device = next(self.parameters()).device
+        self.eval()
+        self._laplace_wrapper.to(device)
+
+        lap = Laplace(
+            self._laplace_wrapper,
+            likelihood="regression",
+            subset_of_weights="last_layer",
+            hessian_structure=hessian_structure,
+        )
+        lap.fit(train_loader)
+        if prior_var is None:
+            lap.optimize_prior_precision()
+        else:
+            lap.prior_precision = 1.0 / prior_var
+        self._laplace_model = lap
+
+    @torch.no_grad()
+    def laplace_predict(
+        self,
+        trace_seq: torch.Tensor,
+        direction: torch.Tensor,
+        boundary: torch.Tensor,
+        snp_vert: torch.Tensor,
+    ):
+        """
+        Return mean, total variance from Laplace predictive distribution.
+
+        Raises:
+            RuntimeError if fit_laplace() was not called.
+        """
+        if self._laplace_model is None:
+            raise RuntimeError("Call `fit_laplace` once before Laplace inference.")
+
+        self.eval()
+        x = (trace_seq, direction, boundary, snp_vert)
+        pred = self._laplace_model(x, pred_type="glm")  # returns mean
+        var = self._laplace_model.predictive_variance(x)
+
+        # Retrieve aleatoric variance from log_var head:
+        _, log_var, logits = self(*x)
+        aleatoric_var = torch.exp(log_var)
+        total_var = var + aleatoric_var
+        epistemic_var = var
+
+        return pred, total_var, aleatoric_var, epistemic_var, logits
