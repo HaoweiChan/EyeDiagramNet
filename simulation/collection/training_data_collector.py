@@ -219,12 +219,6 @@ def init_worker_process(horizontal_cache_info, vertical_cache_info):
     _horizontal_cache_info = horizontal_cache_info
     _vertical_cache_info = vertical_cache_info
 
-def init_worker_thread(horizontal_cache_info, vertical_cache_info):
-    """Initialize worker thread with shared memory access (no-op for threads)."""
-    global _horizontal_cache_info, _vertical_cache_info
-    _horizontal_cache_info = horizontal_cache_info
-    _vertical_cache_info = vertical_cache_info
-
 def get_snp_from_cache(snp_path, cache_info):
     """Get SNP data from a shared memory cache, or read from disk as a fallback."""
     if not cache_info or str(snp_path) not in cache_info:
@@ -244,6 +238,7 @@ def get_snp_from_cache(snp_path, cache_info):
     ntwk.z0 = shm_info['z0']
     
     # We don't need to close the shm blocks here, they live for the worker's lifetime
+    _shared_memory_blocks.clear()
     return ntwk
 
 def collect_snp_batch_simulation_data(task_batch, combined_params, pickle_dir, 
@@ -406,10 +401,10 @@ def cleanup_shared_memory():
     _shared_memory_blocks.clear()
 
 def run_with_executor(batch_list, combined_params, trace_specific_output_dir, param_types, 
-                     enable_direction, num_workers, executor_type="process", 
+                     enable_direction, num_workers, 
                      horizontal_cache_info=None, vertical_cache_info=None):
     """
-    Run simulations using either ProcessPoolExecutor or ThreadPoolExecutor
+    Run simulations using ProcessPoolExecutor
     
     Args:
         batch_list: List of task batches
@@ -418,126 +413,64 @@ def run_with_executor(batch_list, combined_params, trace_specific_output_dir, pa
         param_types: Parameter types
         enable_direction: Direction flag
         num_workers: Number of workers
-        executor_type: "process" or "thread"
         horizontal_cache_info: Shared memory cache info for horizontal SNPs
         vertical_cache_info: Shared memory cache info for vertical SNPs
     """
     
-    if executor_type == "thread":
-        print(f"Using ThreadPoolExecutor with {num_workers} threads...")
-        if horizontal_cache_info or vertical_cache_info:
-            print("Note: Shared memory cache is disabled for thread mode")
+    print(f"Using ProcessPoolExecutor with {num_workers} processes...")
+    multiprocessing.set_start_method("forkserver", force=True)
+    
+    executor_start_time = time.time()
+    
+    with concurrent.futures.ProcessPoolExecutor(
+        max_workers=num_workers, 
+        initializer=init_worker_process,
+        initargs=(horizontal_cache_info or {}, vertical_cache_info or {})
+    ) as executor:
+        futures = [
+            executor.submit(
+                collect_snp_batch_simulation_data,
+                batch_tasks, combined_params, trace_specific_output_dir, 
+                param_types, enable_direction, False
+            )
+            for batch_tasks in batch_list
+        ]
         
-        executor_start_time = time.time()
+        print(f"Submitted {len(futures)} batches to ProcessPoolExecutor")
         
-        with concurrent.futures.ThreadPoolExecutor(
-            max_workers=num_workers,
-            initializer=init_worker_thread,
-            initargs=({}, {}) # No cache for threads
-        ) as executor:
-            futures = [
-                executor.submit(
-                    collect_snp_batch_simulation_data,
-                    batch_tasks, combined_params, trace_specific_output_dir, 
-                    param_types, enable_direction, False
-                )
-                for batch_tasks in batch_list
-            ]
-            
-            print(f"Submitted {len(futures)} batches to ThreadPoolExecutor")
-            
-            try:
-                failed_batches = []
-                completed_batches = 0
-                
-                for future in tqdm(
-                    concurrent.futures.as_completed(futures), 
-                    total=len(futures),
-                    desc="Processing batches (threads)"
-                ):
-                    exc = future.exception()
-                    if exc is not None:
-                        print("\n--- batch failed ------------------------------------")
-                        print("Exception:\n", exc)
-                        print("Traceback:\n", "".join(traceback.format_exception(exc)))
-                        failed_batches.append(exc)
-                    else:
-                        completed_batches += 1
-                        if completed_batches % 10 == 0 or completed_batches <= 5:
-                            elapsed = time.time() - executor_start_time
-                            rate = completed_batches / elapsed
-                            print(f"Completed {completed_batches}/{len(futures)} batches, rate: {rate:.2f} batches/sec")
-                
-                total_time = time.time() - executor_start_time
-                print(f"ThreadPoolExecutor completed in {total_time:.2f}s, avg rate: {len(futures)/total_time:.2f} batches/sec")
-                
-                if failed_batches:
-                    print(f"\nWarning: {len(failed_batches)} batches failed:")
-                    for i, error in enumerate(failed_batches[:5]):
-                        print(f"  {i+1}. {error}")
-                    if len(failed_batches) > 5:
-                        print(f"  ... and {len(failed_batches)-5} more errors")
-                        
-            except KeyboardInterrupt:
-                print("KeyboardInterrupt detected, shutting down threads...")
-                # Threads will be terminated when executor exits
-                raise
-                
-    else:  # executor_type == "process"
-        print(f"Using ProcessPoolExecutor with {num_workers} processes...")
-        multiprocessing.set_start_method("forkserver", force=True)
-        
-        executor_start_time = time.time()
-        
-        with concurrent.futures.ProcessPoolExecutor(
-            max_workers=num_workers, 
-            initializer=init_worker_process,
-            initargs=(horizontal_cache_info or {}, vertical_cache_info or {})
-        ) as executor:
-            futures = [
-                executor.submit(
-                    collect_snp_batch_simulation_data,
-                    batch_tasks, combined_params, trace_specific_output_dir, 
-                    param_types, enable_direction, False
-                )
-                for batch_tasks in batch_list
-            ]
-            
-            print(f"Submitted {len(futures)} batches to ProcessPoolExecutor")
-            
-            # =================================================================
-            # NEW: Print full tracebacks for any failed batch immediately
-            failed_batches = []
-            completed_batches = 0
+        # =================================================================
+        # NEW: Print full tracebacks for any failed batch immediately
+        failed_batches = []
+        completed_batches = 0
 
-            for future in tqdm(
-                concurrent.futures.as_completed(futures),
-                total=len(futures),
-                desc="Processing batches (processes)"
-            ):
-                exc = future.exception()
-                if exc is not None:
-                    print("\n--- Batch FAILED ------------------------------------")
-                    print("Exception:")
-                    traceback.print_exception(type(exc), exc, exc.__traceback__)
-                    failed_batches.append(exc)
-                else:
-                    completed_batches += 1
-                    if completed_batches % 10 == 0 or completed_batches <= 5:
-                        elapsed = time.time() - executor_start_time
-                        rate = completed_batches / elapsed
-                        print(f"Completed {completed_batches}/{len(futures)} batches, rate: {rate:.2f} batches/sec")
+        for future in tqdm(
+            concurrent.futures.as_completed(futures),
+            total=len(futures),
+            desc="Processing batches (processes)"
+        ):
+            exc = future.exception()
+            if exc is not None:
+                print("\n--- Batch FAILED ------------------------------------")
+                print("Exception:")
+                traceback.print_exception(type(exc), exc, exc.__traceback__)
+                failed_batches.append(exc)
+            else:
+                completed_batches += 1
+                if completed_batches % 10 == 0 or completed_batches <= 5:
+                    elapsed = time.time() - executor_start_time
+                    rate = completed_batches / elapsed
+                    print(f"Completed {completed_batches}/{len(futures)} batches, rate: {rate:.2f} batches/sec")
 
-            total_time = time.time() - executor_start_time
-            print(f"ProcessPoolExecutor completed in {total_time:.2f}s, avg rate: {len(futures)/total_time:.2f} batches/sec")
+        total_time = time.time() - executor_start_time
+        print(f"ProcessPoolExecutor completed in {total_time:.2f}s, avg rate: {len(futures)/total_time:.2f} batches/sec")
 
-            if failed_batches:
-                print(f"\nWarning: {len(failed_batches)} batches failed in total.")
-            # =================================================================
+        if failed_batches:
+            print(f"\nWarning: {len(failed_batches)} batches failed in total.")
+        # =================================================================
 
-        # handle KeyboardInterrupt outside of 'with' so we still get tracebacks
-        # (ProcessPoolExecutor will raise KeyboardInterrupt here if you hit Ctrl-C)
-        # no further change needed
+    # handle KeyboardInterrupt outside of 'with' so we still get tracebacks
+    # (ProcessPoolExecutor will raise KeyboardInterrupt here if you hit Ctrl-C)
+    # no further change needed
 
 def main():
     """Main function for parallel data collection"""
@@ -582,7 +515,6 @@ def main():
     enable_inductance = args.enable_inductance or config['boundary'].get('enable_inductance', False)
     
     debug = args.debug if args.debug else config.get('debug', False)
-    executor_type = args.executor_type if args.executor_type else config.get('runner', {}).get('executor_type', 'process')
     
     # Determine number of workers: Command-line -> Config file -> Optimal calculation
     config_workers = config.get('runner', {}).get('max_workers')
@@ -606,10 +538,6 @@ def main():
     print(f"  Enable inductance: {enable_inductance}")
     print(f"  Debug mode: {debug}")
     print(f"  Max workers: {max_workers}")
-    print(f"  Executor type: {executor_type}")
-    
-    # Start background system monitoring in a separate process
-    start_background_monitoring(interval=15)
     
     # Create base output directory and trace-specific subdirectory
     base_output_dir = output_dir
@@ -679,14 +607,13 @@ def main():
     
     if len(batch_list) == 0:
         print("All files already have sufficient samples")
-        stop_background_monitoring()
         return
     
     # Initialize shared memory caches for process mode
     horizontal_cache, vertical_cache = None, None
     horizontal_cache_info, vertical_cache_info = {}, {}
     
-    if not debug and executor_type == "process":
+    if not debug:
         print("Setting up shared memory cache for SNP files...")
         try:
             # Horizontal (trace) SNP cache
@@ -722,7 +649,7 @@ def main():
     try:
         if not debug:
             run_with_executor(batch_list, combined_params, trace_specific_output_dir, param_types, 
-                             enable_direction, max_workers, executor_type, 
+                             enable_direction, max_workers,
                              horizontal_cache_info, vertical_cache_info)
         else:
             # Debug mode - run sequentially
@@ -742,9 +669,6 @@ def main():
         print(f"Data collection completed. Results saved to: {trace_specific_output_dir}")
         
     finally:
-        # Stop background monitoring
-        stop_background_monitoring()
-        
         # Clean up shared memory
         if horizontal_cache:
             horizontal_cache.cleanup()
