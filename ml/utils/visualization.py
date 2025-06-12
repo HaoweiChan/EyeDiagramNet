@@ -89,9 +89,15 @@ def plot_ew_curve(outputs, metrics, ew_threshold, sigma=2):
 
     stage_key = next(iter(metrics)).split('_')[0].replace('/', '').capitalize()
     metrics = {k.split('/')[1]: v for k, v in metrics.items() if v != 0}
-    # pretty_string = '\n'.join(f'{k.split("/")[-1]}: {str(v.round(decimals=3))[7:12]}' for k, v in metrics.items())
-    metric_lines = [f'{k:<9}: {v}' for k, v in metrics.items()]
-    pretty_string = f"{stage_key}\\n" + '\n'.join(metric_lines)
+    
+    # Format values to be cleaner (3 decimal places, remove trailing zeros)
+    def format_value(v):
+        if isinstance(v, (int, float)):
+            return f"{v:.3f}".rstrip('0').rstrip('.')
+        return str(v)
+    
+    metric_lines = [f'{k:<9}: {format_value(v)}' for k, v in metrics.items()]
+    pretty_string = f"{stage_key}\n\n" + '\n'.join(metric_lines)
 
     plt.close()
     fig = plt.figure(figsize=(10, 6))
