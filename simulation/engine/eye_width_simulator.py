@@ -717,15 +717,22 @@ class EyeWidthSimulator:
     def calculate_waveform(self, test_patterns, response_matrices):
         """Calculate the final waveform from test patterns and response matrices."""
         num_patterns, num_lines, pattern_len = test_patterns.shape
-        waveform = np.zeros((num_patterns, pattern_len + response_matrices.shape[2] - 1))
+        response_len_flat = response_matrices.shape[2] * response_matrices.shape[3]
+        conv_len = pattern_len + response_len_flat - 1
+        
+        waveform = np.zeros((num_patterns, conv_len, num_lines))
 
-        for i in range(num_lines):
-            line_pattern = test_patterns[:, i, :]
-            line_response_matrix = response_matrices[i, :, :]
-            
-            # Use convolution for each pattern with its corresponding response matrix
-            for j in range(num_patterns):
-                waveform[j, :] += np.convolve(line_pattern[j, :], line_response_matrix[j, :])
+        for i in range(num_lines):  # For each output line
+            for k in range(num_patterns):  # For each test pattern
+                # The total waveform on output line i is the sum of convolutions from all input lines
+                total_conv = np.zeros(conv_len)
+                for j in range(num_lines):  # From each input line
+                    # Response of output i to input j, flattened to 1D
+                    response = response_matrices[i, j, :, :].flatten()
+                    # Pattern for input j for this test pattern
+                    pattern = test_patterns[k, j, :]
+                    total_conv += np.convolve(pattern, response)
+                waveform[k, :, i] = total_conv
         
         return waveform
 
