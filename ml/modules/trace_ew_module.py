@@ -38,8 +38,12 @@ def _augment_sequence_jit(seq: torch.Tensor, insert_frac: int = 10) -> torch.Ten
     if insert_len == 0:
         return seq
 
-    new_L = L + insert_len
-    out = torch.full((B, new_L, C), -1.0, dtype=seq.dtype, device=seq.device)
+    new_L: int = int(L + insert_len)
+
+    # TorchScript expects the `size` argument to be a List[int], not a tuple.
+    # Explicitly cast each dimension to int to satisfy TorchScript's type checker.
+    size: list[int] = [int(B), new_L, int(C)]
+    out = torch.full(size, -1.0, dtype=seq.dtype, device=seq.device)
 
     keep = torch.randperm(new_L, device=seq.device)[:L]
     keep, _ = torch.sort(keep)
