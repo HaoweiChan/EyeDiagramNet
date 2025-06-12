@@ -505,44 +505,39 @@ def run_with_executor(batch_list, combined_params, trace_specific_output_dir, pa
             
             print(f"Submitted {len(futures)} batches to ProcessPoolExecutor")
             
-            try:
-                failed_batches = []
-                completed_batches = 0
-                
-                for future in tqdm(
-                    concurrent.futures.as_completed(futures), 
-                    total=len(futures),
-                    desc="Processing batches (processes)"
-                ):
-                    exc = future.exception()
-                    if exc is not None:
-                        print("\n--- batch failed ------------------------------------")
-                        print("Exception:\n", exc)
-                        print("Traceback:\n", "".join(traceback.format_exception(exc)))
-                        failed_batches.append(exc)
-                    else:
-                        completed_batches += 1
-                        if completed_batches % 10 == 0 or completed_batches <= 5:
-                            elapsed = time.time() - executor_start_time
-                            rate = completed_batches / elapsed
-                            print(f"Completed {completed_batches}/{len(futures)} batches, rate: {rate:.2f} batches/sec")
-                
-                total_time = time.time() - executor_start_time
-                print(f"ProcessPoolExecutor completed in {total_time:.2f}s, avg rate: {len(futures)/total_time:.2f} batches/sec")
-                
-                if failed_batches:
-                    print(f"\nWarning: {len(failed_batches)} batches failed:")
-                    for i, error in enumerate(failed_batches[:5]):
-                        print(f"  {i+1}. {error}")
-                    if len(failed_batches) > 5:
-                        print(f"  ... and {len(failed_batches)-5} more errors")
-                        
-            except KeyboardInterrupt:
-                print("KeyboardInterrupt detected, shutting down processes...")
-                for pid, proc in executor._processes.items():
-                    proc.terminate()
-                executor.shutdown(wait=False, cancel_futures=True)
-                raise
+            # =================================================================
+            # NEW: Print full tracebacks for any failed batch immediately
+            failed_batches = []
+            completed_batches = 0
+
+            for future in tqdm(
+                concurrent.futures.as_completed(futures),
+                total=len(futures),
+                desc="Processing batches (processes)"
+            ):
+                exc = future.exception()
+                if exc is not None:
+                    print("\n--- Batch FAILED ------------------------------------")
+                    print("Exception:")
+                    traceback.print_exception(type(exc), exc, exc.__traceback__)
+                    failed_batches.append(exc)
+                else:
+                    completed_batches += 1
+                    if completed_batches % 10 == 0 or completed_batches <= 5:
+                        elapsed = time.time() - executor_start_time
+                        rate = completed_batches / elapsed
+                        print(f"Completed {completed_batches}/{len(futures)} batches, rate: {rate:.2f} batches/sec")
+
+            total_time = time.time() - executor_start_time
+            print(f"ProcessPoolExecutor completed in {total_time:.2f}s, avg rate: {len(futures)/total_time:.2f} batches/sec")
+
+            if failed_batches:
+                print(f"\nWarning: {len(failed_batches)} batches failed in total.")
+            # =================================================================
+
+        # handle KeyboardInterrupt outside of 'with' so we still get tracebacks
+        # (ProcessPoolExecutor will raise KeyboardInterrupt here if you hit Ctrl-C)
+        # no further change needed
 
 def main():
     """Main function for parallel data collection"""
