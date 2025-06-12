@@ -209,13 +209,13 @@ class InferenceTraceSeqEWDataloader(pl.LightningDataModule):
 
         tx = read_snp(Path(self.tx_snp))
         rx = read_snp(Path(self.rx_snp))
-        assert tx.shape[-1] == rx.shape[-1], \
+        assert tx.s.shape[-1] == rx.s.shape[-1], \
             f"TX {self.tx_snp} and RX {self.rx_snp} must match ports."
 
         # Load boundary JSON
         with open(self.bound_path, 'r') as f:
             loaded = json.load(f)
-            directions = np.array(loaded['directions']) if 'directions' in loaded else np.ones(tx.shape[-1] // 2, dtype=int)
+            directions = np.array(loaded['directions']) if 'directions' in loaded else np.ones(tx.s.shape[-1] // 2, dtype=int)
             ctle = loaded.get('CTLE', {"AC_gain": np.nan, "DC_gain": np.nan, "fp1": np.nan, "fp2": np.nan})
             boundary = loaded['boundary'] | ctle
             self.boundary = SampleResult(**boundary)
@@ -225,7 +225,7 @@ class InferenceTraceSeqEWDataloader(pl.LightningDataModule):
             case_id, input_arr = processor.parse(csv_path)
             rank_zero_info(f"Input array: {input_arr.shape}")
             # Use structured boundary array for the new processor
-            ds = InferenceTraceEWDataset(input_arr, directions, self.boundary.to_structured_array(), tx, rx)
+            ds = InferenceTraceEWDataset(input_arr, directions, self.boundary.to_structured_array(), tx.s, rx.s)
             self.predict_dataset.append(ds.transform(*scalers))
 
     def predict_dataloader(self):
@@ -371,7 +371,7 @@ class TraceSeqDataLoader(pl.LightningDataModule):
             # indices = np.arange(1000)
             snps = [snps[i] for i in indices]
             input_arr = input_arr[indices]
-            log_info(f'{name}| input_arr: {input_arr.shape}, SNP: ({len(snps)}*{one_snp.shape})')
+            log_info(f'{name}| input_arr: {input_arr.shape}, SNP: ({len(snps)}*{one_snp.s.shape})')
 
             # Split train and validation set
             x_train, x_val, y_train, y_val = train_test_split(input_arr, snps, test_size=self.test_size)

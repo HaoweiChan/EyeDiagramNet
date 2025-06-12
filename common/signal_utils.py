@@ -5,10 +5,9 @@ import numpy as np
 from pathlib import Path, PosixPath
 from itertools import combinations
 
-
 def read_snp(snp_file: PosixPath):
     if snp_file.suffix != '.npz':
-        return rf.Network(snp_file).s
+        return rf.Network(str(snp_file))
 
     data = np.load(snp_file)
     compress_arr = data['compress_arr']
@@ -21,7 +20,13 @@ def read_snp(snp_file: PosixPath):
     decompress_arr[1::2] = np.tril(decompress_arr[1::2], -1) + np.transpose(np.tril(decompress_arr[1::2], -1), (0, 2, 1))
     decompress_arr[1::2, np.arange(diag.shape[1]), np.arange(diag.shape[1])] = diag
 
-    return decompress_arr
+    ntwk = rf.Network()
+    ntwk.s = decompress_arr
+    if ntwk.s is not None and ntwk.s.ndim > 0:
+        npoints = ntwk.s.shape[0]
+        ntwk.frequency = rf.Frequency(1, npoints, npoints, unit='GHz')
+
+    return ntwk
 
 def parse_snps(snp_dir, indices):
     suffix = '*.s*p'

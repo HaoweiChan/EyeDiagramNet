@@ -268,12 +268,6 @@ def collect_snp_batch_simulation_data(task_batch, combined_params, pickle_dir,
     # Load horizontal SNP from cache (or disk if not available)
     trace_ntwk = get_snp_from_cache(trace_snp_file, _horizontal_cache_info)
 
-    # Defensive check: if the object from cache/read is not a network, it's an error.
-    # This can happen if an old cache is used or if read_snp fails.
-    if not isinstance(trace_ntwk, rf.Network):
-        print(f"Warning: Expected a Network object for {trace_snp_file}, but got {type(trace_ntwk)}. Re-reading from disk.", flush=True)
-        trace_ntwk = read_snp(trace_snp_file)
-
     n_ports = trace_ntwk.nports
     n_lines = n_ports // 2
     if n_lines == 0:

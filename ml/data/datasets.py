@@ -131,7 +131,7 @@ class TraceEWDataset(Dataset):
     def load_snp(self, snp_file):
         snp_data = self.vert_cache.get(snp_file)
         if snp_data is None:
-            snp_data = read_snp(Path(snp_file))
+            snp_data = read_snp(Path(snp_file)).s
             snp_data = torch.from_numpy(snp_data).to(torch.complex64)
             if self.check_memory(snp_data):
                 self.vert_cache.store(snp_file, snp_data)
@@ -254,7 +254,7 @@ class TraceDataset(Dataset):
 
         data = self.cache.get(snp_file)
         if data is None:
-            snp = torch.from_numpy(read_snp(snp_file)).to(torch.complex64)
+            snp = torch.from_numpy(read_snp(snp_file).s).to(torch.complex64)
             snp = snp[self.freq_slice] # (F, P, P)
             snp = self.port_rearrange(snp)
             # Extract snp data up to max ports
