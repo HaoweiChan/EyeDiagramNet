@@ -310,20 +310,12 @@ def collect_snp_batch_simulation_data(task_batch, combined_params, pickle_dir,
                 else:
                     sim_directions = np.ones(n_lines, dtype=int)
                 
-                # Run simulation, limiting threads with threadpoolctl
-                if threadpoolctl:
-                    with threadpoolctl.threadpool_limits(limits=1):
-                        line_ew = snp_eyewidth_simulation(
-                            config=combined_config,
-                            snp_files=(trace_ntwk, tx_ntwk, rx_ntwk),
-                            directions=sim_directions
-                        )
-                else:
-                    line_ew = snp_eyewidth_simulation(
-                        config=combined_config,
-                        snp_files=(trace_ntwk, tx_ntwk, rx_ntwk),
-                        directions=sim_directions
-                    )
+                # Run simulation
+                line_ew = snp_eyewidth_simulation(
+                    config=combined_config,
+                    snp_files=(trace_ntwk, tx_ntwk, rx_ntwk),
+                    directions=sim_directions
+                )
                 
                 # Handle tuple return
                 if isinstance(line_ew, tuple):
@@ -539,6 +531,9 @@ def main():
     print(f"  Debug mode: {debug}")
     print(f"  Max workers: {max_workers}")
     
+    # Start background system monitoring in a separate process
+    start_background_monitoring(interval=15)
+    
     # Create base output directory and trace-specific subdirectory
     base_output_dir = output_dir
     trace_specific_output_dir = base_output_dir / trace_pattern_key
@@ -607,6 +602,7 @@ def main():
     
     if len(batch_list) == 0:
         print("All files already have sufficient samples")
+        stop_background_monitoring()
         return
     
     # Initialize shared memory caches for process mode
@@ -669,6 +665,9 @@ def main():
         print(f"Data collection completed. Results saved to: {trace_specific_output_dir}")
         
     finally:
+        # Stop background monitoring
+        stop_background_monitoring()
+        
         # Clean up shared memory
         if horizontal_cache:
             horizontal_cache.cleanup()
