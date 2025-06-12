@@ -48,15 +48,6 @@ class RMSNorm(nn.Module):
         ).type_as(x)
         return self.scale * x_normed
 
-class MCDropout(nn.Module):
-    """Monte Carlo Dropout layer that stays active during inference"""
-    def __init__(self, p: float = 0.1):
-        super().__init__()
-        self.p = p
-
-    def forward(self, x):
-        return F.dropout(x, p=self.p, training=True)
-
 # =============================================================================
 # Positional Embedding Modules
 # =============================================================================

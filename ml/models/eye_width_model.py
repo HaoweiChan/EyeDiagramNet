@@ -4,7 +4,7 @@ from laplace import Laplace
 from einops import rearrange
 from torch.utils.data import DataLoader
 
-from .layers import RMSNorm, positional_encoding_1d, MCDropout, RotaryTransformerEncoder, StructuredGatedBoundaryProcessor
+from .layers import RMSNorm, positional_encoding_1d, RotaryTransformerEncoder, StructuredGatedBoundaryProcessor
 from .snp_model import SNPEmbedding
 from .trace_model import TraceSeqTransformer
 
@@ -35,7 +35,6 @@ class EyeWidthRegressor(nn.Module):
         num_layers,
         dropout,
         freq_length,
-        mc_dropout_rate=0.1,
         use_rope=True,
         max_seq_len=2048,
     ):
@@ -43,7 +42,6 @@ class EyeWidthRegressor(nn.Module):
 
         self.model_dim = model_dim
         self.output_dim = output_dim
-        self.mc_dropout_rate = mc_dropout_rate
         self.use_rope = use_rope
 
         # Trace sequence encoder
@@ -98,17 +96,13 @@ class EyeWidthRegressor(nn.Module):
             # For RoPE, we don't need explicit positional embeddings
             self.signal_projection = None
 
-        # Monte Carlo Dropout layers for epistemic uncertainty
-        self.mc_dropout1 = MCDropout(mc_dropout_rate)
-        self.mc_dropout2 = MCDropout(mc_dropout_rate)
-
-        # Prediction heads with MC Dropout
+        # Prediction heads
         self.pred_head = nn.Sequential(
             nn.Linear(model_dim, model_dim),
-            self.mc_dropout1,
+            nn.Dropout(dropout),
             nn.GELU(),
             nn.Linear(model_dim, model_dim),
-            self.mc_dropout2,
+            nn.Dropout(dropout),
             nn.GELU(),
             nn.Linear(model_dim, output_dim),
         )
@@ -200,53 +194,30 @@ class EyeWidthRegressor(nn.Module):
         direction: torch.Tensor,
         boundary: torch.Tensor,
         snp_vert: torch.Tensor,
-        n_samples: int = 50,
     ):
         """
-        Perform Monte Carlo inference to estimate both aleatoric and epistemic uncertainty
+        Predict with uncertainty using Last-Layer Laplace Approximation.
         
         Args:
             trace_seq, direction, boundary, snp_vert: Input tensors
-            n_samples: Number of MC samples for epistemic uncertainty estimation
             
         Returns:
-            mean_values: Mean predictions across MC samples
+            mean_values: Mean predictions from Laplace
             total_var: Total uncertainty (aleatoric + epistemic)
             aleatoric_var: Data uncertainty only
             epistemic_var: Model uncertainty only
-            mean_logits: Mean logits for probability prediction
+            logits: Logits for probability prediction
         """
         if self._laplace_model is not None:
-            # Delegate to Laplace for fast uncertainty
+            # Use Laplace for fast uncertainty
             return self.laplace_predict(trace_seq, direction, boundary, snp_vert)
-        
-        self.train()  # Enable dropout for MC sampling
-        
-        predictions = []
-        log_vars = []
-        logits_list = []
-        
-        with torch.inference_mode():  # Better than no_grad for pure inference
-            for _ in range(n_samples):
-                values, log_var, logits = self(trace_seq, direction, boundary, snp_vert)
-                predictions.append(values)
-                log_vars.append(log_var)
-                logits_list.append(logits)
-        
-        # Stack predictions
-        predictions = torch.stack(predictions, dim=0)  # (n_samples, B, P)
-        log_vars = torch.stack(log_vars, dim=0)  # (n_samples, B, P)
-        logits_list = torch.stack(logits_list, dim=0)  # (n_samples, B, P)
-        
-        # Compute statistics
-        mean_values = predictions.mean(dim=0)  # (B, P)
-        epistemic_var = predictions.var(dim=0)  # (B, P) - model uncertainty
-        mean_log_var = log_vars.mean(dim=0)  # (B, P)
-        aleatoric_var = torch.exp(mean_log_var)  # (B, P) - data uncertainty
-        total_var = epistemic_var + aleatoric_var  # Total uncertainty
-        mean_logits = logits_list.mean(dim=0)  # (B, P)
-        
-        return mean_values, total_var, aleatoric_var, epistemic_var, mean_logits
+        else:
+            # Fallback to standard forward pass without uncertainty
+            values, log_var, logits = self(trace_seq, direction, boundary, snp_vert)
+            aleatoric_var = torch.exp(log_var)
+            epistemic_var = torch.zeros_like(aleatoric_var)
+            total_var = aleatoric_var
+            return values, total_var, aleatoric_var, epistemic_var, logits
 
     # -----------------------------------------------------------------------
     #  Fast Last-Layer Laplace (LLLA) uncertainty

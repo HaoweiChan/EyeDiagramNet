@@ -66,7 +66,6 @@ class TraceEWModule(LightningModule):
         compile_model: bool = False,
         ew_scaler: int = 50,
         ew_threshold: float = 0.3,
-        mc_samples: int = 50,
         use_laplace_on_fit_end: bool = True,
     ):
         super().__init__()
@@ -237,9 +236,7 @@ class TraceEWModule(LightningModule):
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
         # Model handles uncertainty method internally
-        pred_ew, _, _, _, pred_logits = self.model.predict_with_uncertainty(
-            *batch, n_samples=self.hparams.mc_samples
-        )
+        pred_ew, _, _, _, pred_logits = self.model.predict_with_uncertainty(*batch)
         pred_prob = torch.sigmoid(pred_logits)
         
         pred_ew = pred_ew * self.ew_scaler
@@ -295,8 +292,7 @@ class TraceEWModule(LightningModule):
         # Use the model's internal uncertainty logic (Laplace or MC)
         if stage == "val" and hasattr(self.model, 'predict_with_uncertainty'):
             pred_ew_eval, total_var, _, _, pred_logits_eval = self.model.predict_with_uncertainty(
-                item.trace_seq, item.direction, item.boundary, item.snp_vert,
-                n_samples=self.hparams.mc_samples
+                item.trace_seq, item.direction, item.boundary, item.snp_vert
             )
             pred_prob_eval = torch.sigmoid(pred_logits_eval)
             pred_logvar_eval = torch.log(total_var + 1e-8)
@@ -310,7 +306,7 @@ class TraceEWModule(LightningModule):
         )
         pred_prob = torch.sigmoid(pred_logits)
 
-        # Fallback to eager outputs for metric display when MC/Laplace not used
+        # Fallback to eager outputs for metric display when Laplace not used
         if pred_ew_eval is None:
             pred_ew_eval, pred_logvar_eval, pred_prob_eval = pred_ew, pred_logvar, pred_prob
 
