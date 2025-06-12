@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchmetrics as tm
+from dataclasses import dataclass
 from lightning import LightningModule
 from lightning.pytorch.utilities.rank_zero import rank_zero_info
 
@@ -44,6 +45,17 @@ def _augment_sequence_jit(seq: torch.Tensor, insert_frac: int = 10) -> torch.Ten
     keep, _ = torch.sort(keep)
     out.index_copy_(1, keep, seq)
     return out
+
+ # ---------------------------------------------------------------------------  
+ # Lightweight container so we can keep the main `step` readable
+ # ---------------------------------------------------------------------------
+@dataclass
+class BatchItem:
+    trace_seq: torch.Tensor
+    direction: torch.Tensor
+    boundary: torch.Tensor
+    snp_vert: torch.Tensor
+    true_ew: torch.Tensor
 
 class TraceEWModule(LightningModule):
     def __init__(
@@ -232,6 +244,95 @@ class TraceEWModule(LightningModule):
                 metrics_dict[k] = metric()
         return metrics_dict
 
+    # -----------------------------------------------------------------------
+    # Helper methods introduced by the step-function refactor
+    # -----------------------------------------------------------------------
+    def _augment(self, seq: torch.Tensor) -> torch.Tensor:
+        """Single call-site for sequence augmentation."""
+        return self.augment_input_sequence(seq)
+
+    def _to_batch_item(self, raw) -> "BatchItem":
+        """Convert the raw tuple coming from DataLoader into a BatchItem and apply EW scaling."""
+        trace_seq, direction, boundary, snp_vert, true_ew = raw
+        true_ew = true_ew * self.ew_scaler_inv.to(true_ew.device)
+        return BatchItem(trace_seq, direction, boundary, snp_vert, true_ew)
+
+    def _run_model(self, item: "BatchItem", stage: str):
+        """
+        Forward pass wrapper.  
+        Returns a dict with:
+            * 'train':   tensors that carry gradients (used for loss)
+            * 'eval':    tensors used only for metrics / logging
+        """
+        # Optional MC inference during validation
+        if stage == "val" and self.hparams.use_mc_validation and hasattr(self.model, 'predict_with_uncertainty'):
+            # Non-grad evaluation for better uncertainty estimation
+            pred_ew_eval, total_var, _, _, pred_logits_eval = self.model.predict_with_uncertainty(
+                item.trace_seq, item.direction, item.boundary, item.snp_vert,
+                n_samples=self.hparams.mc_samples
+            )
+            pred_prob_eval = torch.sigmoid(pred_logits_eval)
+            pred_logvar_eval = torch.log(total_var + 1e-8)
+        else:
+            pred_ew_eval = pred_logvar_eval = pred_prob_eval = None
+
+        # Gradient-carrying forward pass (always)
+        pred_ew, pred_logvar, pred_logits, hidden_states = self(
+            item.trace_seq, item.direction, item.boundary, item.snp_vert,
+            output_hidden_states=True
+        )
+        pred_prob = torch.sigmoid(pred_logits)
+
+        # Fallback to eager outputs for metric display when MC not used
+        if pred_ew_eval is None:
+            pred_ew_eval, pred_logvar_eval, pred_prob_eval = pred_ew, pred_logvar, pred_prob
+
+        return {
+            "train":   (pred_ew, pred_logvar, pred_prob, hidden_states),
+            "eval":    (pred_ew_eval, pred_logvar_eval, pred_prob_eval)
+        }
+
+    def _compute_loss(self, item: "BatchItem", forward_out):
+        """Calculate composite loss and prepare everything needed for metric updates."""
+        pred_ew, pred_logvar, pred_prob, hidden_states = forward_out["train"]
+
+        # --- classification helpers --------------------------------------------------
+        true_prob = (item.true_ew > 0).float()
+        weight_prob = torch.where(true_prob == 0, 10.0, 1.0)
+        weight_prob = weight_prob * (1.0 / weight_prob.sum())
+        # ------------------------------------------------------------------------------
+
+        loss = self.weighted_loss({
+            'nll': losses.gaussian_nll_loss(pred_ew, item.true_ew, pred_logvar, mask=true_prob),
+            'bce': F.binary_cross_entropy_with_logits(pred_prob, true_prob, weight=weight_prob)
+        }, hidden_states)
+
+        # Use the eval tensors (may come from MC inference) for metrics
+        pred_ew_eval, pred_logvar_eval, pred_prob_eval = forward_out["eval"]
+
+        # Rescale / post-process for logging
+        pred_ew_eval = pred_ew_eval * self.ew_scaler
+        true_ew_scaled = item.true_ew * self.ew_scaler
+        pred_logvar_eval = pred_logvar_eval + 2 + self.log_ew_scaler.to(pred_logvar_eval.device)
+        pred_sigma = torch.exp(0.5 * pred_logvar_eval)
+
+        extras = {
+            "pred_ew":   pred_ew_eval,
+            "true_ew":   true_ew_scaled,
+            "pred_prob": pred_prob_eval,
+            "true_prob": true_prob,
+            "pred_sigma": pred_sigma
+        }
+        return loss, extras
+
+    def _maybe_collect_samples(self, stage: str, name: str, batch_idx: int, extras: dict):
+        """Keep a few random samples around for plotting at epoch-end."""
+        if batch_idx in self.get_output_steps(stage):
+            if stage == "train_":
+                self.train_step_outputs.setdefault(name, []).append(extras)
+            else:
+                self.val_step_outputs.setdefault(name, []).append(extras)
+
     def get_output_steps(self, stage):
         if stage == "train_":
             max_batches = self.trainer.num_training_batches
@@ -244,84 +345,46 @@ class TraceEWModule(LightningModule):
         return _augment_sequence_jit(seq, 10)
 
     def step(self, batch, batch_idx, stage, dataloader_idx):
-        """
-        Arguments:
-            batch:
-                input: (B, E)
-                true: (B, F, P, P)
-                snp_ports: (B, E)
-        """
-        loss = 0
-        for name, batch_one in batch.items():
-            trace_seq, direction, boundary, snp_vert, true_ew = batch_one
-            # Use multiplication instead of division - 2-3x faster
-            true_ew = true_ew * self.ew_scaler_inv.to(true_ew.device)
+        """Refactored step - orchestrates smaller helpers."""
+        losses = []
 
+        for name, raw in batch.items():
+            # (1) Normalise & pack
+            item = self._to_batch_item(raw)
+
+            # (2) Optional augmentation
             if stage == "train_":
-                trace_seq = self.augment_input_sequence(trace_seq)
+                item.trace_seq = self._augment(item.trace_seq)
 
-            # Make the true probability for non-closed eye (optimized)
-            true_prob = (true_ew > 0).float()  # More efficient than clone + assignment
-            weight_prob = torch.where(true_prob == 0, 10.0, 1.0)
-            weight_sum = weight_prob.sum()
-            weight_prob = weight_prob * (1.0 / weight_sum)
+            # (3) Forward pass(es)
+            fwd = self._run_model(item, stage)
 
-            # Use Monte Carlo inference for validation if enabled
-            if stage == "val" and self.hparams.use_mc_validation and hasattr(self.model, 'predict_with_uncertainty'):
-                # Use MC inference for better uncertainty estimation
-                pred_ew, total_var, aleatoric_var, epistemic_var, pred_logits = self.model.predict_with_uncertainty(
-                    trace_seq, direction, boundary, snp_vert, n_samples=self.hparams.mc_samples
-                )
-                pred_prob = torch.sigmoid(pred_logits)
-                
-                # Use total variance for loss computation
-                pred_logvar = torch.log(total_var + 1e-8)
-                
-                # Forward the model normally for loss computation (to get gradients)
-                pred_ew_train, pred_logvar_train, pred_prob_train, hidden_states = self(
-                    trace_seq, direction, boundary, snp_vert, output_hidden_states=True
-                )
-                
-                loss += self.weighted_loss({
-                    'nll': losses.gaussian_nll_loss(pred_ew_train, true_ew, pred_logvar_train, mask=true_prob),
-                    'bce': F.binary_cross_entropy_with_logits(pred_prob_train, true_prob, weight=weight_prob)
-                }, hidden_states)
-            else:
-                # Standard forward pass for training
-                pred_ew, pred_logvar, pred_prob, hidden_states = self(trace_seq, direction, boundary, snp_vert, output_hidden_states=True)
-                pred_prob = torch.sigmoid(pred_prob)
-                
-                loss += self.weighted_loss({
-                    'nll': losses.gaussian_nll_loss(pred_ew, true_ew, pred_logvar, mask=true_prob),
-                    'bce': F.binary_cross_entropy_with_logits(pred_prob, true_prob, weight=weight_prob)
-                }, hidden_states)
+            # (4) Loss + metric-ready tensors
+            loss, extras = self._compute_loss(item, fwd)
+            losses.append(loss)
 
-            pred_ew = pred_ew * self.ew_scaler
-            true_ew = true_ew * self.ew_scaler
-            # Use pre-computed log to avoid repeated computation
-            pred_logvar = pred_logvar + 2 + self.log_ew_scaler.to(pred_logvar.device)
-            pred_sigma = torch.exp(0.5 * pred_logvar)
-            self.update_metrics(stage, loss.detach(), pred_ew, true_ew, pred_prob, true_prob, pred_sigma)
-            
-            if batch_idx in self.get_output_steps(stage):
-                idx = torch.randint(len(pred_ew), (1,)).item()
-                step_output = {
-                    'pred_ew': pred_ew[idx],
-                    'true_ew': true_ew[idx],
-                    'pred_prob': pred_prob[idx],
-                    'true_prob': true_prob[idx],
-                    'pred_sigma': pred_sigma[idx]
-                }
-                if stage == "train_":
-                    self.train_step_outputs.setdefault(name, []).append(step_output)
-                else:
-                    self.val_step_outputs.setdefault(name, []).append(step_output)
+            # (5) Update metrics & maybe collect samples
+            self.update_metrics(
+                stage,
+                loss.detach(),
+                extras["pred_ew"],
+                extras["true_ew"],
+                extras["pred_prob"],
+                extras["true_prob"],
+                extras["pred_sigma"]
+            )
+            self._maybe_collect_samples(stage, name, batch_idx, extras)
 
-        prog_bar = True if stage == "train_" else False
-        loss = loss / len(batch)
-        self.log("loss", loss, on_step=True, prog_bar=prog_bar, logger=False, sync_dist=True)
-
-        return {"loss": loss}
+        mean_loss = torch.stack(losses).mean()
+        self.log(
+            "loss",
+            mean_loss,
+            on_step=True,
+            prog_bar=(stage == "train_"),
+            logger=False,
+            sync_dist=True
+        )
+        return {"loss": mean_loss}
 
     def update_metrics(
         self,
