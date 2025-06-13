@@ -7,6 +7,7 @@ import torchmetrics as tm
 from dataclasses import dataclass
 from lightning import LightningModule
 from lightning.pytorch.utilities.rank_zero import rank_zero_info
+from lightning.pytorch.utilities.combined_loader import CombinedLoader
 
 from ..models.layers import LearnableLossWeighting
 from ..utils import losses
@@ -172,15 +173,8 @@ class TraceEWModule(LightningModule):
 
             def __iter__(self):
                 for batch in self.dataloader:
-                    # Handle both dictionary and tuple batch formats
-                    if isinstance(batch, dict):
-                        # Dictionary format: get first key's data
-                        key = next(iter(batch.keys()))
-                        raw_data = batch[key]
-                    else:
-                        # Tuple format: batch is already the raw data
-                        raw_data = batch
-                    
+                    # batch is a dict with one key from CombinedLoader
+                    raw_data = next(iter(batch.values())) 
                     inputs = tuple(d.to(self.device) for d in raw_data[:-1])
                     # Ensure targets are correctly shaped for regression
                     targets = raw_data[-1].to(self.device).squeeze()
@@ -190,7 +184,11 @@ class TraceEWModule(LightningModule):
                 return len(self.dataloader)
 
         train_loader = self.trainer.datamodule.train_dataloader()
-        laplace_loader = LaplaceDataLoaderWrapper(train_loader, self.device)
+        
+        # Use CombinedLoader to iterate over the dictionary of dataloaders correctly.
+        # This mirrors how Lightning handles multiple dataloaders during training.
+        combined_loader = CombinedLoader(train_loader, mode="max_size_cycle")
+        laplace_loader = LaplaceDataLoaderWrapper(combined_loader, self.device)
         
         self.model.fit_laplace(laplace_loader)
         rank_zero_info("Laplace approximation fitting complete.")
