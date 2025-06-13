@@ -15,20 +15,20 @@ os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
 
 import time
 import yaml
+import signal
 import pickle
 import psutil
 import threading
 import traceback
+import skrf as rf
 import numpy as np
 import multiprocessing
 import concurrent.futures
-import threadpoolctl
 import multiprocessing.shared_memory as shm
 from tqdm import tqdm
 from pathlib import Path
 from datetime import datetime
 from collections import defaultdict
-import skrf as rf
 
 from simulation.parameters.bound_param import PARAM_SETS_MAP
 from simulation.engine.eye_width_simulator import snp_eyewidth_simulation
@@ -48,7 +48,6 @@ def get_worker_id():
         return _profiling_data.worker_id
     
     # Create unique worker ID 
-    import threading
     thread_id = threading.get_ident()
     process_id = os.getpid()
     _profiling_data.worker_id = f"P{process_id}-T{thread_id}"
@@ -223,15 +222,7 @@ class SNPCache:
 
 def init_worker_process(vertical_cache_info):
     """Initialize worker process with shared memory access and signal handling."""
-    import signal
     signal.signal(signal.SIGINT, signal.SIG_IGN)
-
-    # Enforce single-threaded BLAS in the worker as an extra safeguard
-    try:
-        import threadpoolctl
-        threadpoolctl.threadpool_limits(1)
-    except Exception:
-        pass  # If threadpoolctl not available, ignore
 
     # Store cache info globally in worker
     global _vertical_cache_info
@@ -488,6 +479,10 @@ def run_with_executor(batch_list, combined_params, trace_specific_output_dir, pa
 
 def main():
     """Main function for parallel data collection"""
+    # Start background system monitoring immediately to show baseline system state
+    start_background_monitoring(interval=15)
+    print("Started system monitoring...")
+    
     args = build_argparser().parse_args()
     
     # Load configuration
@@ -496,9 +491,11 @@ def main():
     except FileNotFoundError:
         print(f"Config file not found: {args.config}")
         print("Please create the config file or provide command line arguments")
+        stop_background_monitoring()
         return
     except Exception as e:
         print(f"Error loading config: {e}")
+        stop_background_monitoring()
         return
     
     # Resolve dataset paths
@@ -544,9 +541,6 @@ def main():
     print(f"  Enable inductance: {enable_inductance}")
     print(f"  Debug mode: {debug}")
     print(f"  Max workers: {max_workers}")
-    
-    # Start background system monitoring in a separate process
-    start_background_monitoring(interval=30)
     
     # Create base output directory and trace-specific subdirectory
     base_output_dir = output_dir
