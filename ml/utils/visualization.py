@@ -82,6 +82,16 @@ def plot_ew_curve(outputs, metrics, ew_threshold, sigma=2):
     true_prob = outputs['true_prob'].float().cpu()
     pred_sigma = outputs['pred_sigma'].float().detach().cpu()
 
+    # Random sample one batch index to get (N,) arrays for plotting
+    batch_size = pred_ew.shape[0]
+    sample_idx = np.random.randint(0, batch_size)
+    
+    pred_ew = pred_ew[sample_idx]
+    true_ew = true_ew[sample_idx]
+    pred_prob = pred_prob[sample_idx]
+    true_prob = true_prob[sample_idx]
+    pred_sigma = pred_sigma[sample_idx]
+
     # Conversions
     pred_mask = pred_ew > ew_threshold
     upper_mask = np.ma.masked_where(~pred_mask, pred_ew + sigma * pred_sigma)
