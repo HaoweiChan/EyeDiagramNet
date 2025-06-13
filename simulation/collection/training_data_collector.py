@@ -623,21 +623,22 @@ def main():
         print("Setting up shared memory cache for vertical SNP files...")
         print("Note: Horizontal SNPs are loaded per-process to save memory")
         try:
-            # Only cache vertical SNPs (they are shared across processes)
-            if vertical_dirs:
-                vertical_cache = SNPCache()
-                unique_vertical_snps = set()
-                for batch_tasks in batch_list:
-                    for _, vertical_pair, _ in batch_tasks:
-                        unique_vertical_snps.update(vertical_pair)
-                
+            # Cache all unique vertical SNPs that will be used across processes.
+            # This includes the auto-generated "thru" SNP.
+            vertical_cache = SNPCache()
+            unique_vertical_snps = set()
+            for batch_tasks in batch_list:
+                for _, vertical_pair, _ in batch_tasks:
+                    unique_vertical_snps.update(vertical_pair)
+            
+            if unique_vertical_snps:
                 for snp_path in tqdm(unique_vertical_snps, desc="Caching vertical SNPs"):
                     vertical_cache.add_snp(snp_path)
                 
                 vertical_cache_info = vertical_cache.get_cache_info()
                 print(f"Cached {len(vertical_cache_info)} vertical SNP files in shared memory.")
             else:
-                print("No vertical directories specified, skipping vertical SNP caching.")
+                print("No vertical SNPs found to cache.")
             
         except Exception as e:
             print(f"Warning: Could not set up shared memory cache: {e}")
