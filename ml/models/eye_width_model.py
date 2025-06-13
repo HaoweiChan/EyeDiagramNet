@@ -109,7 +109,6 @@ class EyeWidthRegressor(nn.Module):
 
         # ----------  Laplace placeholders  ----------
         self._laplace_model = None        # will hold Laplace object
-        self._laplace_wrapper = _ForwardWrapper(self)
 
     def forward(
         self,
@@ -241,10 +240,13 @@ class EyeWidthRegressor(nn.Module):
         """
         device = next(self.parameters()).device
         self.eval()
-        self._laplace_wrapper.to(device)
+        
+        # Create a wrapper for the forward pass that Laplace can use
+        # This is NOT a submodule to avoid recursion during .apply() calls
+        laplace_wrapper = _ForwardWrapper(self).to(device)
 
         lap = Laplace(
-            self._laplace_wrapper,
+            laplace_wrapper,
             likelihood="regression",
             subset_of_weights="last_layer",
             hessian_structure=hessian_structure,
@@ -275,8 +277,11 @@ class EyeWidthRegressor(nn.Module):
 
         self.eval()
         x = (trace_seq, direction, boundary, snp_vert)
-        pred = self._laplace_model(x, pred_type="glm")  # returns mean
-        var = self._laplace_model.predictive_variance(x)
+
+        # Re-create a temporary wrapper for prediction
+        laplace_wrapper = _ForwardWrapper(self)
+        pred = self._laplace_model(x, pred_type="glm", model=laplace_wrapper)  # returns mean
+        var = self._laplace_model.predictive_variance(x, model=laplace_wrapper)
 
         # Retrieve aleatoric variance from log_var head:
         _, log_var, logits = self(*x)
