@@ -1,6 +1,18 @@
 """Main training data collector orchestrating eye width simulation data collection."""
 
+# -----------------------------------------------------------------------------
+# Limit BLAS / OpenMP thread usage BEFORE NumPy/SciPy are imported.
+# This must be done at import time to ensure MKL / OpenBLAS obey the limits.
+# -----------------------------------------------------------------------------
 import os
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+
+# After the limits are in place we can safely import heavy numerical libs.
+
 import time
 import yaml
 import pickle
@@ -214,6 +226,13 @@ def init_worker_process(vertical_cache_info):
     import signal
     signal.signal(signal.SIGINT, signal.SIG_IGN)
 
+    # Enforce single-threaded BLAS in the worker as an extra safeguard
+    try:
+        import threadpoolctl
+        threadpoolctl.threadpool_limits(1)
+    except Exception:
+        pass  # If threadpoolctl not available, ignore
+
     # Store cache info globally in worker
     global _vertical_cache_info
     _vertical_cache_info = vertical_cache_info
@@ -240,7 +259,7 @@ def get_snp_from_cache(snp_path, cache_info):
     # buffers across all worker processes, eliminating the per‑process copy
     # that was previously blowing up RAM usage.
     ntwk = rf.Network()
-    ntwk.s = s_array            # <‑‑ no `.copy()` – stay in shared memory
+    ntwk.s = s_array
     ntwk.f = f_array
     ntwk.z0 = np.asarray(shm_info['z0'])
 
@@ -466,22 +485,9 @@ def run_with_executor(batch_list, combined_params, trace_specific_output_dir, pa
 
         if failed_batches:
             print(f"\nWarning: {len(failed_batches)} batches failed in total.")
-        # =================================================================
-
-    # handle KeyboardInterrupt outside of 'with' so we still get tracebacks
-    # (ProcessPoolExecutor will raise KeyboardInterrupt here if you hit Ctrl-C)
-    # no further change needed
 
 def main():
     """Main function for parallel data collection"""
-    # Set environment variables to prevent nested parallelism before doing anything else
-    os.environ["OMP_NUM_THREADS"] = "1"
-    os.environ["MKL_NUM_THREADS"] = "1"
-    os.environ["OPENBLAS_NUM_THREADS"] = "1"
-    os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
-    os.environ["NUMEXPR_NUM_THREADS"] = "1"
-    print("Set environment variables to prevent nested parallelism (OMP_NUM_THREADS, etc. = 1)")
-    
     args = build_argparser().parse_args()
     
     # Load configuration
@@ -540,7 +546,7 @@ def main():
     print(f"  Max workers: {max_workers}")
     
     # Start background system monitoring in a separate process
-    start_background_monitoring(interval=15)
+    start_background_monitoring(interval=30)
     
     # Create base output directory and trace-specific subdirectory
     base_output_dir = output_dir
