@@ -209,14 +209,13 @@ class SNPCache:
                 pass
         self.memory_blocks.clear()
 
-def init_worker_process(horizontal_cache_info, vertical_cache_info):
+def init_worker_process(vertical_cache_info):
     """Initialize worker process with shared memory access and signal handling."""
     import signal
     signal.signal(signal.SIGINT, signal.SIG_IGN)
 
     # Store cache info globally in worker
-    global _horizontal_cache_info, _vertical_cache_info
-    _horizontal_cache_info = horizontal_cache_info
+    global _vertical_cache_info
     _vertical_cache_info = vertical_cache_info
 
 def get_snp_from_cache(snp_path, cache_info):
@@ -272,8 +271,8 @@ def collect_snp_batch_simulation_data(task_batch, combined_params, pickle_dir,
     # All tasks in batch share the same horizontal trace SNP
     trace_snp_file = task_batch[0][0]
     
-    # Load horizontal SNP from cache (or disk if not available)
-    trace_ntwk = get_snp_from_cache(trace_snp_file, _horizontal_cache_info)
+    # Load horizontal SNP directly from disk (each process handles one horizontal SNP)
+    trace_ntwk = read_snp(trace_snp_file)
 
     n_ports = trace_ntwk.nports
     n_lines = n_ports // 2
@@ -285,7 +284,7 @@ def collect_snp_batch_simulation_data(task_batch, combined_params, pickle_dir,
     
     if debug:
         print(f"Processing batch of {len(task_batch)} tasks for {trace_snp_path.name}")
-        print(f"Detected {n_ports} ports ({n_lines} lines) from cached network")
+        print(f"Detected {n_ports} ports ({n_lines} lines) from horizontal SNP loaded from disk")
     
     # Load existing pickle data once
     if pickle_file.exists():
@@ -404,8 +403,7 @@ def cleanup_shared_memory():
     _shared_memory_blocks.clear()
 
 def run_with_executor(batch_list, combined_params, trace_specific_output_dir, param_types, 
-                     enable_direction, num_workers, 
-                     horizontal_cache_info=None, vertical_cache_info=None):
+                     enable_direction, num_workers, vertical_cache_info=None):
     """
     Run simulations using ProcessPoolExecutor
     
@@ -416,7 +414,6 @@ def run_with_executor(batch_list, combined_params, trace_specific_output_dir, pa
         param_types: Parameter types
         enable_direction: Direction flag
         num_workers: Number of workers
-        horizontal_cache_info: Shared memory cache info for horizontal SNPs
         vertical_cache_info: Shared memory cache info for vertical SNPs
     """
     
@@ -428,7 +425,7 @@ def run_with_executor(batch_list, combined_params, trace_specific_output_dir, pa
     with concurrent.futures.ProcessPoolExecutor(
         max_workers=num_workers, 
         initializer=init_worker_process,
-        initargs=(horizontal_cache_info or {}, vertical_cache_info or {})
+        initargs=(vertical_cache_info or {},)
     ) as executor:
         futures = [
             executor.submit(
@@ -616,22 +613,17 @@ def main():
         stop_background_monitoring()
         return
     
-    # Initialize shared memory caches for process mode
-    horizontal_cache, vertical_cache = None, None
-    horizontal_cache_info, vertical_cache_info = {}, {}
+    # Initialize shared memory cache for vertical SNPs only
+    # Optimization: Horizontal SNPs don't need shared memory since each batch processes
+    # only one horizontal SNP file. Only vertical SNPs are truly shared across processes.
+    vertical_cache = None
+    vertical_cache_info = {}
     
     if not debug:
-        print("Setting up shared memory cache for SNP files...")
+        print("Setting up shared memory cache for vertical SNP files...")
+        print("Note: Horizontal SNPs are loaded per-process to save memory")
         try:
-            # Horizontal (trace) SNP cache
-            horizontal_cache = SNPCache()
-            unique_horizontal_snps = set(task_batches.keys())
-            for snp_path in tqdm(unique_horizontal_snps, desc="Caching horizontal SNPs"):
-                horizontal_cache.add_snp(snp_path)
-            horizontal_cache_info = horizontal_cache.get_cache_info()
-            print(f"Cached {len(horizontal_cache_info)} horizontal SNP files in shared memory.")
-
-            # Vertical SNP cache (if applicable)
+            # Only cache vertical SNPs (they are shared across processes)
             if vertical_dirs:
                 vertical_cache = SNPCache()
                 unique_vertical_snps = set()
@@ -644,26 +636,25 @@ def main():
                 
                 vertical_cache_info = vertical_cache.get_cache_info()
                 print(f"Cached {len(vertical_cache_info)} vertical SNP files in shared memory.")
+            else:
+                print("No vertical directories specified, skipping vertical SNP caching.")
             
         except Exception as e:
             print(f"Warning: Could not set up shared memory cache: {e}")
-            if horizontal_cache: horizontal_cache.cleanup()
             if vertical_cache: vertical_cache.cleanup()
-            horizontal_cache, vertical_cache = None, None
-            horizontal_cache_info, vertical_cache_info = {}, {}
+            vertical_cache = None
+            vertical_cache_info = {}
     
     # Run simulations
     try:
         if not debug:
             run_with_executor(batch_list, combined_params, trace_specific_output_dir, param_types, 
-                             enable_direction, max_workers,
-                             horizontal_cache_info, vertical_cache_info)
+                             enable_direction, max_workers, vertical_cache_info)
         else:
             # Debug mode - run sequentially
             # In debug mode, we are in the main process, so worker globals are not set.
             # We need to manually use the cache info.
-            global _horizontal_cache_info, _vertical_cache_info
-            _horizontal_cache_info = horizontal_cache_info
+            global _vertical_cache_info
             _vertical_cache_info = vertical_cache_info
 
             for i, batch_tasks in enumerate(tqdm(batch_list, desc="Debug processing batches")):
@@ -680,8 +671,6 @@ def main():
         stop_background_monitoring()
         
         # Clean up shared memory
-        if horizontal_cache:
-            horizontal_cache.cleanup()
         if vertical_cache:
             vertical_cache.cleanup()
         cleanup_shared_memory()
