@@ -172,8 +172,15 @@ class TraceEWModule(LightningModule):
 
             def __iter__(self):
                 for batch in self.dataloader:
-                    key = next(iter(batch.keys()))
-                    raw_data = batch[key]
+                    # Handle both dictionary and tuple batch formats
+                    if isinstance(batch, dict):
+                        # Dictionary format: get first key's data
+                        key = next(iter(batch.keys()))
+                        raw_data = batch[key]
+                    else:
+                        # Tuple format: batch is already the raw data
+                        raw_data = batch
+                    
                     inputs = tuple(d.to(self.device) for d in raw_data[:-1])
                     # Ensure targets are correctly shaped for regression
                     targets = raw_data[-1].to(self.device).squeeze()
