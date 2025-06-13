@@ -173,8 +173,13 @@ class TraceEWModule(LightningModule):
 
             def __iter__(self):
                 for batch in self.dataloader:
-                    # batch is a dict with one key from CombinedLoader
-                    raw_data = next(iter(batch.values())) 
+                    if isinstance(batch, dict):
+                        # Handles dict of batches from CombinedLoader
+                        raw_data = next(iter(batch.values()))
+                    else:
+                        # Handles tuple batch from a single dataloader
+                        raw_data = batch
+                    
                     inputs = tuple(d.to(self.device) for d in raw_data[:-1])
                     # Ensure targets are correctly shaped for regression
                     targets = raw_data[-1].to(self.device).squeeze()
@@ -185,10 +190,13 @@ class TraceEWModule(LightningModule):
 
         train_loader = self.trainer.datamodule.train_dataloader()
         
-        # Use CombinedLoader to iterate over the dictionary of dataloaders correctly.
-        # This mirrors how Lightning handles multiple dataloaders during training.
-        combined_loader = CombinedLoader(train_loader, mode="max_size_cycle")
-        laplace_loader = LaplaceDataLoaderWrapper(combined_loader, self.device)
+        # If train_loader is a dictionary of dataloaders, wrap it with CombinedLoader.
+        # Otherwise, use it directly. This makes the logic robust.
+        if isinstance(train_loader, dict):
+            combined_loader = CombinedLoader(train_loader, mode="max_size_cycle")
+            laplace_loader = LaplaceDataLoaderWrapper(combined_loader, self.device)
+        else:
+            laplace_loader = LaplaceDataLoaderWrapper(train_loader, self.device)
         
         self.model.fit_laplace(laplace_loader)
         rank_zero_info("Laplace approximation fitting complete.")
