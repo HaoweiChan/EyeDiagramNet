@@ -179,12 +179,12 @@ class TraceEWModule(LightningModule):
                             # raw_data is a tuple of tensors: (trace_seq, direction, boundary, snp_vert, true_ew)
                             inputs = tuple(d.to(self.device) for d in raw_data[:-1])
                             targets = raw_data[-1].to(self.device).squeeze()
-                            yield torch.cat(inputs, dim=-1), targets
+                            yield inputs, targets
                     else:
                         # Handle tuple batch from a single dataloader
                         inputs = tuple(d.to(self.device) for d in batch[:-1])
                         targets = batch[-1].to(self.device).squeeze()
-                        yield torch.cat(inputs, dim=-1), targets
+                        yield inputs, targets
             
             def __len__(self):
                 return len(self.dataloader)
