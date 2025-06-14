@@ -244,10 +244,10 @@ class EyeWidthRegressor(nn.Module):
         
         # Create a wrapper for the forward pass that Laplace can use
         # This is NOT a submodule to avoid recursion during .apply() calls
-        laplace_wrapper = _ForwardWrapper(self).to(device)
+        laplace_wrapper = _ForwardWrapper(self)
 
         lap = Laplace(
-            laplace_wrapper,
+            laplace_wrapper.to(device),
             likelihood="regression",
             subset_of_weights="last_layer",
             hessian_structure=hessian_structure,

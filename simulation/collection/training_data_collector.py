@@ -480,7 +480,7 @@ def run_with_executor(batch_list, combined_params, trace_specific_output_dir, pa
 def main():
     """Main function for parallel data collection"""
     # Start background system monitoring immediately to show baseline system state
-    start_background_monitoring(interval=15)
+    start_background_monitoring(interval=300)
     print("Started system monitoring...")
     
     args = build_argparser().parse_args()
