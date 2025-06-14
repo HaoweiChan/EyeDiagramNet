@@ -23,7 +23,8 @@ class _ForwardWrapper(nn.Module):
     def forward(self, x):
         trace_seq, direction, boundary, snp_vert = x
         # For likelihood='regression', Laplace expects a single output (mean)
-        return self.base(trace_seq, direction, boundary, snp_vert)[0]
+        values, _, _ = self.base(trace_seq, direction, boundary, snp_vert)
+        return values
 
 class EyeWidthRegressor(nn.Module):
     def __init__(
@@ -251,6 +252,7 @@ class EyeWidthRegressor(nn.Module):
             subset_of_weights="last_layer",
             hessian_structure=hessian_structure,
         )
+
         lap.fit(train_loader)
         if prior_var is None:
             lap.optimize_prior_precision()

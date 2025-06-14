@@ -172,7 +172,7 @@ class TraceEWModule(LightningModule):
                 self.device = device
 
             def __iter__(self):
-                for batch in self.dataloader:
+                for batch, *_ in self.dataloader:
                     if isinstance(batch, dict):
                         # Handle dictionary batch (from CombinedLoader or regular training)
                         for name, raw_data in batch.items():

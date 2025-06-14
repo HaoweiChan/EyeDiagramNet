@@ -68,7 +68,7 @@ model:
     strict: false
     ew_scaler: 50
     ew_threshold: 0.1
-    compile_model: true
+    compile_model: false
     use_laplace_on_fit_end: true
     model:
       class_path: ml.models.eye_width_model.EyeWidthRegressor
@@ -93,7 +93,7 @@ data:
       # pattern2_emib_9mi_0124: /proj/siaiadm/AI_training_data/D2D/UCIe_Trace/pattern2/emib_9mi_0124
       # pattern2_emib_10mi_0124: /proj/siaiadm/AI_training_data/D2D/UCIe_Trace/pattern2/emib_10mi_0124
     label_dir: /proj/siaiadm/ew_predictor/res
-    batch_size: 60
+    batch_size: 50
     test_size: 0.25
 
 optimizer:
