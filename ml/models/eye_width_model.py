@@ -302,7 +302,7 @@ class EyeWidthRegressor(nn.Module):
         # Let's assume train_loader is the LaplaceDataLoaderWrapper instance.
         # We need to get a "full" sample.
         original_train_loader = datamodule.train_dataloader() # Use passed datamodule
-        sample_batch_dict = next(iter(original_train_loader))
+        sample_batch_dict, *_ = next(iter(original_train_loader))
         # Assuming CombinedLoader, so sample_batch_dict is a dict
         # Take the first available dataset's sample
         sample_raw_data = next(iter(sample_batch_dict.values()))

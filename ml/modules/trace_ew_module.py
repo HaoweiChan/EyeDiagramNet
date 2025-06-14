@@ -170,6 +170,42 @@ class TraceEWModule(LightningModule):
             def __init__(self, dataloader, device):
                 self.dataloader = dataloader
                 self.device = device
+                
+                # Expose the dataset attribute for Laplace library
+                if hasattr(dataloader, 'dataset'):
+                    self.dataset = dataloader.dataset
+                elif isinstance(dataloader, CombinedLoader):
+                    # For CombinedLoader, create a proxy dataset that sums lengths
+                    # or provides a representative length. Laplace uses len(loader.dataset).
+                    # Let's try to sum the lengths of the individual datasets.
+                    total_len = 0
+                    valid_dataset_found = False
+                    if isinstance(dataloader.loaders, dict):
+                        for loader_name, actual_loader in dataloader.loaders.items():
+                            if hasattr(actual_loader, 'dataset') and actual_loader.dataset is not None:
+                                total_len += len(actual_loader.dataset)
+                                valid_dataset_found = True
+                    elif isinstance(dataloader.loaders, list):
+                         for actual_loader in dataloader.loaders:
+                            if hasattr(actual_loader, 'dataset') and actual_loader.dataset is not None:
+                                total_len += len(actual_loader.dataset)
+                                valid_dataset_found = True
+                    
+                    if valid_dataset_found:
+                        # Create a dummy dataset object with a __len__ method
+                        class _CombinedDatasetProxy:
+                            def __init__(self, length):
+                                self._length = length
+                            def __len__(self):
+                                return self._length
+                        self.dataset = _CombinedDatasetProxy(total_len)
+                        rank_zero_info(f"LaplaceDataLoaderWrapper: Using CombinedDatasetProxy with total length {total_len} for CombinedLoader.")
+                    else:
+                        rank_zero_info("LaplaceDataLoaderWrapper: Could not determine dataset length for CombinedLoader.")
+                        self.dataset = None # Fallback
+                else:
+                    rank_zero_info("LaplaceDataLoaderWrapper: Wrapped dataloader type unknown or does not have a 'dataset' attribute.")
+                    self.dataset = None
 
             def __iter__(self):
                 for batch, *_ in self.dataloader:
