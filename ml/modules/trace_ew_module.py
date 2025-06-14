@@ -177,14 +177,22 @@ class TraceEWModule(LightningModule):
                         # Handle dictionary batch (from CombinedLoader or regular training)
                         for name, raw_data in batch.items():
                             # raw_data is a tuple of tensors: (trace_seq, direction, boundary, snp_vert, true_ew)
-                            inputs = tuple(d.to(self.device) for d in raw_data[:-1])
+                            # Concatenate inputs into a single tensor
+                            # Assuming all input tensors have the same batch size (dim 0)
+                            # and can be concatenated along a new dimension or an existing one
+                            # This part needs careful consideration of tensor shapes
+                            # For Laplace _find_last_layer, which expects a single tensor X,
+                            # we yield only the primary input (trace_seq) and the target.
+                            # raw_data is (trace_seq, direction, boundary, snp_vert, true_ew)
+                            trace_seq_input = raw_data[0].to(self.device)
                             targets = raw_data[-1].to(self.device).squeeze()
-                            yield inputs, targets
+                            yield trace_seq_input, targets
                     else:
                         # Handle tuple batch from a single dataloader
-                        inputs = tuple(d.to(self.device) for d in batch[:-1])
+                        # batch is (trace_seq, direction, boundary, snp_vert, true_ew)
+                        trace_seq_input = batch[0].to(self.device)
                         targets = batch[-1].to(self.device).squeeze()
-                        yield inputs, targets
+                        yield trace_seq_input, targets
             
             def __len__(self):
                 return len(self.dataloader)

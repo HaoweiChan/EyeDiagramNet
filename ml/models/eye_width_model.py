@@ -16,12 +16,46 @@ class _ForwardWrapper(nn.Module):
     Laplace-torch assumes model(x) where x is a single tensor.
     We wrap EyeWidthRegressor so that x is a *tuple* of the four usual inputs.
     """
-    def __init__(self, base: nn.Module):
+    def __init__(self, base: nn.Module, sample_direction=None, sample_boundary=None, sample_snp_vert=None):
         super().__init__()
         self.base = base
+        self.sample_direction = sample_direction
+        self.sample_boundary = sample_boundary
+        self.sample_snp_vert = sample_snp_vert
 
     def forward(self, x):
-        trace_seq, direction, boundary, snp_vert = x
+        if isinstance(x, tuple): # Normal call with all inputs
+            trace_seq, direction, boundary, snp_vert = x
+        elif isinstance(x, torch.Tensor) and self.sample_direction is not None:
+            # Call from _find_last_layer, x is trace_seq
+            trace_seq = x
+            # Ensure sample tensors are on the same device as trace_seq and batch size 1
+            current_device = trace_seq.device
+            batch_size = trace_seq.size(0)
+
+            if batch_size == 1:
+                direction = self.sample_direction.to(current_device)
+                boundary = self.sample_boundary.to(current_device)
+                snp_vert = self.sample_snp_vert.to(current_device)
+            else:
+                # If _find_last_layer passes a batch > 1, this needs more robust handling
+                # For now, assume B=1 or replicate/slice sample.
+                # This part is tricky and might need adjustment based on how laplace uses X[:1]
+                # If X[:1] truly means a single sample, then B should be 1.
+                # If laplace passes a batch of trace_seq, we need to tile samples or error.
+                # For simplicity, let's assume B=1 for now for the _find_last_layer path.
+                # If not, this will error or behave unexpectedly.
+                # A more robust solution would be to ensure sample_inputs are [1, ...] shaped
+                # and then expand them to batch_size if batch_size > 1.
+                direction = self.sample_direction.to(current_device).expand(batch_size, -1) if self.sample_direction.ndim == 2 else self.sample_direction.to(current_device).expand(batch_size, -1, -1) # Basic expansion
+                boundary = self.sample_boundary.to(current_device).expand(batch_size, -1) if self.sample_boundary.ndim == 2 else self.sample_boundary.to(current_device).expand(batch_size, -1, -1)
+                snp_vert_shape = self.sample_snp_vert.shape
+                snp_vert = self.sample_snp_vert.to(current_device).expand(batch_size, *snp_vert_shape[1:])
+
+
+        else:
+            raise TypeError(f"Input to _ForwardWrapper must be a tuple or a single trace_seq tensor (if sample inputs provided). Got {type(x)}")
+
         # For likelihood='regression', Laplace expects a single output (mean)
         values, _, _ = self.base(trace_seq, direction, boundary, snp_vert)
         return torch.mean(values, dim=-1)
@@ -241,10 +275,49 @@ class EyeWidthRegressor(nn.Module):
         """
         device = next(self.parameters()).device
         self.eval()
+
+        # Get sample inputs for the _ForwardWrapper to use when only trace_seq is passed
+        # The train_loader here is LaplaceDataLoaderWrapper which yields (trace_seq, target)
+        # We need the original dataloader's structure to get all 4 inputs.
+        # This requires access to the original datamodule or a sample from it.
+        # For now, let's fetch one batch from the passed train_loader,
+        # assuming it's the LaplaceDataLoaderWrapper that now yields (trace_seq, target).
+        # This means we can't easily get the other parts (direction, boundary, snp_vert) here
+        # unless we change LaplaceDataLoaderWrapper back or get samples differently.
+
+        # Reverting to the idea that LaplaceDataLoaderWrapper yields the tuple of inputs
+        # and the fix is purely in how laplace library handles it, or how _ForwardWrapper handles its input.
+        # The current error is 'tuple' object has no attribute 'to' from X[:1].to(device).
+        # This means X is a tuple, and X[:1] is a sub-tuple.
+        # The change in LaplaceDataLoaderWrapper to yield only trace_seq was to make X a tensor.
+        # If X is now trace_seq (a tensor), then X[:1] is a tensor slice, and .to(device) works.
+        # Then _ForwardWrapper receives this trace_seq slice.
+
+        # We need sample_direction, sample_boundary, sample_snp_vert for _ForwardWrapper.
+        # Let's get it from the *original* structure of the train_loader,
+        # before it's wrapped by LaplaceDataLoaderWrapper.
+        # This is tricky as fit_laplace only receives the (potentially wrapped) train_loader.
+
+        # Let's assume train_loader is the LaplaceDataLoaderWrapper instance.
+        # We need to get a "full" sample.
+        # The trainer's datamodule should be accessible.
+        original_train_loader = self.trainer.datamodule.train_dataloader() # Access original
+        sample_batch_dict = next(iter(original_train_loader))
+        # Assuming CombinedLoader, so sample_batch_dict is a dict
+        # Take the first available dataset's sample
+        sample_raw_data = next(iter(sample_batch_dict.values()))
+
+        # Get single sample (first item of the batch) for each component
+        # and move to device. These will be used by _ForwardWrapper.
+        # raw_data is (trace_seq, direction, boundary, snp_vert, true_ew)
+        _sample_trace_seq = sample_raw_data[0][0:1].to(device) # Batch size 1
+        sample_direction = sample_raw_data[1][0:1].to(device)
+        sample_boundary = sample_raw_data[2][0:1].to(device)
+        sample_snp_vert = sample_raw_data[3][0:1].to(device)
         
         # Create a wrapper for the forward pass that Laplace can use
         # This is NOT a submodule to avoid recursion during .apply() calls
-        laplace_wrapper = _ForwardWrapper(self)
+        laplace_wrapper = _ForwardWrapper(self, sample_direction, sample_boundary, sample_snp_vert)
 
         lap = Laplace(
             laplace_wrapper.to(device),
