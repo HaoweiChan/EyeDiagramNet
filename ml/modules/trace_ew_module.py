@@ -174,16 +174,17 @@ class TraceEWModule(LightningModule):
             def __iter__(self):
                 for batch in self.dataloader:
                     if isinstance(batch, dict):
-                        # Handles dict of batches from CombinedLoader
-                        raw_data = next(iter(batch.values()))
+                        # Handle dictionary batch (from CombinedLoader or regular training)
+                        for name, raw_data in batch.items():
+                            # raw_data is a tuple of tensors: (trace_seq, direction, boundary, snp_vert, true_ew)
+                            inputs = tuple(d.to(self.device) for d in raw_data[:-1])
+                            targets = raw_data[-1].to(self.device).squeeze()
+                            yield inputs, targets
                     else:
-                        # Handles tuple batch from a single dataloader
-                        raw_data = batch
-                    
-                    inputs = tuple(d.to(self.device) for d in raw_data[:-1])
-                    # Ensure targets are correctly shaped for regression
-                    targets = raw_data[-1].to(self.device).squeeze()
-                    yield inputs, targets
+                        # Handle tuple batch from a single dataloader
+                        inputs = tuple(d.to(self.device) for d in batch[:-1])
+                        targets = batch[-1].to(self.device).squeeze()
+                        yield inputs, targets
             
             def __len__(self):
                 return len(self.dataloader)
