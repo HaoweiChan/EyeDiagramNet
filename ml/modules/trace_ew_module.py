@@ -207,7 +207,8 @@ class TraceEWModule(LightningModule):
         else:
             laplace_loader = LaplaceDataLoaderWrapper(train_loader, self.device)
         
-        self.model.fit_laplace(laplace_loader)
+        # Pass the datamodule to fit_laplace
+        self.model.fit_laplace(laplace_loader, self.trainer.datamodule)
         rank_zero_info("Laplace approximation fitting complete.")
 
     def forward(self, *args, **kwargs):

@@ -258,7 +258,8 @@ class EyeWidthRegressor(nn.Module):
     # -----------------------------------------------------------------------
     def fit_laplace(
         self,
-        train_loader: DataLoader,
+        train_loader: DataLoader, # This is the LaplaceDataLoaderWrapper instance
+        datamodule, # Add datamodule argument
         hessian_structure: str = "diag",
         prior_var: float | None = None,
     ):
@@ -300,8 +301,7 @@ class EyeWidthRegressor(nn.Module):
 
         # Let's assume train_loader is the LaplaceDataLoaderWrapper instance.
         # We need to get a "full" sample.
-        # The trainer's datamodule should be accessible.
-        original_train_loader = self.trainer.datamodule.train_dataloader() # Access original
+        original_train_loader = datamodule.train_dataloader() # Use passed datamodule
         sample_batch_dict = next(iter(original_train_loader))
         # Assuming CombinedLoader, so sample_batch_dict is a dict
         # Take the first available dataset's sample
