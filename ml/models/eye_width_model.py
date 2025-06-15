@@ -58,7 +58,17 @@ class _ForwardWrapper(nn.Module):
 
         # For likelihood='regression', Laplace expects a single output (mean)
         values, _, _ = self.base(trace_seq, direction, boundary, snp_vert)
-        return torch.mean(values, dim=-1)
+        
+        # Ensure values is always 2D (B, P) for Laplace compatibility
+        if values.dim() == 1:
+            # If values is (B,), make it (B, 1)
+            values = values.unsqueeze(-1)
+        elif values.dim() == 0:
+            # If values is scalar, make it (1, 1)
+            values = values.unsqueeze(0).unsqueeze(-1)
+        # If values is already 2D, keep it as is
+        
+        return values
 
 class EyeWidthRegressor(nn.Module):
     def __init__(
