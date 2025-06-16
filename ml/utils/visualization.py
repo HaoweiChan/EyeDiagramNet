@@ -100,13 +100,15 @@ def plot_ew_curve(outputs, metrics, ew_threshold, sigma=2):
     stage_key = next(iter(metrics)).split('_')[0].replace('/', '').capitalize()
     metrics = {k.split('/')[1]: v for k, v in metrics.items() if v != 0}
     
-    # Format values to be cleaner (3 decimal places, remove trailing zeros)
+    # Format values like the desired clean format
     def format_value(v):
+        if hasattr(v, 'item'):  # Handle tensor values
+            v = v.item()
         if isinstance(v, (int, float)):
-            return f"{v:.3f}".rstrip('0').rstrip('.')
+            return f"{v:.3f}"
         return str(v)
     
-    metric_lines = [f'{k:<9}: {format_value(v)}' for k, v in metrics.items()]
+    metric_lines = [f'{k:<8} : {format_value(v)}' for k, v in metrics.items()]
     pretty_string = f"{stage_key}\n\n" + '\n'.join(metric_lines)
 
     plt.close()
@@ -128,7 +130,7 @@ def plot_ew_curve(outputs, metrics, ew_threshold, sigma=2):
     ax2.axhline(ew_threshold, color='black', linestyle='--', linewidth=1)
     ax2.set_ylim(-0.1, 1.1)  # Set y-axis limits to [0, 1]
     ax2.yaxis.set_ticks([0, ew_threshold, 1])
-    ax2.yaxis.set_ticklabels(['0', f'ew_threshold: {ew_threshold:.1f}', '1'])
+    ax2.yaxis.set_ticklabels(['0', f'{ew_threshold:.1f}', '1'])
 
     # Right-hand text box
     ax_text = fig.add_subplot(gs[0, 1])

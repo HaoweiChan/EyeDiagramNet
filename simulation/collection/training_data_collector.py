@@ -472,7 +472,7 @@ def run_with_executor(batch_list, combined_params, trace_specific_output_dir, pa
                     print(f"Completed {completed_batches}/{len(futures)} batches, rate: {rate:.2f} batches/sec")
 
         total_time = time.time() - executor_start_time
-        print(f"ProcessPoolExecutor completed in {total_time:.2f}s, avg rate: {len(futures)/total_time:.2f} batches/sec")
+        print(f"ProcessPoolExecutor completed in {total_time:.2f}s, avg rate: {total_time/len(futures):.0f} sec/batch")
 
         if failed_batches:
             print(f"\nWarning: {len(failed_batches)} batches failed in total.")
