@@ -70,6 +70,23 @@ class _ForwardWrapper(nn.Module):
         
         return values
 
+class PredictionHead(nn.Module):
+    def __init__(self, model_dim, output_dim, dropout):
+        super().__init__()
+        self.head = nn.Sequential(
+            nn.Linear(model_dim, 2 * model_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(2 * model_dim, 2 * model_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(2 * model_dim, output_dim)
+        )
+        self.res_projection = nn.Linear(model_dim, output_dim)
+
+    def forward(self, x):
+        return self.head(x) + self.res_projection(x)
+
 class EyeWidthRegressor(nn.Module):
     def __init__(
         self,
@@ -121,7 +138,8 @@ class EyeWidthRegressor(nn.Module):
             )
             self.signal_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
         
-        self.norm = RMSNorm(model_dim)
+        self.norm_trace_seq = RMSNorm(model_dim)
+        self.norm_concat_tokens = RMSNorm(model_dim)
 
         # Direction embedding (0 for Tx, 1 for Rx)
         self.dir_projection = nn.Embedding(2, model_dim)
@@ -142,15 +160,7 @@ class EyeWidthRegressor(nn.Module):
             self.signal_projection = None
 
         # Prediction heads
-        self.pred_head = nn.Sequential(
-            nn.Linear(model_dim, model_dim),
-            nn.Dropout(dropout),
-            nn.GELU(),
-            nn.Linear(model_dim, model_dim),
-            nn.Dropout(dropout),
-            nn.GELU(),
-            nn.Linear(model_dim, output_dim),
-        )
+        self.pred_head = PredictionHead(model_dim, output_dim, dropout)
 
         # ----------  Laplace placeholders  ----------
         self._laplace_model = None        # will hold Laplace object
@@ -193,7 +203,7 @@ class EyeWidthRegressor(nn.Module):
 
         # Sum all hidden states and forward to the signal sequence decoder
         hidden_states_seq = hidden_states_seq + hidden_states_dir
-        hidden_states_seq = self.norm(hidden_states_seq) # (B, P, M)
+        hidden_states_seq = self.norm_trace_seq(hidden_states_seq) # (B, P, M)
 
         num_signals = hidden_states_seq.size(1)
         
@@ -220,9 +230,12 @@ class EyeWidthRegressor(nn.Module):
         hidden_states[:, seq_len:seq_len+vert_len] = hidden_states_vert  
         hidden_states[:, -1:] = hidden_states_fix + self.fix_token
 
+        # Final norm before signal transformer
+        hidden_states = self.norm_concat_tokens(hidden_states)
+
         # Run transformer for the signals
         hidden_states_sig = self.signal_encoder(hidden_states)
-        hidden_states_sig = hidden_states_sig[:, :num_signals] + hidden_states_fix
+        hidden_states_sig = hidden_states_sig[:, :num_signals]
 
         # Predict eye width and open eye probabilities respectively
         output = self.pred_head(hidden_states_sig)

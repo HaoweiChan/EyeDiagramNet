@@ -414,7 +414,7 @@ class TraceEWModule(LightningModule):
         # Rescale / post-process for logging
         pred_ew_eval = pred_ew_eval * self.ew_scaler
         true_ew_scaled = item.true_ew * self.ew_scaler
-        pred_logvar_eval = pred_logvar_eval + 2 + self.log_ew_scaler.to(pred_logvar_eval.device)
+        pred_logvar_eval = pred_logvar_eval + 2 * self.log_ew_scaler.to(pred_logvar_eval.device)
         pred_sigma = torch.exp(0.5 * pred_logvar_eval)
 
         extras = {

@@ -70,7 +70,6 @@ class SNPEmbedding(nn.Module):
 
         return hidden_states_snp
 
-
 class OptimizedSNPEmbedding(nn.Module):
     """Further optimized version with additional performance improvements"""
     
@@ -104,7 +103,7 @@ class OptimizedSNPEmbedding(nn.Module):
 
     def _snp_transform(self, x):
         """Optimized power transformation"""
-        with torch.cuda.amp.autocast(enabled=self.use_mixed_precision):
+        with torch.amp.autocast(enabled=self.use_mixed_precision):
             return x.sign() * torch.pow(x.abs() + 1e-8, self._power_inv)
 
     def _process_snp_chunk(self, snp_chunk, b, d, p):
@@ -148,7 +147,7 @@ class OptimizedSNPEmbedding(nn.Module):
         snp_vert = rearrange(interleaved, "b p1 d (p2 e) -> (b p1) (d p2) e", p1=half_p, d=2, p2=p)
 
         # Forward through encoder with mixed precision
-        with torch.cuda.amp.autocast(enabled=self.use_mixed_precision):
+        with torch.cuda.autocast(enabled=self.use_mixed_precision):
             hidden_states_snp = self.snp_encoder(snp_vert)
         
         hidden_states_snp = rearrange(hidden_states_snp, "(b d p) e -> b d p e", b=b, d=d, p=half_p)

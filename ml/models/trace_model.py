@@ -16,7 +16,7 @@ class TraceSeqTransformer(nn.Module):
         num_heads,
         num_layers,
         dropout,
-        use_rope=False,
+        use_rope=True,
         max_seq_len=1000,
     ):
         super().__init__()
