@@ -104,12 +104,14 @@ class EyeWidthRegressor(nn.Module):
         use_rope=True,
         max_seq_len=2048,
         max_ports=1000,
+        use_gradient_checkpointing=False,
     ):
         super().__init__()
 
         self.model_dim = model_dim
         self.output_dim = output_dim
         self.use_rope = use_rope
+        self.use_gradient_checkpointing = use_gradient_checkpointing
 
         # Trace sequence encoder
         self.trace_encoder = TraceSeqTransformer(
@@ -201,20 +203,30 @@ class EyeWidthRegressor(nn.Module):
             hidden_states_sig (torch.Tensor, optional): Hidden states of shared embedding before output head of shape (B, P, D), only returned if output_hidden_states is True.
         """
         # Process trace sequence
-        hidden_states_seq = self.trace_encoder(trace_seq)  # (B, P, M)
+        if self.use_gradient_checkpointing and self.training:
+            hidden_states_seq = torch.utils.checkpoint.checkpoint(
+                self.trace_encoder, trace_seq, use_reentrant=False
+            )
+        else:
+            hidden_states_seq = self.trace_encoder(trace_seq)  # (B, P, M)
 
         # Process boundary conditions with structured processor
         hidden_states_fix = self.boundary_processor(boundary).unsqueeze(1) # (B, 1, M)
 
         # Process snp into hidden states
-        hidden_states_vert = self.snp_encoder(snp_vert) # (B, D, P, M)
+        if self.use_gradient_checkpointing and self.training:
+            hidden_states_vert = torch.utils.checkpoint.checkpoint(
+                self.snp_encoder, snp_vert, use_reentrant=False
+            )
+        else:
+            hidden_states_vert = self.snp_encoder(snp_vert) # (B, D, P, M)
 
         # Process direction embedding
         hidden_states_dir = self.dir_projection(direction) # (B, P, M)
         
         # Add port position encoding if provided
         if port_positions is not None:
-            port_pos_embeds = self.port_position_encoding[port_positions] # (B, P, M)
+            port_pos_embeds = self.port_position_encoding[port_positions.long()] # (B, P, M)
             hidden_states_seq = hidden_states_seq + port_pos_embeds
 
         # Sum all hidden states and forward to the signal sequence decoder
@@ -250,7 +262,12 @@ class EyeWidthRegressor(nn.Module):
         hidden_states = self.norm_concat_tokens(hidden_states)
 
         # Run transformer for the signals
-        hidden_states_sig = self.signal_encoder(hidden_states)
+        if self.use_gradient_checkpointing and self.training:
+            hidden_states_sig = torch.utils.checkpoint.checkpoint(
+                self.signal_encoder, hidden_states, use_reentrant=False
+            )
+        else:
+            hidden_states_sig = self.signal_encoder(hidden_states)
         hidden_states_sig = hidden_states_sig[:, :num_signals]
 
         # Predict eye width and open eye probabilities respectively
