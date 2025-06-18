@@ -13,12 +13,20 @@ import pickle
 import argparse
 import warnings
 import traceback
+import json
 import numpy as np
 import pandas as pd
-import seaborn as sns
 import matplotlib.pyplot as plt
 from pathlib import Path
 warnings.filterwarnings('ignore')
+
+# Try to import seaborn, make it optional
+try:
+    import seaborn as sns
+    sns.set_palette("husl")
+except ImportError:
+    print("Warning: seaborn not available, using default matplotlib styling")
+    sns = None
 
 # Try to import simulation functions for comparison
 try:
@@ -32,7 +40,6 @@ except ImportError as e:
 
 # Set up plotting style
 plt.style.use('default')
-sns.set_palette("husl")
 plt.rcParams['figure.figsize'] = (12, 8)
 
 def reconstruct_config(data, sample_idx):
@@ -98,7 +105,7 @@ def main():
     parser.add_argument('--pickle_dir', type=str, default='./data/training_data',
                         help='Path to directory containing pickle files')
     parser.add_argument('--validate', action='store_true',
-                        help='Run validation comparison with fresh simulation')
+                        help='Run validation comparison with new simulation')
     parser.add_argument('--max_files', type=int, default=3,
                         help='Maximum number of files to validate (default: 3)')
     parser.add_argument('--max_samples', type=int, default=5,
@@ -387,8 +394,9 @@ def main():
     
     # 6. Validation (if requested and available)
     comparison_data = {}
+    detailed_validation_results = []  # Store detailed results for report
     if args.validate and VALIDATION_AVAILABLE:
-        print("\n\n6. VALIDATION: COMPARE PICKLE DATA WITH FRESH SIMULATION")
+        print("\n\n6. VALIDATION: COMPARE PICKLE DATA WITH SIMULATED DATA")
         print("="*40)
         
         validation_files = pickle_files[:min(args.max_files, len(pickle_files))]
@@ -396,7 +404,7 @@ def main():
         
         comparison_data = {
             'pickle_ews': [],
-            'fresh_ews': [],
+            'simulated_ews': [],
             'differences': [],
             'relative_errors': [],
             'file_names': [],
@@ -433,7 +441,7 @@ def main():
                         # Reconstruct config object - handle both old and new formats
                         config = reconstruct_config(data, sample_idx)
                         
-                        # Run fresh simulation
+                        # Run simulation
                         result = snp_eyewidth_simulation(
                             config,
                             (snp_horiz, snp_tx, snp_rx),
@@ -443,19 +451,39 @@ def main():
                         
                         # Handle return format
                         if isinstance(result, tuple):
-                            fresh_ew, fresh_directions = result
+                            simulated_ew, simulated_directions = result
                         else:
-                            fresh_ew = result
+                            simulated_ew = result
                         
-                        fresh_ew = np.array(fresh_ew)
+                        simulated_ew = np.array(simulated_ew)
                         
                         # Calculate differences
-                        diff = fresh_ew - pickle_ew
+                        diff = simulated_ew - pickle_ew
                         rel_error = np.abs(diff) / (np.abs(pickle_ew) + 1e-10)
+                        
+                        # Store detailed validation result
+                        config_dict = config if isinstance(config, dict) else config.to_dict()
+                        validation_result = {
+                            'file_name': pfile.name,
+                            'sample_index': sample_idx,
+                            'config': config_dict,
+                            'snp_tx': str(snp_tx),
+                            'snp_rx': str(snp_rx),
+                            'directions': directions.tolist() if directions is not None else None,
+                            'pickle_ew': pickle_ew.tolist(),
+                            'simulated_ew': simulated_ew.tolist(),
+                            'differences': diff.tolist(),
+                            'abs_differences': np.abs(diff).tolist(),
+                            'relative_errors': rel_error.tolist(),
+                            'max_abs_diff': np.abs(diff).max(),
+                            'max_rel_error': rel_error.max(),
+                            'perfect_match': np.allclose(pickle_ew, simulated_ew, atol=1e-10)
+                        }
+                        detailed_validation_results.append(validation_result)
                         
                         # Store comparison data
                         comparison_data['pickle_ews'].extend(pickle_ew.flatten())
-                        comparison_data['fresh_ews'].extend(fresh_ew.flatten())
+                        comparison_data['simulated_ews'].extend(simulated_ew.flatten())
                         comparison_data['differences'].extend(diff.flatten())
                         comparison_data['relative_errors'].extend(rel_error.flatten())
                         comparison_data['file_names'].extend([pfile.name] * len(pickle_ew.flatten()))
@@ -463,14 +491,40 @@ def main():
                         
                         # Print sample comparison
                         print(f"    Pickle EW: {pickle_ew}")
-                        print(f"    Fresh EW:  {fresh_ew}")
+                        print(f"    Simulated EW:  {simulated_ew}")
                         print(f"    Difference: {diff}")
                         print(f"    Max abs diff: {np.abs(diff).max():.6f}")
                         print(f"    Max rel error: {rel_error.max():.6f}")
                         
                     except Exception as e:
-                        print(f"    Error in fresh simulation: {e}")
+                        print(f"    Error in simulation: {e}")
                         traceback.print_exc()
+                        
+                        # Store failed validation result
+                        try:
+                            config = reconstruct_config(data, sample_idx)
+                            config_dict = config if isinstance(config, dict) else config.to_dict()
+                        except:
+                            config_dict = {"error": "Could not reconstruct config"}
+                        
+                        validation_result = {
+                            'file_name': pfile.name,
+                            'sample_index': sample_idx,
+                            'config': config_dict,
+                            'snp_tx': str(snp_tx),
+                            'snp_rx': str(snp_rx),
+                            'directions': directions.tolist() if directions is not None else None,
+                            'pickle_ew': pickle_ew.tolist(),
+                            'simulated_ew': None,
+                            'differences': None,
+                            'abs_differences': None,
+                            'relative_errors': None,
+                            'max_abs_diff': None,
+                            'max_rel_error': None,
+                            'perfect_match': False,
+                            'error': str(e)
+                        }
+                        detailed_validation_results.append(validation_result)
                         continue
                         
             except Exception as e:
@@ -497,17 +551,17 @@ def main():
             # Create validation plots
             try:
                 pickle_ews = np.array(comparison_data['pickle_ews'])
-                fresh_ews = np.array(comparison_data['fresh_ews'])
+                simulated_ews = np.array(comparison_data['simulated_ews'])
                 
                 fig, axes = plt.subplots(2, 3, figsize=(18, 12))
                 
-                # Scatter plot: Pickle vs Fresh
-                axes[0,0].scatter(pickle_ews, fresh_ews, alpha=0.6, s=20)
+                # Scatter plot: Pickle vs Simulated
+                axes[0,0].scatter(pickle_ews, simulated_ews, alpha=0.6, s=20)
                 axes[0,0].plot([pickle_ews.min(), pickle_ews.max()], 
                               [pickle_ews.min(), pickle_ews.max()], 'r--', label='Perfect match')
                 axes[0,0].set_xlabel('Pickle Eye Width')
-                axes[0,0].set_ylabel('Fresh Eye Width')
-                axes[0,0].set_title('Pickle vs Fresh Eye Width')
+                axes[0,0].set_ylabel('Simulated Eye Width')
+                axes[0,0].set_title('Pickle vs Simulated Eye Width')
                 axes[0,0].legend()
                 axes[0,0].grid(True, alpha=0.3)
                 
@@ -516,7 +570,7 @@ def main():
                 axes[0,1].axvline(0, color='red', linestyle='--', label='Zero difference')
                 axes[0,1].axvline(differences.mean(), color='orange', linestyle='--', 
                                  label=f'Mean: {differences.mean():.6f}')
-                axes[0,1].set_xlabel('Difference (Fresh - Pickle)')
+                axes[0,1].set_xlabel('Difference (Simulated - Pickle)')
                 axes[0,1].set_ylabel('Frequency')
                 axes[0,1].set_title('Distribution of Differences')
                 axes[0,1].legend()
@@ -568,17 +622,7 @@ def main():
                 plt.show()
                 
                 # Save detailed comparison
-                detailed_comparison = pd.DataFrame({
-                    'File': comparison_data['file_names'],
-                    'Sample_Index': comparison_data['sample_indices'],
-                    'Pickle_EW': pickle_ews,
-                    'Fresh_EW': fresh_ews,
-                    'Difference': differences,
-                    'Abs_Difference': np.abs(differences),
-                    'Rel_Error': rel_errors
-                })
-                
-                detailed_comparison = detailed_comparison.sort_values('Abs_Difference', ascending=False)
+                detailed_comparison = pd.DataFrame(detailed_validation_results)
                 detailed_comparison.to_csv('validation_comparison_details.csv', index=False, float_format='%.8f')
                 print("Detailed comparison saved to: validation_comparison_details.csv")
                 
@@ -635,7 +679,7 @@ def main():
     if len(comparison_data.get('differences', [])) > 0:
         differences = np.array(comparison_data['differences'])
         rel_errors = np.array(comparison_data['relative_errors'])
-        report.append("VALIDATION RESULTS (Pickle vs Fresh Simulation):")
+        report.append("VALIDATION RESULTS (Pickle vs Simulated):")
         report.append(f"  Samples compared: {len(differences)}")
         report.append(f"  Mean absolute difference: {np.abs(differences).mean():.6f}")
         report.append(f"  Max absolute difference: {np.abs(differences).max():.6f}")
@@ -657,6 +701,70 @@ def main():
             report.append("  INTERPRETATION: Significant differences detected - investigate further")
         report.append("")
     
+    # Detailed validation results for each sample
+    if detailed_validation_results:
+        report.append("DETAILED VALIDATION RESULTS BY SAMPLE:")
+        report.append("=" * 50)
+        
+        for i, result in enumerate(detailed_validation_results):
+            report.append(f"\nSample {i+1}: {result['file_name']} (Index: {result['sample_index']})")
+            report.append("-" * 60)
+            
+            # Configuration parameters
+            report.append("Configuration:")
+            if 'error' in result['config']:
+                report.append(f"  ERROR: {result['config']['error']}")
+            else:
+                config = result['config']
+                # Group config parameters for better readability
+                for key, value in config.items():
+                    if isinstance(value, float):
+                        report.append(f"  {key}: {value:.6f}")
+                    elif isinstance(value, int):
+                        report.append(f"  {key}: {value}")
+                    else:
+                        report.append(f"  {key}: {str(value)}")
+            
+            # SNP files and directions
+            report.append(f"SNP TX: {result['snp_tx']}")
+            report.append(f"SNP RX: {result['snp_rx']}")
+            if result['directions']:
+                directions_str = str(result['directions'])
+                if len(directions_str) > 100:
+                    directions_str = directions_str[:100] + "..."
+                report.append(f"Directions: {directions_str}")
+            
+            # Validation results
+            if 'error' in result:
+                report.append(f"VALIDATION ERROR: {result['error']}")
+            else:
+                pickle_ew = result['pickle_ew']
+                simulated_ew = result['simulated_ew']
+                
+                # Handle both scalar and array eye widths
+                if isinstance(pickle_ew, list) and len(pickle_ew) == 1:
+                    pickle_ew = pickle_ew[0]
+                    simulated_ew = simulated_ew[0]
+                    report.append(f"Pickle EW: {pickle_ew:.6f}")
+                    report.append(f"Simulated EW:  {simulated_ew:.6f}")
+                    report.append(f"Difference: {result['differences'][0]:.6f}")
+                    report.append(f"Rel Error: {result['relative_errors'][0]:.6f}")
+                else:
+                    # Multiple eye widths (e.g., multiple lines)
+                    report.append(f"Pickle EW: {[f'{x:.6f}' for x in pickle_ew]}")
+                    report.append(f"Simulated EW:  {[f'{x:.6f}' for x in simulated_ew]}")
+                    report.append(f"Differences: {[f'{x:.6f}' for x in result['differences']]}")
+                    report.append(f"Rel Errors: {[f'{x:.6f}' for x in result['relative_errors']]}")
+                
+                report.append(f"Max Abs Diff: {result['max_abs_diff']:.6f}")
+                report.append(f"Max Rel Error: {result['max_rel_error']:.6f}")
+                report.append(f"Perfect Match: {result['perfect_match']}")
+            
+            report.append("")  # Add spacing between samples
+        
+        report.append("=" * 50)
+        report.append("")
+    
     # Print and save report
     report_text = "\n".join(report)
     print(report_text)
@@ -664,10 +772,17 @@ def main():
     report_file = Path("training_data_summary.txt")
     with open(report_file, 'w') as f:
         f.write(report_text)
+    
+    # Save detailed validation results as JSON
+    if detailed_validation_results:
+        json_file = Path("detailed_validation_results.json")
+        with open(json_file, 'w') as f:
+            json.dump(detailed_validation_results, f, indent=2, default=str)
+        print(f"Detailed validation results saved to: {json_file}")
         
-    print(f"\nReport saved to: {report_file}")
+    print(f"Report saved to: {report_file}")
     if len(comparison_data.get('differences', [])) > 0:
-        print(f"Validation details saved to: validation_comparison_details.csv")
+        print(f"Validation summary saved to: validation_comparison_details.csv")
     
     print("\nAnalysis completed successfully!")
 
