@@ -81,6 +81,13 @@ class TraceEWDataset(Dataset):
         self.eye_widths = torch.from_numpy(eye_widths).float()
         self.repetition = self.boundaries.size(1)
         self.train = train
+        
+        # Extract port positions from trace sequences (where type == 0)
+        self.port_positions = []
+        for seq in self.trace_seqs:
+            signal_indices = torch.where(seq[:, 1] == 0)[0]
+            port_pos = torch.arange(len(signal_indices))
+            self.port_positions.append(port_pos)
 
     def __len__(self):
         return len(self.trace_seqs) * self.repetition
@@ -90,6 +97,7 @@ class TraceEWDataset(Dataset):
         bnd_index = index % self.repetition
 
         trace_seq = self.trace_seqs[seq_index]
+        port_positions = self.port_positions[seq_index].clone()
 
         # Retrieve the left and right snps
         tx_vert_file, rx_vert_file = self.vert_snps[seq_index, bnd_index]
@@ -103,9 +111,9 @@ class TraceEWDataset(Dataset):
         eye_width = self.eye_widths[seq_index, bnd_index]
 
         if self.train and random.random() > 0.5:
-            trace_seq, direction, eye_width, vert_snp = \
-                self.augment(trace_seq, direction, eye_width, vert_snp)
-        return trace_seq, direction, boundary, vert_snp, eye_width
+            trace_seq, direction, eye_width, vert_snp, port_positions = \
+                self.augment(trace_seq, direction, eye_width, vert_snp, port_positions)
+        return trace_seq, direction, boundary, vert_snp, eye_width, port_positions
 
     def transform(self, seq_scaler, fix_scaler):
         """Apply scaling transformations using semantic feature access."""
@@ -141,7 +149,7 @@ class TraceEWDataset(Dataset):
         avail_mem = psutil.virtual_memory().available
         return avail_mem > data_size
 
-    def augment(self, trace_seq, direction, eye_width, vert_snp, max_layer_idx=99, max_pos=10000.0):
+    def augment(self, trace_seq, direction, eye_width, vert_snp, port_positions, max_layer_idx=99, max_pos=10000.0):
         seq_len = trace_seq.size(0)
         seq_order = torch.arange(seq_len)
         signal_indices = torch.where(trace_seq[:, 1] == 0)[0]
@@ -170,7 +178,10 @@ class TraceEWDataset(Dataset):
         max_spatial_dim = trace_seq[:, -2:].max(0).values
         trace_seq[:, -2:] += (torch.rand((2,)) * (max_pos - max_spatial_dim)).unsqueeze(0).expand(seq_len, 2)
 
-        return trace_seq, direction, eye_width, vert_snp
+        # Augment port positions
+        port_positions = port_positions[signal_order]
+
+        return trace_seq, direction, eye_width, vert_snp, port_positions
 
     def vert_snp(self, snp_file):
         """Load and cache vertical SNP data."""
@@ -194,13 +205,21 @@ class InferenceTraceEWDataset(Dataset):
         tx_snp = torch.from_numpy(tx_snp).to(torch.complex64)
         rx_snp = torch.from_numpy(rx_snp).to(torch.complex64)
         self.vert_snp = torch.stack((tx_snp, flip_snp(rx_snp)))
+        
+        # Extract port positions from trace sequences (where type == 0)
+        self.port_positions = []
+        for seq in self.trace_seqs:
+            signal_indices = torch.where(seq[:, 1] == 0)[0]
+            port_pos = torch.arange(len(signal_indices))
+            self.port_positions.append(port_pos)
 
     def __len__(self):
         return len(self.trace_seqs)
 
     def __getitem__(self, index):
         trace_seq = self.trace_seqs[index]
-        return trace_seq, self.direction, self.boundary, self.vert_snp
+        port_positions = self.port_positions[index]
+        return trace_seq, self.direction, self.boundary, self.vert_snp, port_positions
 
     def transform(self, seq_scaler, fix_scaler):
         """Apply scaling transformations using semantic feature access."""
