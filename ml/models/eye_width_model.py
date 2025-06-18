@@ -5,7 +5,7 @@ from einops import rearrange
 from torch.utils.data import DataLoader
 
 from .layers import RMSNorm, positional_encoding_1d, RotaryTransformerEncoder, StructuredGatedBoundaryProcessor
-from .snp_model import SNPEmbedding
+from .snp_model import OptimizedSNPEmbedding
 from .trace_model import TraceSeqTransformer
 
 # ---------------------------------------------------------------------------
@@ -105,6 +105,8 @@ class EyeWidthRegressor(nn.Module):
         max_seq_len=2048,
         max_ports=1000,
         use_gradient_checkpointing=False,
+        pretrained_snp_path=None,
+        freeze_snp_encoder=False,
     ):
         super().__init__()
 
@@ -160,7 +162,17 @@ class EyeWidthRegressor(nn.Module):
         self.fix_token = nn.Parameter(torch.zeros(1, 1, self.model_dim))
 
         # SNP encoder
-        self.snp_encoder = SNPEmbedding(model_dim=model_dim, freq_length=freq_length)
+        self.snp_encoder = OptimizedSNPEmbedding(model_dim=model_dim, freq_length=freq_length)
+        
+        # Load pretrained SNP encoder if provided
+        if pretrained_snp_path is not None:
+            from ..utils.weight_transfer import load_pretrained_snp_encoder
+            load_pretrained_snp_encoder(
+                self, 
+                pretrained_snp_path, 
+                encoder_attr='snp_encoder',
+                freeze=freeze_snp_encoder
+            )
         
         # Positional encoding (only used if not using RoPE)
         if not use_rope:
@@ -175,6 +187,16 @@ class EyeWidthRegressor(nn.Module):
 
         # ----------  Laplace placeholders  ----------
         self._laplace_model = None        # will hold Laplace object
+        
+    def load_pretrained_snp(self, checkpoint_path, freeze=True):
+        """Load pretrained SNP encoder weights"""
+        from ..utils.weight_transfer import load_pretrained_snp_encoder
+        load_pretrained_snp_encoder(
+            self, 
+            checkpoint_path, 
+            encoder_attr='snp_encoder',
+            freeze=freeze
+        )
 
     def forward(
         self,

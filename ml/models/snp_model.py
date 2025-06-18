@@ -9,20 +9,29 @@ class SNPEmbedding(nn.Module):
     def __init__(
         self,
         model_dim,
-        freq_length
+        freq_length,
+        use_tx_rx_tokens=True
     ):
         super().__init__()
 
         self.freq_length = freq_length
         self.model_dim = model_dim
+        self.use_tx_rx_tokens = use_tx_rx_tokens
 
         # Optimized: Use single projection instead of separate real/imag
         self.snp_proj = nn.Linear(freq_length * 2, freq_length)
-        self.snp_encoder = ConditionEmbedding(encoder_dim=freq_length, embed_dim=model_dim)
+        # Use appropriate number of heads based on freq_length
+        # Ensure num_heads divides freq_length evenly
+        max_heads = min(8, freq_length // 16)  # Max heads with at least 16 dims per head
+        num_heads = max_heads
+        while num_heads > 1 and freq_length % num_heads != 0:
+            num_heads -= 1
+        self.snp_encoder = ConditionEmbedding(encoder_dim=freq_length, embed_dim=model_dim, num_heads=num_heads)
 
-        # Pre-allocate learnable tokens
-        self.tx_token = nn.Parameter(torch.zeros(1, 1, model_dim))
-        self.rx_token = nn.Parameter(torch.zeros(1, 1, model_dim))
+        # Pre-allocate learnable tokens (only if using tx/rx tokens)
+        if self.use_tx_rx_tokens:
+            self.tx_token = nn.Parameter(torch.zeros(1, 1, model_dim))
+            self.rx_token = nn.Parameter(torch.zeros(1, 1, model_dim))
         
         # Cache for power transformation to avoid recomputation
         self.register_buffer('_power_inv', torch.tensor(1.0 / 4.0))
@@ -33,11 +42,18 @@ class SNPEmbedding(nn.Module):
 
     def forward(self, snp_vert):
         """Encoder of snp for encoding vertical frequency responses"""
-        b, d, f, p1, p2 = snp_vert.size()
-        
-        # Input validation moved to top for early exit
-        if d != 2:
-            raise ValueError("Invalid input shape: snp_vert must have 2 snp tensors (tx and rx) in dimension 1.")
+        # For self-supervised learning, we may have shape (B, F, P1, P2) without tx/rx dimension
+        if snp_vert.dim() == 4:
+            # No tx/rx dimension - add it for consistency
+            b, f, p1, p2 = snp_vert.size()
+            snp_vert = snp_vert.unsqueeze(1)  # (B, 1, F, P1, P2)
+            d = 1
+        else:
+            b, d, f, p1, p2 = snp_vert.size()
+            
+            # Input validation moved to top for early exit
+            if self.use_tx_rx_tokens and d != 2:
+                raise ValueError("Invalid input shape: snp_vert must have 2 snp tensors (tx and rx) in dimension 1.")
         
         if p1 != p2:
             raise ValueError("SNP matrix must be square (P x P)")
@@ -64,9 +80,10 @@ class SNPEmbedding(nn.Module):
         hidden_states_snp = self.snp_encoder(snp_vert)
         hidden_states_snp = rearrange(hidden_states_snp, "(b d p) e -> b d p e", b=b, d=d, p=half_p)
 
-        # Add tx and rx tokens
-        hidden_states_snp[:, 0].add_(self.tx_token)
-        hidden_states_snp[:, 1].add_(self.rx_token)
+        # Add tx and rx tokens if enabled
+        if self.use_tx_rx_tokens and d == 2:
+            hidden_states_snp[:, 0].add_(self.tx_token)
+            hidden_states_snp[:, 1].add_(self.rx_token)
 
         return hidden_states_snp
 
@@ -78,7 +95,8 @@ class OptimizedSNPEmbedding(nn.Module):
         model_dim,
         freq_length,
         use_checkpointing=False,
-        use_mixed_precision=True
+        use_mixed_precision=True,
+        use_tx_rx_tokens=True
     ):
         super().__init__()
 
@@ -86,24 +104,35 @@ class OptimizedSNPEmbedding(nn.Module):
         self.model_dim = model_dim
         self.use_checkpointing = use_checkpointing
         self.use_mixed_precision = use_mixed_precision
+        self.use_tx_rx_tokens = use_tx_rx_tokens
 
         # Optimized projection with proper initialization
         self.snp_proj = nn.Linear(freq_length * 2, freq_length)
         nn.init.xavier_uniform_(self.snp_proj.weight)
         nn.init.zeros_(self.snp_proj.bias)
         
-        self.snp_encoder = ConditionEmbedding(encoder_dim=freq_length, embed_dim=model_dim)
+        # Use appropriate number of heads based on freq_length
+        # Ensure num_heads divides freq_length evenly
+        max_heads = min(8, freq_length // 16)  # Max heads with at least 16 dims per head
+        num_heads = max_heads
+        while num_heads > 1 and freq_length % num_heads != 0:
+            num_heads -= 1
+        self.snp_encoder = ConditionEmbedding(encoder_dim=freq_length, embed_dim=model_dim, num_heads=num_heads)
 
-        # Learnable tokens with better initialization
-        self.tx_token = nn.Parameter(torch.randn(1, 1, model_dim) * 0.02)
-        self.rx_token = nn.Parameter(torch.randn(1, 1, model_dim) * 0.02)
+        # Learnable tokens with better initialization (only if using tx/rx tokens)
+        if self.use_tx_rx_tokens:
+            self.tx_token = nn.Parameter(torch.randn(1, 1, model_dim) * 0.02)
+            self.rx_token = nn.Parameter(torch.randn(1, 1, model_dim) * 0.02)
         
         # Pre-computed constants
         self.register_buffer('_power_inv', torch.tensor(0.25))
 
     def _snp_transform(self, x):
         """Optimized power transformation"""
-        with torch.amp.autocast(enabled=self.use_mixed_precision):
+        if self.use_mixed_precision and x.is_cuda:
+            with torch.cuda.amp.autocast(enabled=True):
+                return x.sign() * torch.pow(x.abs() + 1e-8, self._power_inv)
+        else:
             return x.sign() * torch.pow(x.abs() + 1e-8, self._power_inv)
 
     def _process_snp_chunk(self, snp_chunk, b, d, p):
@@ -124,10 +153,17 @@ class OptimizedSNPEmbedding(nn.Module):
 
     def forward(self, snp_vert):
         """Memory-optimized forward pass with optional gradient checkpointing"""
-        b, d, f, p1, p2 = snp_vert.size()
-        
-        if d != 2:
-            raise ValueError("Invalid input shape: snp_vert must have 2 snp tensors (tx and rx) in dimension 1.")
+        # For self-supervised learning, we may have shape (B, F, P1, P2) without tx/rx dimension
+        if snp_vert.dim() == 4:
+            # No tx/rx dimension - add it for consistency
+            b, f, p1, p2 = snp_vert.size()
+            snp_vert = snp_vert.unsqueeze(1)  # (B, 1, F, P1, P2)
+            d = 1
+        else:
+            b, d, f, p1, p2 = snp_vert.size()
+            
+            if self.use_tx_rx_tokens and d != 2:
+                raise ValueError("Invalid input shape: snp_vert must have 2 snp tensors (tx and rx) in dimension 1.")
         
         if p1 != p2:
             raise ValueError("SNP matrix must be square (P x P)")
@@ -147,13 +183,17 @@ class OptimizedSNPEmbedding(nn.Module):
         snp_vert = rearrange(interleaved, "b p1 d (p2 e) -> (b p1) (d p2) e", p1=half_p, d=2, p2=p)
 
         # Forward through encoder with mixed precision
-        with torch.cuda.autocast(enabled=self.use_mixed_precision):
+        if self.use_mixed_precision and snp_vert.is_cuda:
+            with torch.cuda.amp.autocast(enabled=True):
+                hidden_states_snp = self.snp_encoder(snp_vert)
+        else:
             hidden_states_snp = self.snp_encoder(snp_vert)
         
         hidden_states_snp = rearrange(hidden_states_snp, "(b d p) e -> b d p e", b=b, d=d, p=half_p)
         
         # Add tx and rx tokens (consistent with SNPEmbedding)
-        hidden_states_snp[:, 0].add_(self.tx_token)
-        hidden_states_snp[:, 1].add_(self.rx_token)
+        if self.use_tx_rx_tokens and d == 2:
+            hidden_states_snp[:, 0].add_(self.tx_token)
+            hidden_states_snp[:, 1].add_(self.rx_token)
         
         return hidden_states_snp

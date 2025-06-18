@@ -1,0 +1,69 @@
+# lightning.pytorch
+seed_everything: true
+
+trainer:
+  accelerator: mps
+  devices: 1
+  precision: 32
+  max_epochs: 30
+  logger:
+    - class_path: lightning.pytorch.loggers.TensorBoardLogger
+      init_args:
+        save_dir: ./saved
+        name: snp_ssl
+  callbacks:
+    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+      init_args:
+        monitor: "val/loss"
+        dirpath: "saved/snp_ssl/checkpoints"
+        filename: "snp-encoder-{epoch:02d}-{val_loss:.4f}"
+        auto_insert_metric_name: false
+        save_last: true
+    - class_path: lightning.pytorch.callbacks.EarlyStopping
+      init_args:
+        monitor: "val/loss"
+        patience: 10
+        mode: "min"
+    - class_path: lightning.pytorch.callbacks.LearningRateMonitor
+      init_args:
+        logging_interval: "step"
+
+model:
+  class_path: ml.modules.snp_ssl_module.SNPSelfSupervisedModule
+  init_args:
+    model_dim: 768
+    freq_length: 201
+    encoder_type: "OptimizedSNPEmbedding"
+    decoder_hidden_ratio: 2
+    reconstruction_loss: "complex_mse"
+    latent_regularization_type: "l2"
+    latent_regularization_weight: 0.001
+
+data:
+  class_path: ml.data.snp_dataloader.SNPDataModule
+  init_args:
+    data_dir: "data/snp_pretraining_traces"
+    batch_size: 2
+    num_workers: 0
+    pin_memory: false
+    snp_key: "snp_vert"
+    cache_in_memory: true
+    seed: 42
+
+optimizer:
+  class_path: torch.optim.AdamW
+  init_args:
+    lr: 5e-4
+    weight_decay: 1e-5
+
+lr_scheduler:
+  class_path: ml.utils.lr_schedulers.CosineAnnealingWarmRestartsWithWarmupDecay
+  init_args:
+    T_0: 10
+    T_mult: 2
+    eta_min: 1e-6
+    warmup_epochs: 5
+    decay_factor: 0.95
+
+# Optional: Override for testing with smaller dataset
+# ckpt_path: null  # Path to resume from checkpoint 

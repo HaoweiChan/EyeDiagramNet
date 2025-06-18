@@ -4,10 +4,10 @@ import torch
 import pickle
 import numpy as np
 import pandas as pd
-import lightning.pytorch as pl
 from pathlib import Path
 from typing import Dict, List
 from sklearn.model_selection import train_test_split
+from lightning import LightningDataModule
 from lightning.pytorch.utilities import CombinedLoader
 from lightning.pytorch.utilities.rank_zero import rank_zero_info
 
@@ -41,7 +41,7 @@ class TimedDataLoader:
         # Delegate attribute access to the wrapped dataloader
         return getattr(self.dataloader, name)
 
-class TraceSeqEWDataloader(pl.LightningDataModule):
+class TraceSeqEWDataloader(LightningDataModule):
     def __init__(
         self,
         data_dirs: Dict[str, str],
@@ -180,7 +180,7 @@ class TraceSeqEWDataloader(pl.LightningDataModule):
         }
         return CombinedLoader(loaders, mode="min_size")
 
-class InferenceTraceSeqEWDataloader(pl.LightningDataModule):
+class InferenceTraceSeqEWDataloader(LightningDataModule):
     def __init__(
         self,
         data_dirs: List[str],
@@ -234,7 +234,7 @@ class InferenceTraceSeqEWDataloader(pl.LightningDataModule):
             for ds in self.predict_dataset
         )
 
-class TraceSeqDataLoader(pl.LightningDataModule):
+class TraceSeqDataLoader(LightningDataModule):
     def __init__(
         self,
         data_dir: Dict[str, str],
