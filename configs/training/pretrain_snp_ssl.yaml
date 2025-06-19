@@ -26,7 +26,6 @@ model:
   class_path: ml.modules.snp_ssl_module.SNPSelfSupervisedModule
   init_args:
     model_dim: 768
-    freq_length: 201
     encoder_type: OptimizedSNPEmbedding
     decoder_hidden_ratio: 2
     reconstruction_loss: complex_mse
@@ -43,7 +42,6 @@ data:
     batch_size: 2
     num_workers: 0
     pin_memory: false
-    max_freq_points: 201
     cache_in_memory: true
 
 optimizer:

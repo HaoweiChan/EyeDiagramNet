@@ -70,29 +70,42 @@ class SNPDataModule(LightningDataModule):
         batch_size: int = 32,
         num_workers: int = 0,
         pin_memory: bool = False,
-        max_freq_points: Optional[int] = None,
         cache_in_memory: bool = True
     ):
         super().__init__()
         self.save_hyperparameters()
+        self.freq_length = None # Will be determined at runtime
     
+    def prepare_data(self):
+        """
+        Inspects the first file to determine the frequency dimension.
+        This is done in prepare_data to ensure it's only called on a single process.
+        """
+        all_file_paths = []
+        for data_dir in self.hparams.data_dirs:
+            all_file_paths.extend(
+                [Path(p) for p in glob(os.path.join(data_dir, self.hparams.file_pattern))]
+            )
+
+        if not all_file_paths:
+            raise FileNotFoundError(f"No files found matching '{self.hparams.file_pattern}' in {self.hparams.data_dirs}")
+
+        from common.signal_utils import read_snp
+        first_file = read_snp(all_file_paths[0])
+        self.freq_length = first_file.s.shape[0]
+        print(f"Determined frequency length from first file: {self.freq_length}")
+
     def setup(self, stage: Optional[str] = None):
         """Finds all S-parameter files and assigns them to the training set."""
-        file_paths = []
+        all_file_paths = []
         for data_dir in self.hparams.data_dirs:
-            file_paths.extend(
+            all_file_paths.extend(
                 [Path(p) for p in glob(os.path.join(data_dir, self.hparams.file_pattern))]
             )
         
-        if not file_paths:
-            raise FileNotFoundError(
-                f"No files found matching pattern '{self.hparams.file_pattern}' "
-                f"in directories: {self.hparams.data_dirs}"
-            )
-            
         self.train_dataset = SNPDataset(
-            file_paths,
-            max_freq_points=self.hparams.max_freq_points,
+            all_file_paths,
+            max_freq_points=self.freq_length, # Use the determined freq_length
             cache_in_memory=self.hparams.cache_in_memory
         )
     
