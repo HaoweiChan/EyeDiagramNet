@@ -13,18 +13,10 @@ class SNPDataset(Dataset):
     def __init__(
         self,
         file_paths: List[Path],
-        max_freq_points: Optional[int] = None,
         cache_in_memory: bool = False
     ):
-        """
-        Args:
-            file_paths: List of paths to S-parameter files.
-            max_freq_points: Maximum number of frequency points to keep.
-            cache_in_memory: Whether to cache all data in memory.
-        """
         super().__init__()
-        self.file_paths = sorted(file_paths) # Sort for determinism
-        self.max_freq_points = max_freq_points
+        self.file_paths = sorted(file_paths)
         self.cache_in_memory = cache_in_memory
         
         self.cached_data = []
@@ -34,26 +26,15 @@ class SNPDataset(Dataset):
                 self.cached_data.append(self._read_snp_file(file_path))
 
     def _read_snp_file(self, file_path: Path) -> torch.Tensor:
-        """Reads a single S-parameter file and returns a tensor."""
-        # This import is local to avoid circular dependencies
         from common.signal_utils import read_snp
-        
         network = read_snp(file_path)
-        snp_data = network.s
-        
-        num_freqs = snp_data.shape[0]
-        if self.max_freq_points and num_freqs > self.max_freq_points:
-            indices = np.linspace(0, num_freqs - 1, self.max_freq_points, dtype=int)
-            snp_data = snp_data[indices]
-            
-        return torch.tensor(snp_data, dtype=torch.complex64)
+        return torch.tensor(network.s, dtype=torch.complex64)
 
     def __len__(self) -> int:
         return len(self.file_paths)
     
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         if self.cache_in_memory:
-            # The key 'snp_vert' is maintained for consistency with the SSL module
             return {'snp_vert': self.cached_data[idx]}
         else:
             file_path = self.file_paths[idx]
@@ -74,27 +55,7 @@ class SNPDataModule(LightningDataModule):
     ):
         super().__init__()
         self.save_hyperparameters()
-        self.freq_length = None # Will be determined at runtime
     
-    def prepare_data(self):
-        """
-        Inspects the first file to determine the frequency dimension.
-        This is done in prepare_data to ensure it's only called on a single process.
-        """
-        all_file_paths = []
-        for data_dir in self.hparams.data_dirs:
-            all_file_paths.extend(
-                [Path(p) for p in glob(os.path.join(data_dir, self.hparams.file_pattern))]
-            )
-
-        if not all_file_paths:
-            raise FileNotFoundError(f"No files found matching '{self.hparams.file_pattern}' in {self.hparams.data_dirs}")
-
-        from common.signal_utils import read_snp
-        first_file = read_snp(all_file_paths[0])
-        self.freq_length = first_file.s.shape[0]
-        print(f"Determined frequency length from first file: {self.freq_length}")
-
     def setup(self, stage: Optional[str] = None):
         """Finds all S-parameter files and assigns them to the training set."""
         all_file_paths = []
@@ -103,14 +64,15 @@ class SNPDataModule(LightningDataModule):
                 [Path(p) for p in glob(os.path.join(data_dir, self.hparams.file_pattern))]
             )
         
+        if not all_file_paths:
+            raise FileNotFoundError(f"No files found for pattern '{self.hparams.file_pattern}'")
+            
         self.train_dataset = SNPDataset(
             all_file_paths,
-            max_freq_points=self.freq_length, # Use the determined freq_length
             cache_in_memory=self.hparams.cache_in_memory
         )
     
     def train_dataloader(self):
-        """Returns the training dataloader."""
         return DataLoader(
             self.train_dataset,
             batch_size=self.hparams.batch_size,

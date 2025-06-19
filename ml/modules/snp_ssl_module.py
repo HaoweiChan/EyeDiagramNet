@@ -1,8 +1,7 @@
 import torch
 from lightning import LightningModule
 
-from ..models.snp_model import SNPEmbedding, OptimizedSNPEmbedding
-from ..models.snp_decoder import SNPDecoder
+from ..models.snp_model import SNPEmbedding, OptimizedSNPEmbedding, SNPDecoder
 from ..utils.snp_losses import SNPReconstructionLoss
 
 class SNPSelfSupervisedModule(LightningModule):
@@ -51,8 +50,13 @@ class SNPSelfSupervisedModule(LightningModule):
         self.best_val_loss = float('inf')
 
     def forward(self, snp_vert):
+        """
+        Encodes and decodes the S-parameter tensor.
+        The output is resized to match the input frequency dimension.
+        """
+        output_freq_length = snp_vert.shape[1]
         hidden_states = self.encoder(snp_vert)
-        reconstructed = self.decoder(hidden_states)
+        reconstructed = self.decoder(hidden_states, output_freq_length=output_freq_length)
         if reconstructed.dim() == 5 and snp_vert.dim() == 4:
             reconstructed = reconstructed.squeeze(1)
         return reconstructed, hidden_states

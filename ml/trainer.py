@@ -12,10 +12,6 @@ class CustomLightningCLI(LightningCLI):
             kwargs['save_config_callback'] = None
         super().__init__(*args, **kwargs)
 
-    def add_arguments_to_parser(self, parser):
-        """Link the dynamically determined freq_length from data to model."""
-        parser.link_arguments("data.freq_length", "model.init_args.freq_length", apply_on="instantiate")
-
     def before_instantiate_classes(self):
         if self.subcommand == "predict":
             try:

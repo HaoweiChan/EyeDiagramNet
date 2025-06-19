@@ -191,3 +191,88 @@ class OptimizedSNPEmbedding(nn.Module):
             hidden_states_snp[:, 1].add_(self.rx_token)
         
         return hidden_states_snp
+
+class SNPDecoder(nn.Module):
+    """Decodes SNP embeddings back to S-parameter matrices, handling variable frequency lengths."""
+    
+    def __init__(
+        self,
+        model_dim,
+        freq_length, # This is now the model's internal frequency dimension
+        decoder_hidden_ratio=2,
+        use_checkpointing=False,
+        use_mixed_precision=True
+    ):
+        super().__init__()
+        self.model_dim = model_dim
+        self.freq_length = freq_length
+        self.use_checkpointing = use_checkpointing
+        self.use_mixed_precision = use_mixed_precision
+        
+        self.embed_decoder = nn.Sequential(
+            nn.Linear(model_dim, model_dim * decoder_hidden_ratio),
+            nn.GELU(),
+            nn.Linear(model_dim * decoder_hidden_ratio, freq_length)
+        )
+        
+        self.snp_proj = nn.Linear(freq_length, freq_length * 2)
+        nn.init.xavier_uniform_(self.snp_proj.weight)
+        nn.init.zeros_(self.snp_proj.bias)
+        
+        self.register_buffer('_power', torch.tensor(4.0))
+    
+    def _inverse_snp_transform(self, x):
+        with torch.amp.autocast(device_type=x.device.type, enabled=self.use_mixed_precision):
+            return x.sign() * torch.pow(x.abs() + 1e-8, self._power)
+    
+    def _decode_chunk(self, hidden_states, b, half_p):
+        b_p, e = hidden_states.shape[0], hidden_states.shape[-1]
+        
+        with torch.amp.autocast(device_type=hidden_states.device.type, enabled=self.use_mixed_precision):
+            freq_features = self.embed_decoder(hidden_states.view(-1, e))
+            snp_complex = self.snp_proj(freq_features)
+        
+        snp_complex = snp_complex.view(b, half_p, -1)
+        return snp_complex
+    
+    def forward(self, hidden_states_snp, output_freq_length: int):
+        """
+        Args:
+            hidden_states_snp: Encoded SNP embeddings of shape (B, P, E).
+            output_freq_length: The target frequency dimension of the output SNP.
+        """
+        if hidden_states_snp.dim() == 4:
+            b, d, half_p, e = hidden_states_snp.size()
+            hidden_states = hidden_states_snp.view(b * d, half_p, e)
+            batch_size = b * d
+        else:
+            b, half_p, e = hidden_states_snp.size()
+            hidden_states = hidden_states_snp
+            batch_size = b
+        
+        snp_complex = self._decode_chunk(hidden_states, batch_size, half_p)
+        
+        # Interpolate to the desired output frequency length
+        snp_for_interp = rearrange(snp_complex, 'b p (f c) -> (b p) c f', c=2)
+        snp_interp = F.interpolate(snp_for_interp, size=output_freq_length, mode='linear', align_corners=False)
+        snp_complex_interp = rearrange(snp_interp, '(b p) c f -> b p (f c)', b=batch_size)
+
+        p = half_p * 2
+        device = hidden_states.device
+        snp_vert = torch.zeros(batch_size, output_freq_length, p, p, dtype=torch.complex64, device=device)
+        
+        snp_complex_full = torch.view_as_complex(
+            rearrange(snp_complex_interp, "b p (f ri) -> b p f ri", f=output_freq_length)
+        )
+        
+        snp_vert[:, :, :half_p, :] = snp_complex_full.permute(0, 2, 1).unsqueeze(3).expand(-1, -1, -1, p)
+        snp_vert[:, :, half_p:, :] = snp_complex_full.permute(0, 2, 1).unsqueeze(3).expand(-1, -1, -1, p)
+        
+        snp_vert_real = torch.view_as_real(snp_vert)
+        snp_vert_real = self._inverse_snp_transform(snp_vert_real)
+        snp_vert = torch.view_as_complex(snp_vert_real)
+        
+        if hidden_states_snp.dim() == 4:
+            snp_vert = snp_vert.view(b, d, output_freq_length, p, p)
+        
+        return snp_vert
