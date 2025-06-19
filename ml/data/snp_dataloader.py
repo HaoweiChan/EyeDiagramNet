@@ -6,7 +6,6 @@ from typing import Optional, List, Dict
 from torch.utils.data import Dataset, DataLoader
 from pathlib import Path
 from glob import glob
-from sklearn.model_selection import train_test_split
 
 class SNPDataset(Dataset):
     """Dataset for loading S-parameter files directly."""
@@ -40,10 +39,9 @@ class SNPDataset(Dataset):
         from common.signal_utils import read_snp
         
         network = read_snp(file_path)
-        freqs = network.f
         snp_data = network.s
         
-        num_freqs = len(freqs)
+        num_freqs = snp_data.shape[0]
         if self.max_freq_points and num_freqs > self.max_freq_points:
             indices = np.linspace(0, num_freqs - 1, self.max_freq_points, dtype=int)
             snp_data = snp_data[indices]
@@ -63,25 +61,23 @@ class SNPDataset(Dataset):
             return {'snp_vert': snp_tensor}
 
 class SNPDataModule(LightningDataModule):
-    """DataModule for loading SNP files directly from one or more directories."""
+    """DataModule for loading SNP files directly from a directory for training."""
     
     def __init__(
         self,
         data_dirs: List[str],
         file_pattern: str = "*.s*p",
-        val_split: float = 0.2,
         batch_size: int = 32,
         num_workers: int = 0,
         pin_memory: bool = False,
         max_freq_points: Optional[int] = None,
-        cache_in_memory: bool = True,
-        seed: int = 42
+        cache_in_memory: bool = True
     ):
         super().__init__()
         self.save_hyperparameters()
     
     def setup(self, stage: Optional[str] = None):
-        """Finds and splits the S-parameter files from all provided directories."""
+        """Finds all S-parameter files and assigns them to the training set."""
         file_paths = []
         for data_dir in self.hparams.data_dirs:
             file_paths.extend(
@@ -94,20 +90,8 @@ class SNPDataModule(LightningDataModule):
                 f"in directories: {self.hparams.data_dirs}"
             )
             
-        train_paths, val_paths = train_test_split(
-            file_paths,
-            test_size=self.hparams.val_split,
-            random_state=self.hparams.seed,
-            shuffle=True
-        )
-        
         self.train_dataset = SNPDataset(
-            train_paths,
-            max_freq_points=self.hparams.max_freq_points,
-            cache_in_memory=self.hparams.cache_in_memory
-        )
-        self.val_dataset = SNPDataset(
-            val_paths,
+            file_paths,
             max_freq_points=self.hparams.max_freq_points,
             cache_in_memory=self.hparams.cache_in_memory
         )
@@ -118,17 +102,6 @@ class SNPDataModule(LightningDataModule):
             self.train_dataset,
             batch_size=self.hparams.batch_size,
             shuffle=True,
-            num_workers=self.hparams.num_workers,
-            pin_memory=self.hparams.pin_memory,
-            persistent_workers=self.hparams.num_workers > 0
-        )
-    
-    def val_dataloader(self):
-        """Returns the validation dataloader."""
-        return DataLoader(
-            self.val_dataset,
-            batch_size=self.hparams.batch_size,
-            shuffle=False,
             num_workers=self.hparams.num_workers,
             pin_memory=self.hparams.pin_memory,
             persistent_workers=self.hparams.num_workers > 0

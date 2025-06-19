@@ -9,21 +9,15 @@ trainer:
   logger:
     class_path: lightning.pytorch.loggers.TensorBoardLogger
     init_args:
-      save_dir: saved/snp_ssl_from_traces
-      name: logs
+      save_dir: saved
+      name: snp_ssl
   callbacks:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
-        monitor: val/loss
-        dirpath: saved/snp_ssl_from_traces/checkpoints
-        filename: snp-encoder-{epoch:02d}-{val_loss:.4f}
+        dirpath: saved/snp_ssl/checkpoints
+        filename: snp-encoder-{epoch:02d}
         auto_insert_metric_name: false
         save_last: true
-    - class_path: lightning.pytorch.callbacks.EarlyStopping
-      init_args:
-        monitor: val/loss
-        patience: 10
-        mode: min
     - class_path: lightning.pytorch.callbacks.LearningRateMonitor
       init_args:
         logging_interval: step
@@ -45,13 +39,11 @@ data:
     data_dirs:
       - test_data/traces
     file_pattern: "*.s96p"
-    val_split: 0.2
     batch_size: 2
     num_workers: 0
     pin_memory: false
     max_freq_points: 201
     cache_in_memory: true
-    seed: 42
 
 optimizer:
   class_path: torch.optim.AdamW
