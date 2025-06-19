@@ -27,11 +27,6 @@ class SNPEmbedding(nn.Module):
         while num_heads > 1 and freq_length % num_heads != 0:
             num_heads -= 1
         self.snp_encoder = ConditionEmbedding(encoder_dim=freq_length, embed_dim=model_dim, num_heads=num_heads)
-
-        # Pre-allocate learnable tokens (only if using tx/rx tokens)
-        if self.use_tx_rx_tokens:
-            self.tx_token = nn.Parameter(torch.zeros(1, 1, model_dim))
-            self.rx_token = nn.Parameter(torch.zeros(1, 1, model_dim))
         
         # Cache for power transformation to avoid recomputation
         self.register_buffer('_power_inv', torch.tensor(1.0 / 4.0))
@@ -40,7 +35,7 @@ class SNPEmbedding(nn.Module):
         """Optimized power transformation using fused operations"""
         return x.sign() * torch.pow(x.abs(), self._power_inv)
 
-    def forward(self, snp_vert):
+    def forward(self, snp_vert, tx_token=None, rx_token=None):
         """Encoder of snp for encoding vertical frequency responses"""
         # For self-supervised learning, we may have shape (B, F, P1, P2) without tx/rx dimension
         if snp_vert.dim() == 4:
@@ -80,10 +75,12 @@ class SNPEmbedding(nn.Module):
         hidden_states_snp = self.snp_encoder(snp_vert)
         hidden_states_snp = rearrange(hidden_states_snp, "(b d p) e -> b d p e", b=b, d=d, p=half_p)
 
-        # Add tx and rx tokens if enabled
+        # Add tx and rx tokens if enabled and provided
         if self.use_tx_rx_tokens and d == 2:
-            hidden_states_snp[:, 0].add_(self.tx_token)
-            hidden_states_snp[:, 1].add_(self.rx_token)
+            if tx_token is None or rx_token is None:
+                raise ValueError("tx_token and rx_token must be provided when use_tx_rx_tokens is True.")
+            hidden_states_snp[:, 0].add_(tx_token)
+            hidden_states_snp[:, 1].add_(rx_token)
 
         return hidden_states_snp
 
@@ -118,11 +115,6 @@ class OptimizedSNPEmbedding(nn.Module):
         while num_heads > 1 and freq_length % num_heads != 0:
             num_heads -= 1
         self.snp_encoder = ConditionEmbedding(encoder_dim=freq_length, embed_dim=model_dim, num_heads=num_heads)
-
-        # Learnable tokens with better initialization (only if using tx/rx tokens)
-        if self.use_tx_rx_tokens:
-            self.tx_token = nn.Parameter(torch.randn(1, 1, model_dim) * 0.02)
-            self.rx_token = nn.Parameter(torch.randn(1, 1, model_dim) * 0.02)
         
         # Pre-computed constants
         self.register_buffer('_power_inv', torch.tensor(0.25))
@@ -148,7 +140,7 @@ class OptimizedSNPEmbedding(nn.Module):
         
         return snp_chunk
 
-    def forward(self, snp_vert):
+    def forward(self, snp_vert, tx_token=None, rx_token=None):
         """Memory-optimized forward pass with optional gradient checkpointing"""
         # For self-supervised learning, we may have shape (B, F, P1, P2) without tx/rx dimension
         if snp_vert.dim() == 4:
@@ -185,10 +177,12 @@ class OptimizedSNPEmbedding(nn.Module):
         
         hidden_states_snp = rearrange(hidden_states_snp, "(b d p) e -> b d p e", b=b, d=d, p=half_p)
         
-        # Add tx and rx tokens (consistent with SNPEmbedding)
+        # Add tx and rx tokens if enabled and provided
         if self.use_tx_rx_tokens and d == 2:
-            hidden_states_snp[:, 0].add_(self.tx_token)
-            hidden_states_snp[:, 1].add_(self.rx_token)
+            if tx_token is None or rx_token is None:
+                raise ValueError("tx_token and rx_token must be provided when use_tx_rx_tokens is True.")
+            hidden_states_snp[:, 0].add_(tx_token)
+            hidden_states_snp[:, 1].add_(rx_token)
         
         return hidden_states_snp
 

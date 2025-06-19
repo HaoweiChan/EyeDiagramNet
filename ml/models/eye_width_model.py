@@ -162,7 +162,9 @@ class EyeWidthRegressor(nn.Module):
         self.fix_token = nn.Parameter(torch.zeros(1, 1, self.model_dim))
 
         # SNP encoder
-        self.snp_encoder = OptimizedSNPEmbedding(model_dim=model_dim, freq_length=freq_length)
+        self.snp_encoder = OptimizedSNPEmbedding(model_dim=model_dim, freq_length=freq_length, use_tx_rx_tokens=True)
+        self.tx_token = nn.Parameter(torch.randn(1, 1, model_dim) * 0.02)
+        self.rx_token = nn.Parameter(torch.randn(1, 1, model_dim) * 0.02)
         
         # Load pretrained SNP encoder if provided
         if pretrained_snp_path is not None:
@@ -237,11 +239,14 @@ class EyeWidthRegressor(nn.Module):
 
         # Process snp into hidden states
         if self.use_gradient_checkpointing and self.training:
+            # Wrap the call in a function to handle extra args for checkpointing
+            def create_snp_hidden_states(snp_vert):
+                return self.snp_encoder(snp_vert, self.tx_token, self.rx_token)
             hidden_states_vert = torch.utils.checkpoint.checkpoint(
-                self.snp_encoder, snp_vert, use_reentrant=False
+                create_snp_hidden_states, snp_vert, use_reentrant=False
             )
         else:
-            hidden_states_vert = self.snp_encoder(snp_vert) # (B, D, P, M)
+            hidden_states_vert = self.snp_encoder(snp_vert, tx_token=self.tx_token, rx_token=self.rx_token) # (B, D, P, M)
 
         # Process direction embedding
         hidden_states_dir = self.dir_projection(direction) # (B, P, M)
