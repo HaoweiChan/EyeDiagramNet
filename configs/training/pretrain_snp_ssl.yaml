@@ -21,6 +21,9 @@ trainer:
     - class_path: lightning.pytorch.callbacks.LearningRateMonitor
       init_args:
         logging_interval: step
+    - class_path: ml.callbacks.visualization_callbacks.SParameterVisualizer
+      init_args:
+        num_samples: 1
 
 model:
   class_path: ml.modules.snp_ssl_module.SNPSelfSupervisedModule

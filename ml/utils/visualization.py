@@ -5,6 +5,7 @@ import torch.nn.functional as F
 from PIL import Image
 from io import BytesIO
 from einops import rearrange, repeat
+import io
 
 def complex_to_db(x):
     if not torch.is_complex(x):
@@ -191,4 +192,58 @@ def generate_trapezoidal_signal(
 def log_compression_transform(x, epsilon=1e-20):
     max_val = torch.tensor(torch.finfo(x.dtype).max, device=x.device)
     clamped_x = torch.clamp(x.abs(), 0, max_val * epsilon)
-    return torch.sign(x) * torch.log10(clamped_x / epsilon) 
+    return torch.sign(x) * torch.log10(clamped_x / epsilon)
+
+def plot_sparam_reconstruction(
+    freqs: np.ndarray,
+    true_sparam: np.ndarray,
+    recon_sparam: np.ndarray,
+    port1: int,
+    port2: int,
+    title: str = "S-Parameter Reconstruction"
+) -> Image.Image:
+    """
+    Plots the magnitude and phase of true vs. reconstructed S-parameters.
+
+    Args:
+        freqs: Array of frequency points.
+        true_sparam: The ground truth S-parameter matrix (Freq, Port, Port).
+        recon_sparam: The reconstructed S-parameter matrix.
+        port1: Index of the first port.
+        port2: Index of the second port.
+        title: Title for the plot.
+
+    Returns:
+        A PIL Image object of the plot.
+    """
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8))
+    fig.suptitle(f"{title}: S({port1+1}, {port2+1})", fontsize=16)
+
+    # Magnitude Plot
+    ax1.plot(freqs, 20 * np.log10(np.abs(true_sparam)), 'b-', label='True Magnitude (dB)')
+    ax1.plot(freqs, 20 * np.log10(np.abs(recon_sparam)), 'r--', label='Reconstructed Magnitude (dB)')
+    ax1.set_ylabel("Magnitude (dB)")
+    ax1.grid(True)
+    ax1.legend()
+
+    # Phase Plot
+    ax2.plot(freqs, np.angle(true_sparam, deg=True), 'b-', label='True Phase (deg)')
+    ax2.plot(freqs, np.angle(recon_sparam, deg=True), 'r--', label='Reconstructed Phase (deg)')
+    ax2.set_xlabel("Frequency (Hz)")
+    ax2.set_ylabel("Phase (degrees)")
+    ax2.grid(True)
+    ax2.legend()
+
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png')
+    buf.seek(0)
+    image = Image.open(buf)
+    plt.close(fig)
+    
+    return image
+
+def image_to_tensor(image: Image.Image) -> torch.Tensor:
+    """Converts a PIL Image to a PyTorch tensor for TensorBoard."""
+    return torch.tensor(np.array(image)).permute(2, 0, 1) 
