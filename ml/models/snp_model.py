@@ -276,3 +276,177 @@ class SNPDecoder(nn.Module):
             snp_vert = snp_vert.view(b, d, output_freq_length, p, p)
         
         return snp_vert
+
+class ImprovedSNPDecoder(nn.Module):
+    """
+    Enhanced decoder with better architecture for phase reconstruction.
+    Uses separate pathways for magnitude and phase with skip connections.
+    """
+    
+    def __init__(
+        self,
+        model_dim,
+        freq_length,
+        decoder_hidden_ratio=4,  # Increased capacity
+        num_decoder_layers=3,    # Deeper decoder
+        use_skip_connections=True,
+        use_separate_phase_mag=True,
+        dropout_rate=0.1,
+        use_checkpointing=False,
+        use_mixed_precision=True
+    ):
+        super().__init__()
+        self.model_dim = model_dim
+        self.freq_length = freq_length
+        self.use_checkpointing = use_checkpointing
+        self.use_mixed_precision = use_mixed_precision
+        self.use_skip_connections = use_skip_connections
+        self.use_separate_phase_mag = use_separate_phase_mag
+        
+        hidden_dim = model_dim * decoder_hidden_ratio
+        
+        # Multi-layer decoder with residual connections
+        self.decoder_layers = nn.ModuleList()
+        
+        # First layer
+        self.decoder_layers.append(nn.Sequential(
+            nn.Linear(model_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout_rate)
+        ))
+        
+        # Intermediate layers with skip connections
+        for _ in range(num_decoder_layers - 2):
+            self.decoder_layers.append(nn.Sequential(
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.LayerNorm(hidden_dim),
+                nn.GELU(),
+                nn.Dropout(dropout_rate)
+            ))
+        
+        # Final projection to frequency space
+        self.freq_proj = nn.Linear(hidden_dim, freq_length)
+        
+        if self.use_separate_phase_mag:
+            # Separate heads for magnitude and phase
+            self.magnitude_head = nn.Sequential(
+                nn.Linear(freq_length, freq_length),
+                nn.ReLU()  # Magnitude is always positive
+            )
+            
+            self.phase_head = nn.Sequential(
+                nn.Linear(freq_length, freq_length),
+                nn.Tanh()  # Bounded phase representation
+            )
+        else:
+            # Direct complex projection
+            self.snp_proj = nn.Linear(freq_length, freq_length * 2)
+            nn.init.xavier_uniform_(self.snp_proj.weight)
+            nn.init.zeros_(self.snp_proj.bias)
+        
+        # Learnable power for inverse transform
+        self.power = nn.Parameter(torch.tensor(4.0))
+        
+    def _inverse_snp_transform(self, x):
+        with torch.amp.autocast(device_type=x.device.type, enabled=self.use_mixed_precision):
+            return x.sign() * torch.pow(x.abs() + 1e-8, self.power.abs())
+    
+    def _decode_features(self, hidden_states):
+        """Multi-layer decoding with skip connections"""
+        b_p, e = hidden_states.shape
+        
+        x = hidden_states
+        skip_connection = None
+        
+        for i, layer in enumerate(self.decoder_layers):
+            x = layer(x)
+            
+            # Skip connection from input (if enabled)
+            if i == 0 and self.use_skip_connections:
+                skip_connection = x
+            elif i == len(self.decoder_layers) - 1 and skip_connection is not None:
+                x = x + skip_connection
+        
+        # Project to frequency dimension
+        freq_features = self.freq_proj(x)
+        
+        return freq_features
+    
+    def forward(self, hidden_states_snp, output_freq_length: int):
+        """
+        Enhanced forward pass with better phase handling.
+        """
+        if hidden_states_snp.dim() == 4:
+            b, d, half_p, e = hidden_states_snp.size()
+            hidden_states = hidden_states_snp.view(b * d, half_p, e)
+            batch_size = b * d
+        else:
+            b, half_p, e = hidden_states_snp.size()
+            hidden_states = hidden_states_snp
+            batch_size = b
+        
+        # Decode features
+        with torch.amp.autocast(device_type=hidden_states.device.type, enabled=self.use_mixed_precision):
+            freq_features = self._decode_features(hidden_states.view(-1, e))
+        
+        if self.use_separate_phase_mag:
+            # Separate magnitude and phase prediction
+            magnitude = self.magnitude_head(freq_features)
+            phase_features = self.phase_head(freq_features)
+            
+            # Convert phase features to actual phases
+            phase = phase_features * torch.pi  # Scale to [-pi, pi]
+            
+            # Reshape for interpolation
+            magnitude = magnitude.view(batch_size, half_p, -1)
+            phase = phase.view(batch_size, half_p, -1)
+            
+            # Interpolate magnitude and phase separately
+            mag_for_interp = rearrange(magnitude, 'b p f -> (b p) 1 f')
+            phase_for_interp = rearrange(phase, 'b p f -> (b p) 1 f')
+            
+            mag_interp = F.interpolate(mag_for_interp, size=output_freq_length, mode='linear', align_corners=False)
+            phase_interp = F.interpolate(phase_for_interp, size=output_freq_length, mode='linear', align_corners=False)
+            
+            # Convert back to complex
+            mag_interp = rearrange(mag_interp, '(b p) 1 f -> b p f', b=batch_size)
+            phase_interp = rearrange(phase_interp, '(b p) 1 f -> b p f', b=batch_size)
+            
+            # Apply inverse power transform to magnitude
+            mag_transformed = torch.pow(mag_interp + 1e-8, self.power.abs())
+            
+            # Reconstruct complex numbers
+            snp_complex_full = mag_transformed * torch.exp(1j * phase_interp)
+            
+        else:
+            # Original approach with direct complex projection
+            snp_complex = self.snp_proj(freq_features)
+            snp_complex = snp_complex.view(batch_size, half_p, -1)
+            
+            # Interpolate
+            snp_for_interp = rearrange(snp_complex, 'b p (f c) -> (b p) c f', c=2)
+            snp_interp = F.interpolate(snp_for_interp, size=output_freq_length, mode='linear', align_corners=False)
+            snp_complex_interp = rearrange(snp_interp, '(b p) c f -> b p (f c)', b=batch_size)
+            
+            snp_complex_full = torch.view_as_complex(
+                rearrange(snp_complex_interp, "b p (f ri) -> b p f ri", f=output_freq_length)
+            )
+            
+            # Apply inverse transform
+            snp_complex_full = torch.view_as_complex(
+                self._inverse_snp_transform(torch.view_as_real(snp_complex_full))
+            )
+        
+        # Reconstruct full S-parameter matrix
+        p = half_p * 2
+        device = hidden_states.device
+        snp_vert = torch.zeros(batch_size, output_freq_length, p, p, dtype=torch.complex64, device=device)
+        
+        snp_vert[:, :, :half_p, :] = snp_complex_full.permute(0, 2, 1).unsqueeze(3).expand(-1, -1, -1, p)
+        snp_vert[:, :, half_p:, :] = snp_complex_full.permute(0, 2, 1).unsqueeze(3).expand(-1, -1, -1, p)
+        
+        if hidden_states_snp.dim() == 4:
+            snp_vert = snp_vert.view(b, d, output_freq_length, p, p)
+        
+        return snp_vert

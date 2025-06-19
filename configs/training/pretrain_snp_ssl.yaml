@@ -4,27 +4,42 @@ seed_everything: true
 trainer:
   accelerator: gpu
   devices: -1
-  precision: 32
-  max_epochs: 50
+  precision: 16-mixed
+  max_epochs: 1000
+  gradient_clip_val: 1.0
+  gradient_clip_algorithm: norm
+  log_every_n_steps: 10
   logger:
     class_path: lightning.pytorch.loggers.TensorBoardLogger
     init_args:
       save_dir: saved
-      name: snp_ssl
+      name: snp_ssl_improved
   callbacks:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
         monitor: train_loss
-        dirpath: saved/snp_ssl/checkpoints
-        filename: snp-encoder-{epoch:02d}-{train_loss:.5f}
+        dirpath: saved/snp_ssl_improved/checkpoints
+        filename: snp-encoder-epoch{epoch:02d}-train_loss{train_loss:.5f}
         auto_insert_metric_name: false
         save_last: true
+        save_top_k: 5
+        mode: min
     - class_path: lightning.pytorch.callbacks.LearningRateMonitor
       init_args:
-        logging_interval: step
-    - class_path: ml.callbacks.visualization_callbacks.SParameterVisualizer
+        logging_interval: epoch
+    - class_path: ml.callbacks.visualization_callbacks.SNPVisualizationCallback
       init_args:
-        num_samples: 1
+        num_samples: 2
+        log_every_n_epochs: 10
+    - class_path: lightning.pytorch.callbacks.EarlyStopping
+      init_args:
+        monitor: train_loss
+        patience: 50
+        mode: min
+        verbose: true
+    - class_path: lightning.pytorch.callbacks.GradientAccumulationScheduler
+      init_args:
+        scheduling: {0: 1, 100: 2, 200: 4}
 
 model:
   class_path: ml.modules.snp_ssl_module.SNPSelfSupervisedModule
@@ -32,14 +47,23 @@ model:
     model_dim: 768
     freq_length: 256
     encoder_type: OptimizedSNPEmbedding
-    decoder_hidden_ratio: 2
-    reconstruction_loss:
-      class_path: ml.utils.snp_losses.SNPReconstructionLoss
-      init_args:
-        magnitude_weight: 1.0
-        phase_weight: 0.5
-        latent_reg_type: l2
-        latent_reg_weight: 0.001
+    decoder_type: ImprovedSNPDecoder
+    decoder_hidden_ratio: 4
+    num_decoder_layers: 3
+    use_skip_connections: true
+    use_separate_phase_mag: true
+    dropout_rate: 0.1
+    loss_type: ImprovedSNPReconstructionLoss
+    magnitude_weight: 1.0
+    phase_weight: 1.5
+    complex_weight: 0.5
+    spectral_weight: 0.3
+    use_unwrapped_phase: true
+    gradient_penalty_weight: 0.1
+    latent_regularization_type: l2
+    latent_regularization_weight: 0.001
+    use_gradient_checkpointing: false
+    use_mixed_precision: true
 
 data:
   class_path: ml.data.snp_dataloader.SNPDataModule
@@ -48,25 +72,35 @@ data:
       - /proj/siaiadm/AI_training_data/D2D/vertical/snp_for_UCIE_20250121
       - /proj/siaiadm/AI_training_data/D2D/from_enzo
     file_pattern: "*.S96P"
-    batch_size: 2
-    num_workers: 0
-    pin_memory: false
+    batch_size: 32
+    num_workers: 4
+    pin_memory: true
     cache_in_memory: true
+    augmentation_config:
+      rotation_prob: 0.5
+      reflection_prob: 0.5
+      port_permutation_prob: 0.3
+      freq_mask_prob: 0.2
+      freq_mask_ratio: 0.15
+      noise_prob: 0.1
+      noise_std: 0.01
 
 optimizer:
   class_path: torch.optim.AdamW
   init_args:
-    lr: 5e-4
-    weight_decay: 1e-5
+    lr: 1e-4
+    betas: [0.9, 0.999]
+    weight_decay: 0.01
+    eps: 1e-8
 
 lr_scheduler:
-  class_path: ml.utils.lr_schedulers.CosineAnnealingWarmRestartsWithWarmupDecay
+  class_path: torch.optim.lr_scheduler.CosineAnnealingWarmRestarts
   init_args:
-    T_0: 10
+    T_0: 50
     T_mult: 2
     eta_min: 1e-6
-    warmup_epochs: 5
-    decay_factor: 0.95
+  interval: epoch
+  frequency: 1
 
 # Optional: Override for testing with smaller dataset
 # ckpt_path: null  # Path to resume from checkpoint 

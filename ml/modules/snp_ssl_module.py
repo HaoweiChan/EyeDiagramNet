@@ -1,8 +1,8 @@
 import torch
 from lightning import LightningModule
 
-from ..models.snp_model import SNPEmbedding, OptimizedSNPEmbedding, SNPDecoder
-from ..utils.snp_losses import SNPReconstructionLoss
+from ..models.snp_model import SNPEmbedding, OptimizedSNPEmbedding, SNPDecoder, ImprovedSNPDecoder
+from ..utils.snp_losses import SNPReconstructionLoss, ImprovedSNPReconstructionLoss
 
 class SNPSelfSupervisedModule(LightningModule):
     """Lightning module for self-supervised SNP embedding pretraining."""
@@ -12,10 +12,20 @@ class SNPSelfSupervisedModule(LightningModule):
         model_dim: int = 768,
         freq_length: int = 201,
         encoder_type: str = 'OptimizedSNPEmbedding',
+        decoder_type: str = 'SNPDecoder',
         decoder_hidden_ratio: int = 2,
+        num_decoder_layers: int = 3,
+        use_skip_connections: bool = True,
+        use_separate_phase_mag: bool = True,
+        dropout_rate: float = 0.1,
         reconstruction_loss: SNPReconstructionLoss = None,
+        loss_type: str = 'SNPReconstructionLoss',
         magnitude_weight: float = 1.0,
         phase_weight: float = 0.5,
+        complex_weight: float = 0.5,
+        spectral_weight: float = 0.2,
+        use_unwrapped_phase: bool = True,
+        gradient_penalty_weight: float = 0.0,
         latent_regularization_type: str = 'l2',
         latent_regularization_weight: float = 0.01,
         use_gradient_checkpointing: bool = False,
@@ -35,24 +45,51 @@ class SNPSelfSupervisedModule(LightningModule):
             )
         else:
             raise ValueError(f"Unknown encoder type: {encoder_type}")
-            
-        self.decoder = SNPDecoder(
-            model_dim=model_dim, freq_length=freq_length,
-            decoder_hidden_ratio=decoder_hidden_ratio,
-            use_checkpointing=use_gradient_checkpointing,
-            use_mixed_precision=use_mixed_precision
-        )
         
-        # Use provided loss instance or create default
+        if decoder_type == 'SNPDecoder':
+            self.decoder = SNPDecoder(
+                model_dim=model_dim, freq_length=freq_length,
+                decoder_hidden_ratio=decoder_hidden_ratio,
+                use_checkpointing=use_gradient_checkpointing,
+                use_mixed_precision=use_mixed_precision
+            )
+        elif decoder_type == 'ImprovedSNPDecoder':
+            self.decoder = ImprovedSNPDecoder(
+                model_dim=model_dim, 
+                freq_length=freq_length,
+                decoder_hidden_ratio=decoder_hidden_ratio,
+                num_decoder_layers=num_decoder_layers,
+                use_skip_connections=use_skip_connections,
+                use_separate_phase_mag=use_separate_phase_mag,
+                dropout_rate=dropout_rate,
+                use_checkpointing=use_gradient_checkpointing,
+                use_mixed_precision=use_mixed_precision
+            )
+        else:
+            raise ValueError(f"Unknown decoder type: {decoder_type}")
+        
         if reconstruction_loss is not None:
             self.loss_fn = reconstruction_loss
-        else:
+        elif loss_type == 'SNPReconstructionLoss':
             self.loss_fn = SNPReconstructionLoss(
                 magnitude_weight=magnitude_weight,
                 phase_weight=phase_weight,
                 latent_reg_type=latent_regularization_type,
                 latent_reg_weight=latent_regularization_weight
             )
+        elif loss_type == 'ImprovedSNPReconstructionLoss':
+            self.loss_fn = ImprovedSNPReconstructionLoss(
+                magnitude_weight=magnitude_weight,
+                phase_weight=phase_weight,
+                complex_weight=complex_weight,
+                spectral_weight=spectral_weight,
+                use_unwrapped_phase=use_unwrapped_phase,
+                latent_reg_type=latent_regularization_type,
+                latent_reg_weight=latent_regularization_weight,
+                gradient_penalty_weight=gradient_penalty_weight
+            )
+        else:
+            raise ValueError(f"Unknown loss type: {loss_type}")
         
         self.best_val_loss = float('inf')
 
@@ -78,6 +115,12 @@ class SNPSelfSupervisedModule(LightningModule):
         self.log('train/magnitude_loss', loss_dict['log_magnitude_loss'], on_epoch=True, on_step=False, sync_dist=True)
         self.log('train/phase_loss', loss_dict['phase_loss'], on_epoch=True, on_step=False, sync_dist=True)
         
+        if 'complex_cosine_loss' in loss_dict:
+            self.log('train/complex_cosine_loss', loss_dict['complex_cosine_loss'], on_epoch=True, on_step=False, sync_dist=True)
+        if 'spectral_loss' in loss_dict:
+            self.log('train/spectral_loss', loss_dict['spectral_loss'], on_epoch=True, on_step=False, sync_dist=True)
+        if 'gradient_penalty' in loss_dict:
+            self.log('train/gradient_penalty', loss_dict['gradient_penalty'], on_epoch=True, on_step=False, sync_dist=True)
         if 'regularization' in loss_dict:
             self.log('regularization_loss', loss_dict['regularization'], on_epoch=True, on_step=False, sync_dist=True)
         return loss
