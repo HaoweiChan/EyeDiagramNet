@@ -45,16 +45,13 @@ class SNPDecoder(nn.Module):
     
     def _decode_chunk(self, hidden_states, b, half_p):
         """Process decoding in chunks for memory efficiency"""
-        # hidden_states shape: (b, half_p, model_dim)
-        # Apply decoder to each port embedding
         b_p, e = hidden_states.shape[0], hidden_states.shape[-1]
         
-        # Decode from embedding to frequency space
+        # Decode from embedding to frequency space and project to complex space
         with torch.amp.autocast(device_type=hidden_states.device.type, enabled=self.use_mixed_precision):
             freq_features = self.embed_decoder(hidden_states.view(-1, e))
+            snp_complex = self.snp_proj(freq_features)
         
-        # Project to complex space
-        snp_complex = self.snp_proj(freq_features)
         snp_complex = snp_complex.view(b, half_p, -1)
         
         return snp_complex
