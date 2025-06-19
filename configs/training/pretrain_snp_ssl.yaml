@@ -36,8 +36,9 @@ model:
 data:
   class_path: ml.data.snp_dataloader.SNPDataModule
   init_args:
-    data_dirs:
-      - test_data/traces
+    data_dir:
+      - /proj/siaiadm/AI_training_data/D2D/vertical/snp_for_UCIE_20250121
+      - /proj/siaiadm/AI_training_data/D2D/from_enzo
     file_pattern: "*.s96p"
     batch_size: 2
     num_workers: 0

@@ -40,10 +40,7 @@ class SNPDecoder(nn.Module):
     
     def _inverse_snp_transform(self, x):
         """Inverse power transformation with mixed precision"""
-        if self.use_mixed_precision and x.is_cuda:
-            with torch.amp.autocast(enabled=True):
-                return x.sign() * torch.pow(x.abs() + 1e-8, self._power)
-        else:
+        with torch.amp.autocast(device_type=x.device.type, enabled=self.use_mixed_precision):
             return x.sign() * torch.pow(x.abs() + 1e-8, self._power)
     
     def _decode_chunk(self, hidden_states, b, half_p):
@@ -53,15 +50,12 @@ class SNPDecoder(nn.Module):
         b_p, e = hidden_states.shape[0], hidden_states.shape[-1]
         
         # Decode from embedding to frequency space
-        if self.use_mixed_precision and hidden_states.is_cuda:
-            with torch.amp.autocast(enabled=True):
-                freq_features = self.embed_decoder(hidden_states.view(-1, e))  # (b*half_p, freq_length)
-        else:
-            freq_features = self.embed_decoder(hidden_states.view(-1, e))  # (b*half_p, freq_length)
+        with torch.amp.autocast(device_type=hidden_states.device.type, enabled=self.use_mixed_precision):
+            freq_features = self.embed_decoder(hidden_states.view(-1, e))
         
         # Project to complex space
-        snp_complex = self.snp_proj(freq_features)  # (b*half_p, output_freq_length*2)
-        snp_complex = snp_complex.view(b, half_p, -1)  # (b, half_p, output_freq_length*2)
+        snp_complex = self.snp_proj(freq_features)
+        snp_complex = snp_complex.view(b, half_p, -1)
         
         return snp_complex
     
