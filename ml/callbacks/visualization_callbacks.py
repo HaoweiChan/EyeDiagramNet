@@ -32,7 +32,8 @@ class SParameterVisualizer(Callback):
         # Get the model's reconstruction
         pl_module.eval()
         with torch.no_grad():
-            recon_snp_tensor, _ = pl_module(true_snp_tensor)
+            with torch.autocast(device_type=pl_module.device.type, enabled=True):
+                recon_snp_tensor, _ = pl_module(true_snp_tensor)
         pl_module.train()
         
         # Convert tensors to numpy for plotting
