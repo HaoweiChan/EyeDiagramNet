@@ -14,8 +14,9 @@ trainer:
   callbacks:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
+        monitor: train_loss
         dirpath: saved/snp_ssl/checkpoints
-        filename: snp-encoder-{epoch:02d}
+        filename: snp-encoder-{epoch:02d}-{train_loss:.4f}
         auto_insert_metric_name: false
         save_last: true
     - class_path: lightning.pytorch.callbacks.LearningRateMonitor

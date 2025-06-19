@@ -60,7 +60,7 @@ class SParameterVisualizer(Callback):
         # Log the image to TensorBoard
         tensorboard_logger = trainer.logger.experiment
         tensorboard_logger.add_image(
-            f"S-Parameter Reconstruction/S({port1+1},{port2+1})",
+            f"S-Parameter Reconstruction",
             image_to_tensor(image),
             global_step=trainer.current_epoch
         ) 

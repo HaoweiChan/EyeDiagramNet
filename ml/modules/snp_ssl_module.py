@@ -65,9 +65,12 @@ class SNPSelfSupervisedModule(LightningModule):
         snp_vert = batch['snp_vert'] if isinstance(batch, dict) else batch
         reconstructed, hidden_states = self(snp_vert)
         loss, loss_dict = self.loss_fn(reconstructed, snp_vert, hidden_states)
-        self.log('train_loss', loss, prog_bar=True, sync_dist=True)
+        
+        # Log training loss for checkpointing
+        self.log('train_loss', loss, on_epoch=True, on_step=False, prog_bar=True, sync_dist=True)
+        
         if 'regularization' in loss_dict:
-            self.log('regularization_loss', loss_dict['regularization'], sync_dist=True)
+            self.log('regularization_loss', loss_dict['regularization'], on_epoch=True, on_step=False, sync_dist=True)
         return loss
 
     def on_save_checkpoint(self, checkpoint):

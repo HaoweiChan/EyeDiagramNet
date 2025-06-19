@@ -1,11 +1,10 @@
 import os
 import torch
-import numpy as np
-from lightning import LightningDataModule
-from typing import Optional, List, Dict
-from torch.utils.data import Dataset, DataLoader
-from pathlib import Path
 from glob import glob
+from pathlib import Path
+from typing import Optional, List, Dict
+from lightning import LightningDataModule
+from torch.utils.data import Dataset, DataLoader
 
 class SNPDataset(Dataset):
     """Dataset for loading S-parameter files directly."""
@@ -82,7 +81,6 @@ class SNPDataModule(LightningDataModule):
             persistent_workers=self.hparams.num_workers > 0
         )
 
-
 def collate_snp_batch(batch: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
     """Custom collate function for SNP batches with variable port sizes"""
     snp_list = [item['snp_vert'] for item in batch]
@@ -96,22 +94,3 @@ def collate_snp_batch(batch: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.T
         # Different shapes, need to pad or handle differently
         # For now, raise an error - in practice you might want to pad
         raise ValueError(f"Inconsistent SNP shapes in batch: {shapes}")
-
-
-class VariableSizeSNPDataModule(SNPDataModule):
-    """DataModule that handles variable-sized SNP matrices"""
-    
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.collate_fn = collate_snp_batch
-    
-    def train_dataloader(self):
-        return DataLoader(
-            self.train_dataset,
-            batch_size=self.batch_size,
-            shuffle=True,
-            num_workers=self.num_workers,
-            pin_memory=self.pin_memory,
-            persistent_workers=self.num_workers > 0,
-            collate_fn=self.collate_fn
-        ) 
