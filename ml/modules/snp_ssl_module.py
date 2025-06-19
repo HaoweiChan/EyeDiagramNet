@@ -13,7 +13,9 @@ class SNPSelfSupervisedModule(LightningModule):
         freq_length: int = 201,
         encoder_type: str = 'OptimizedSNPEmbedding',
         decoder_hidden_ratio: int = 2,
-        reconstruction_loss: str = 'complex_mse',
+        reconstruction_loss: SNPReconstructionLoss = None,
+        magnitude_weight: float = 1.0,
+        phase_weight: float = 0.5,
         latent_regularization_type: str = 'l2',
         latent_regularization_weight: float = 0.01,
         use_gradient_checkpointing: bool = False,
@@ -41,11 +43,16 @@ class SNPSelfSupervisedModule(LightningModule):
             use_mixed_precision=use_mixed_precision
         )
         
-        self.loss_fn = SNPReconstructionLoss(
-            loss_type=reconstruction_loss,
-            latent_reg_type=latent_regularization_type,
-            latent_reg_weight=latent_regularization_weight
-        )
+        # Use provided loss instance or create default
+        if reconstruction_loss is not None:
+            self.loss_fn = reconstruction_loss
+        else:
+            self.loss_fn = SNPReconstructionLoss(
+                magnitude_weight=magnitude_weight,
+                phase_weight=phase_weight,
+                latent_reg_type=latent_regularization_type,
+                latent_reg_weight=latent_regularization_weight
+            )
         
         self.best_val_loss = float('inf')
 

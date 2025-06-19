@@ -38,9 +38,8 @@ model:
       init_args:
         magnitude_weight: 1.0
         phase_weight: 0.5
+        latent_reg_type: l2
         latent_reg_weight: 0.001
-    latent_regularization_type: l2
-    latent_regularization_weight: 0.001
 
 data:
   class_path: ml.data.snp_dataloader.SNPDataModule
