@@ -63,11 +63,11 @@ class SNPDataset(Dataset):
             return {'snp_vert': snp_tensor}
 
 class SNPDataModule(LightningDataModule):
-    """DataModule for loading SNP files directly from a directory."""
+    """DataModule for loading SNP files directly from one or more directories."""
     
     def __init__(
         self,
-        data_dir: str,
+        data_dirs: List[str],
         file_pattern: str = "*.s*p",
         val_split: float = 0.2,
         batch_size: int = 32,
@@ -81,13 +81,17 @@ class SNPDataModule(LightningDataModule):
         self.save_hyperparameters()
     
     def setup(self, stage: Optional[str] = None):
-        """Finds and splits the S-parameter files."""
-        file_paths = [Path(p) for p in glob(os.path.join(self.hparams.data_dir, self.hparams.file_pattern))]
+        """Finds and splits the S-parameter files from all provided directories."""
+        file_paths = []
+        for data_dir in self.hparams.data_dirs:
+            file_paths.extend(
+                [Path(p) for p in glob(os.path.join(data_dir, self.hparams.file_pattern))]
+            )
         
         if not file_paths:
             raise FileNotFoundError(
                 f"No files found matching pattern '{self.hparams.file_pattern}' "
-                f"in directory '{self.hparams.data_dir}'"
+                f"in directories: {self.hparams.data_dirs}"
             )
             
         train_paths, val_paths = train_test_split(

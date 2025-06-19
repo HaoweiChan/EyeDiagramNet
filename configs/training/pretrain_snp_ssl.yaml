@@ -2,48 +2,48 @@
 seed_everything: true
 
 trainer:
-  accelerator: mps
-  devices: 1
+  accelerator: gpu
+  devices: -1
   precision: 32
-  max_epochs: 30
-  default_root_dir: "saved/snp_ssl_from_traces"
+  max_epochs: 50
   logger:
     class_path: lightning.pytorch.loggers.TensorBoardLogger
     init_args:
-      save_dir: "saved/snp_ssl_from_traces"
-      name: "logs"
+      save_dir: saved/snp_ssl_from_traces
+      name: logs
   callbacks:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
-        monitor: "val/loss"
-        dirpath: "saved/snp_ssl_from_traces/checkpoints"
-        filename: "snp-encoder-{epoch:02d}-{val_loss:.4f}"
+        monitor: val/loss
+        dirpath: saved/snp_ssl_from_traces/checkpoints
+        filename: snp-encoder-{epoch:02d}-{val_loss:.4f}
         auto_insert_metric_name: false
         save_last: true
     - class_path: lightning.pytorch.callbacks.EarlyStopping
       init_args:
-        monitor: "val/loss"
+        monitor: val/loss
         patience: 10
-        mode: "min"
+        mode: min
     - class_path: lightning.pytorch.callbacks.LearningRateMonitor
       init_args:
-        logging_interval: "step"
+        logging_interval: step
 
 model:
   class_path: ml.modules.snp_ssl_module.SNPSelfSupervisedModule
   init_args:
     model_dim: 768
     freq_length: 201
-    encoder_type: "OptimizedSNPEmbedding"
+    encoder_type: OptimizedSNPEmbedding
     decoder_hidden_ratio: 2
-    reconstruction_loss: "complex_mse"
-    latent_regularization_type: "l2"
+    reconstruction_loss: complex_mse
+    latent_regularization_type: l2
     latent_regularization_weight: 0.001
 
 data:
   class_path: ml.data.snp_dataloader.SNPDataModule
   init_args:
-    data_dir: "test_data/traces"
+    data_dirs:
+      - test_data/traces
     file_pattern: "*.s96p"
     val_split: 0.2
     batch_size: 2
