@@ -66,8 +66,10 @@ class SNPSelfSupervisedModule(LightningModule):
         reconstructed, hidden_states = self(snp_vert)
         loss, loss_dict = self.loss_fn(reconstructed, snp_vert, hidden_states)
         
-        # Log training loss for checkpointing
+        # Log training loss for checkpointing and visualization
         self.log('train_loss', loss, on_epoch=True, on_step=False, prog_bar=True, sync_dist=True)
+        self.log('train/magnitude_loss', loss_dict['log_magnitude_loss'], on_epoch=True, on_step=False, sync_dist=True)
+        self.log('train/phase_loss', loss_dict['phase_loss'], on_epoch=True, on_step=False, sync_dist=True)
         
         if 'regularization' in loss_dict:
             self.log('regularization_loss', loss_dict['regularization'], on_epoch=True, on_step=False, sync_dist=True)

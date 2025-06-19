@@ -16,7 +16,7 @@ trainer:
       init_args:
         monitor: train_loss
         dirpath: saved/snp_ssl/checkpoints
-        filename: snp-encoder-{epoch:02d}-{train_loss:.4f}
+        filename: snp-encoder-{epoch:02d}-{train_loss:.5f}
         auto_insert_metric_name: false
         save_last: true
     - class_path: lightning.pytorch.callbacks.LearningRateMonitor
@@ -33,7 +33,12 @@ model:
     freq_length: 256
     encoder_type: OptimizedSNPEmbedding
     decoder_hidden_ratio: 2
-    reconstruction_loss: complex_mse
+    reconstruction_loss:
+      class_path: ml.utils.snp_losses.SNPReconstructionLoss
+      init_args:
+        magnitude_weight: 1.0
+        phase_weight: 0.5
+        latent_reg_weight: 0.001
     latent_regularization_type: l2
     latent_regularization_weight: 0.001
 

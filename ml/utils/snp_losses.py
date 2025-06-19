@@ -2,68 +2,24 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-def complex_mse_loss(pred, target, reduction='mean'):
-    """
-    MSE loss for complex-valued tensors
-    
-    Args:
-        pred: Predicted complex tensor
-        target: Target complex tensor
-        reduction: 'mean', 'sum', or 'none'
-    
-    Returns:
-        Loss value
-    """
-    # Convert to real representation for loss calculation
-    pred_real = torch.view_as_real(pred)
-    target_real = torch.view_as_real(target)
-    
-    # Calculate MSE on both real and imaginary parts
-    loss = F.mse_loss(pred_real, target_real, reduction=reduction)
-    
-    return loss
+def log_magnitude_loss(pred_mag, target_mag, reduction='mean'):
+    """MSE loss on the log-magnitude (decibel) scale."""
+    return F.mse_loss(
+        20 * torch.log10(pred_mag + 1e-8),
+        20 * torch.log10(target_mag + 1e-8),
+        reduction=reduction
+    )
 
-def magnitude_phase_loss(pred, target, magnitude_weight=0.7, phase_weight=0.3, reduction='mean'):
-    """
-    Separate losses for magnitude and phase components
-    
-    Args:
-        pred: Predicted complex tensor
-        target: Target complex tensor
-        magnitude_weight: Weight for magnitude loss
-        phase_weight: Weight for phase loss
-        reduction: 'mean', 'sum', or 'none'
-    
-    Returns:
-        Total weighted loss
-    """
-    # Calculate magnitudes
-    pred_mag = torch.abs(pred)
-    target_mag = torch.abs(target)
-    
-    # Calculate phases (angle in radians)
-    pred_phase = torch.angle(pred)
-    target_phase = torch.angle(target)
-    
-    # Magnitude loss (MSE)
-    mag_loss = F.mse_loss(pred_mag, target_mag, reduction=reduction)
-    
-    # Phase loss (angular distance)
-    # Handle phase wrapping: difference should be in [-pi, pi]
+def phase_loss(pred_phase, target_phase, reduction='mean'):
+    """Mean squared error on the phase, handling angle wrapping."""
     phase_diff = pred_phase - target_phase
+    # Wrap phase difference to the [-pi, pi] interval
     phase_diff = torch.atan2(torch.sin(phase_diff), torch.cos(phase_diff))
-    
     if reduction == 'mean':
-        phase_loss = torch.mean(phase_diff ** 2)
+        return torch.mean(phase_diff ** 2)
     elif reduction == 'sum':
-        phase_loss = torch.sum(phase_diff ** 2)
-    else:
-        phase_loss = phase_diff ** 2
-    
-    # Weighted combination
-    total_loss = magnitude_weight * mag_loss + phase_weight * phase_loss
-    
-    return total_loss
+        return torch.sum(phase_diff ** 2)
+    return phase_diff ** 2
 
 def frequency_weighted_loss(pred, target, freq_weights=None, reduction='mean'):
     """
@@ -126,58 +82,47 @@ def latent_regularization(embeddings, reg_type='l2', beta=1.0):
     return beta * reg_loss
 
 class SNPReconstructionLoss(nn.Module):
-    """Combined loss for SNP reconstruction with configurable components"""
+    """
+    Combined loss for SNP reconstruction with configurable components.
+    Prioritizes log-magnitude and phase for better perceptual results.
+    """
     
     def __init__(
         self,
-        loss_type='complex_mse',
-        magnitude_weight=0.7,
-        phase_weight=0.3,
-        freq_weights=None,
-        latent_reg_type='l2',
-        latent_reg_weight=0.01
+        magnitude_weight: float = 1.0,
+        phase_weight: float = 0.5,
+        latent_reg_type: str = 'l2',
+        latent_reg_weight: float = 0.01
     ):
         super().__init__()
-        self.loss_type = loss_type
         self.magnitude_weight = magnitude_weight
         self.phase_weight = phase_weight
-        self.freq_weights = freq_weights
         self.latent_reg_type = latent_reg_type
         self.latent_reg_weight = latent_reg_weight
     
     def forward(self, pred, target, embeddings=None):
         """
-        Calculate total loss
-        
-        Args:
-            pred: Predicted SNP tensor
-            target: Target SNP tensor
-            embeddings: Optional latent embeddings for regularization
-        
-        Returns:
-            total_loss: Combined reconstruction and regularization loss
-            loss_dict: Dictionary with individual loss components
+        Calculates total loss based on log-magnitude and phase.
         """
         loss_dict = {}
         
-        # Main reconstruction loss
-        if self.loss_type == 'complex_mse':
-            recon_loss = complex_mse_loss(pred, target)
-        elif self.loss_type == 'magnitude_phase':
-            recon_loss = magnitude_phase_loss(
-                pred, target, 
-                self.magnitude_weight, 
-                self.phase_weight
-            )
-        elif self.loss_type == 'frequency_weighted':
-            recon_loss = frequency_weighted_loss(pred, target, self.freq_weights)
-        else:
-            raise ValueError(f"Unknown loss type: {self.loss_type}")
+        # --- Main Reconstruction Loss ---
+        pred_mag = torch.abs(pred)
+        target_mag = torch.abs(target)
+        mag_loss = log_magnitude_loss(pred_mag, target_mag)
+        
+        pred_phase = torch.angle(pred)
+        target_phase = torch.angle(target)
+        ph_loss = phase_loss(pred_phase, target_phase)
+        
+        recon_loss = (self.magnitude_weight * mag_loss) + (self.phase_weight * ph_loss)
         
         loss_dict['reconstruction'] = recon_loss
+        loss_dict['log_magnitude_loss'] = mag_loss
+        loss_dict['phase_loss'] = ph_loss
         total_loss = recon_loss
         
-        # Add regularization if embeddings provided
+        # --- Latent Regularization ---
         if embeddings is not None and self.latent_reg_weight > 0:
             reg_loss = latent_regularization(
                 embeddings, 
@@ -188,5 +133,4 @@ class SNPReconstructionLoss(nn.Module):
             total_loss = total_loss + reg_loss
         
         loss_dict['total'] = total_loss
-        
         return total_loss, loss_dict 
