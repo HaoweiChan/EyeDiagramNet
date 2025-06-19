@@ -50,7 +50,8 @@ class SNPDataModule(LightningDataModule):
         batch_size: int = 32,
         num_workers: int = 0,
         pin_memory: bool = False,
-        cache_in_memory: bool = True
+        cache_in_memory: bool = True,
+        augmentation_config: Optional[Dict] = None,
     ):
         super().__init__()
         self.save_hyperparameters()
