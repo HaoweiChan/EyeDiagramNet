@@ -1,10 +1,9 @@
+import os
 import torch
 import torch.nn as nn
 from typing import Dict, Optional, Union
-import os
 
 from ..models.snp_model import SNPEmbedding, OptimizedSNPEmbedding
-from ..modules.snp_ssl_module import SNPSelfSupervisedModule
 
 def extract_snp_encoder_weights(checkpoint_path: str) -> Dict[str, torch.Tensor]:
     """

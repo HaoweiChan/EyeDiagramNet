@@ -130,7 +130,7 @@ class OptimizedSNPEmbedding(nn.Module):
     def _snp_transform(self, x):
         """Optimized power transformation"""
         if self.use_mixed_precision and x.is_cuda:
-            with torch.cuda.amp.autocast(enabled=True):
+            with torch.amp.autocast(enabled=True):
                 return x.sign() * torch.pow(x.abs() + 1e-8, self._power_inv)
         else:
             return x.sign() * torch.pow(x.abs() + 1e-8, self._power_inv)
@@ -184,7 +184,7 @@ class OptimizedSNPEmbedding(nn.Module):
 
         # Forward through encoder with mixed precision
         if self.use_mixed_precision and snp_vert.is_cuda:
-            with torch.cuda.amp.autocast(enabled=True):
+            with torch.amp.autocast(enabled=True):
                 hidden_states_snp = self.snp_encoder(snp_vert)
         else:
             hidden_states_snp = self.snp_encoder(snp_vert)

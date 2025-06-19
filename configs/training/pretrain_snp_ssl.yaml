@@ -6,16 +6,17 @@ trainer:
   devices: 1
   precision: 32
   max_epochs: 30
+  default_root_dir: "saved/snp_ssl_from_traces"
   logger:
-    - class_path: lightning.pytorch.loggers.TensorBoardLogger
-      init_args:
-        save_dir: ./saved
-        name: snp_ssl
+    class_path: lightning.pytorch.loggers.TensorBoardLogger
+    init_args:
+      save_dir: "saved/snp_ssl_from_traces"
+      name: "logs"
   callbacks:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
         monitor: "val/loss"
-        dirpath: "saved/snp_ssl/checkpoints"
+        dirpath: "saved/snp_ssl_from_traces/checkpoints"
         filename: "snp-encoder-{epoch:02d}-{val_loss:.4f}"
         auto_insert_metric_name: false
         save_last: true
@@ -42,11 +43,13 @@ model:
 data:
   class_path: ml.data.snp_dataloader.SNPDataModule
   init_args:
-    data_dir: "data/snp_pretraining_traces"
+    data_dir: "test_data/traces"
+    file_pattern: "*.s96p"
+    val_split: 0.2
     batch_size: 2
     num_workers: 0
     pin_memory: false
-    snp_key: "snp_vert"
+    max_freq_points: 201
     cache_in_memory: true
     seed: 42
 

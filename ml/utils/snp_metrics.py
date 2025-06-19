@@ -1,7 +1,7 @@
+import numpy as np
 import torch
 import torch.nn.functional as F
-import numpy as np
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional
 
 def snp_reconstruction_error(
     pred: torch.Tensor, 

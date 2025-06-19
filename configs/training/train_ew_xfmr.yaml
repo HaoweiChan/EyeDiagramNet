@@ -80,6 +80,9 @@ model:
         num_layers: 12
         freq_length: 128
         dropout: 0.2
+        use_gradient_checkpointing: true
+        pretrained_snp_path: null
+        freeze_snp_encoder: false
 
 data:
   class_path: ml.data.dataloaders.TraceSeqEWDataloader

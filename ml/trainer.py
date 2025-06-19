@@ -6,6 +6,7 @@ from lightning.pytorch.cli import LightningCLI
 from lightning.pytorch.utilities import disable_possible_user_warnings
 
 class CustomLightningCLI(LightningCLI):
+    """Custom CLI to handle checkpoint and scaler path resolution for predictions."""
     def __init__(self, *args, **kwargs):
         if 'predict' in sys.argv:
             kwargs['save_config_callback'] = None
@@ -13,42 +14,30 @@ class CustomLightningCLI(LightningCLI):
 
     def before_instantiate_classes(self):
         if self.subcommand == "predict":
-            ckpt_config = self.config.predict.config[0]
-            ckpt_dir = Path(str(ckpt_config)).parent / "checkpoints"
-            ckpt_path = list(ckpt_dir.glob("*.ckpt"))[0]
-            self.config.predict.ckpt_path = str(ckpt_path)
-
-            scaler_path = list(Path(str(ckpt_config)).parent.glob("*.pth"))[0]
-            self.config.predict.data.init_args.scaler_path = str(scaler_path)
+            try:
+                ckpt_config = self.config.predict.config[0]
+                ckpt_dir = Path(str(ckpt_config)).parent
+                ckpt_path = next(reversed(sorted(ckpt_dir.glob("*.ckpt"))))
+                self.config.predict.ckpt_path = str(ckpt_path)
+                scaler_path = next(ckpt_dir.glob("*.pth"))
+                self.config.predict.data.init_args.scaler_path = str(scaler_path)
+                print(f"Automatically using checkpoint: {ckpt_path} and scaler: {scaler_path}")
+            except (IndexError, StopIteration, FileNotFoundError):
+                print("Warning: Could not automatically find checkpoint or scaler for prediction.")
+                pass
 
 def setup_torch_compile_fallback():
-    """Setup torch.compile fallback to eager mode on compilation failures"""
+    """Fallback to eager mode if torch.compile fails."""
     try:
-        # Test if torch.compile works with basic operations
-        test_model = torch.nn.Linear(2, 1)
-        test_input = torch.randn(1, 2, requires_grad=True)
-        
-        compiled_test = torch.compile(test_model, mode="default")
-        output = compiled_test(test_input)
-        loss = output.sum()
-        loss.backward()
-        
-        print("torch.compile test passed - compilation will be attempted")
-        return True
-    except Exception as e:
-        print(f"torch.compile test failed: {e}")
-        print("Disabling torch.compile and falling back to eager mode")
-        
-        # Disable torch.compile more aggressively
-        torch._dynamo.config.suppress_errors = True
-        torch._dynamo.config.disable = True
-        
-        # Set environment variable to disable compilation
+        @torch.compile
+        def test_fn(x):
+            return x + 1
+        test_fn(torch.randn(2, 2))
+    except Exception:
+        print("Disabling torch.compile and falling back to eager mode.")
         import os
         os.environ['TORCH_COMPILE_DISABLE'] = '1'
         
-        return False
-
 def cli_main():
     setup_torch_compile_fallback()
     cli = CustomLightningCLI(datamodule_class=None)

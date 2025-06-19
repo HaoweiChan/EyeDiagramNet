@@ -17,9 +17,6 @@ class SNPSelfSupervisedModule(LightningModule):
         reconstruction_loss: str = 'complex_mse',
         latent_regularization_type: str = 'l2',
         latent_regularization_weight: float = 0.01,
-        learning_rate: float = 5e-4,
-        weight_decay: float = 1e-5,
-        warmup_epochs: int = 5,
         use_gradient_checkpointing: bool = False,
         use_mixed_precision: bool = True
     ):
@@ -81,13 +78,6 @@ class SNPSelfSupervisedModule(LightningModule):
         if loss < self.best_val_loss:
             self.best_val_loss = loss
             self.log('val/best_loss', self.best_val_loss, sync_dist=True)
-        return loss
-
-    def test_step(self, batch, batch_idx):
-        snp_vert = batch['snp_vert'] if isinstance(batch, dict) else batch
-        reconstructed, hidden_states = self(snp_vert)
-        loss, loss_dict = self.loss_fn(reconstructed, snp_vert, hidden_states)
-        self.log('test/loss', loss, sync_dist=True)
         return loss
 
     def on_save_checkpoint(self, checkpoint):

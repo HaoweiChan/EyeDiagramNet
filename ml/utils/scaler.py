@@ -2,7 +2,6 @@ import torch
 import numpy as np
 from abc import ABC, abstractmethod
 
-
 class BaseScaler(ABC):
     """
     Base class for all scalers.

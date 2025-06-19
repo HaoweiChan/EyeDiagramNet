@@ -1,257 +1,133 @@
 import os
 import torch
-import pickle
+import numpy as np
 from lightning import LightningDataModule
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict
 from torch.utils.data import Dataset, DataLoader
+from pathlib import Path
+from glob import glob
+from sklearn.model_selection import train_test_split
 
 class SNPDataset(Dataset):
-    """Dataset for SNP self-supervised learning"""
-    
+    """Dataset for loading S-parameter files directly."""
+
     def __init__(
         self,
-        data_path: str,
-        snp_key: str = 'snp_vert',
-        max_samples: Optional[int] = None,
+        file_paths: List[Path],
+        max_freq_points: Optional[int] = None,
         cache_in_memory: bool = False
     ):
         """
         Args:
-            data_path: Path to pickle file or directory containing pickle files
-            snp_key: Key to extract SNP data from pickle dictionaries
-            max_samples: Maximum number of samples to use
-            cache_in_memory: Whether to cache all data in memory
+            file_paths: List of paths to S-parameter files.
+            max_freq_points: Maximum number of frequency points to keep.
+            cache_in_memory: Whether to cache all data in memory.
         """
-        self.data_path = data_path
-        self.snp_key = snp_key
-        self.max_samples = max_samples
+        super().__init__()
+        self.file_paths = sorted(file_paths) # Sort for determinism
+        self.max_freq_points = max_freq_points
         self.cache_in_memory = cache_in_memory
         
-        # Load data paths
-        if os.path.isfile(data_path):
-            self.data_files = [data_path]
-        else:
-            self.data_files = [
-                os.path.join(data_path, f) 
-                for f in os.listdir(data_path) 
-                if f.endswith('.pkl')
-            ]
+        self.cached_data = []
+        if self.cache_in_memory:
+            print(f"Caching {len(self.file_paths)} SNP files into memory...")
+            for file_path in self.file_paths:
+                self.cached_data.append(self._read_snp_file(file_path))
+
+    def _read_snp_file(self, file_path: Path) -> torch.Tensor:
+        """Reads a single S-parameter file and returns a tensor."""
+        # This import is local to avoid circular dependencies
+        from common.signal_utils import read_snp
         
-        # Load metadata to get total number of samples
-        self.sample_indices = []
-        self.cached_data = {} if cache_in_memory else None
+        network = read_snp(file_path)
+        freqs = network.f
+        snp_data = network.s
         
-        # First pass - count samples
-        for file_idx, file_path in enumerate(self.data_files):
-            with open(file_path, 'rb') as f:
-                data = pickle.load(f)
+        num_freqs = len(freqs)
+        if self.max_freq_points and num_freqs > self.max_freq_points:
+            indices = np.linspace(0, num_freqs - 1, self.max_freq_points, dtype=int)
+            snp_data = snp_data[indices]
             
-            if isinstance(data, list):
-                for sample_idx in range(len(data)):
-                    self.sample_indices.append((file_idx, sample_idx))
-            else:
-                # Single sample file
-                self.sample_indices.append((file_idx, 0))
-        
-        # Limit samples if requested
-        if self.max_samples is not None:
-            self.sample_indices = self.sample_indices[:self.max_samples]
-        
-        # Second pass - cache data if requested
+        return torch.tensor(snp_data, dtype=torch.complex64)
+
+    def __len__(self) -> int:
+        return len(self.file_paths)
+    
+    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         if self.cache_in_memory:
-            for idx, (file_idx, sample_idx) in enumerate(self.sample_indices):
-                with open(self.data_files[file_idx], 'rb') as f:
-                    data = pickle.load(f)
-                
-                if isinstance(data, list):
-                    sample_data = data[sample_idx]
-                else:
-                    sample_data = data
-                
-                self.cached_data[idx] = self._extract_snp(sample_data)
-    
-    def _extract_snp(self, data: Any) -> torch.Tensor:
-        """Extract SNP data from various data formats"""
-        if isinstance(data, dict):
-            snp = data.get(self.snp_key)
-            if snp is None:
-                # Try alternative keys
-                for key in ['snp_vertical', 'snp', 'vertical_snp']:
-                    if key in data:
-                        snp = data[key]
-                        break
-        elif isinstance(data, tuple) or isinstance(data, list):
-            # Assume SNP is at a specific index (typically index 3)
-            # Based on common data format: (trace_seq, direction, boundary, snp_vert, ...)
-            if len(data) > 3:
-                snp = data[3]
-            else:
-                raise ValueError(f"Cannot extract SNP from tuple/list of length {len(data)}")
-        else:
-            snp = data
-        
-        if snp is None:
-            raise ValueError(f"Could not find SNP data with key '{self.snp_key}'")
-        
-        # Convert to tensor if needed
-        if not isinstance(snp, torch.Tensor):
-            snp = torch.tensor(snp, dtype=torch.complex64)
-        
-        return snp
-    
-    def __len__(self):
-        return len(self.sample_indices)
-    
-    def __getitem__(self, idx):
-        if self.cache_in_memory:
+            # The key 'snp_vert' is maintained for consistency with the SSL module
             return {'snp_vert': self.cached_data[idx]}
-        
-        file_idx, sample_idx = self.sample_indices[idx]
-        file_path = self.data_files[file_idx]
-        
-        with open(file_path, 'rb') as f:
-            data = pickle.load(f)
-        
-        if isinstance(data, list):
-            sample_data = data[sample_idx]
         else:
-            sample_data = data
-        
-        snp = self._extract_snp(sample_data)
-        
-        return {'snp_vert': snp}
+            file_path = self.file_paths[idx]
+            snp_tensor = self._read_snp_file(file_path)
+            return {'snp_vert': snp_tensor}
 
 class SNPDataModule(LightningDataModule):
-    """Lightning DataModule for SNP self-supervised learning"""
+    """DataModule for loading SNP files directly from a directory."""
     
     def __init__(
         self,
         data_dir: str,
-        train_split: float = 0.8,
-        val_split: float = 0.1,
-        test_split: float = 0.1,
+        file_pattern: str = "*.s*p",
+        val_split: float = 0.2,
         batch_size: int = 32,
-        num_workers: int = 4,
-        pin_memory: bool = True,
-        snp_key: str = 'snp_vert',
-        max_samples: Optional[int] = None,
-        cache_in_memory: bool = False,
+        num_workers: int = 0,
+        pin_memory: bool = False,
+        max_freq_points: Optional[int] = None,
+        cache_in_memory: bool = True,
         seed: int = 42
     ):
         super().__init__()
-        self.data_dir = data_dir
-        self.train_split = train_split
-        self.val_split = val_split
-        self.test_split = test_split
-        self.batch_size = batch_size
-        self.num_workers = num_workers
-        self.pin_memory = pin_memory
-        self.snp_key = snp_key
-        self.max_samples = max_samples
-        self.cache_in_memory = cache_in_memory
-        self.seed = seed
-        
-        # Ensure splits sum to 1
-        total_split = train_split + val_split + test_split
-        if abs(total_split - 1.0) > 1e-6:
-            raise ValueError(f"Splits must sum to 1.0, got {total_split}")
+        self.save_hyperparameters()
     
     def setup(self, stage: Optional[str] = None):
-        """Setup train/val/test datasets"""
-        # Check if we have split files
-        train_file = os.path.join(self.data_dir, 'snp_train.pkl')
-        val_file = os.path.join(self.data_dir, 'snp_val.pkl')
-        test_file = os.path.join(self.data_dir, 'snp_test.pkl')
+        """Finds and splits the S-parameter files."""
+        file_paths = [Path(p) for p in glob(os.path.join(self.hparams.data_dir, self.hparams.file_pattern))]
         
-        if os.path.exists(train_file) and os.path.exists(val_file) and os.path.exists(test_file):
-            # Use pre-split files
-            self.train_dataset = SNPDataset(
-                train_file,
-                snp_key=self.snp_key,
-                max_samples=self.max_samples,
-                cache_in_memory=self.cache_in_memory
+        if not file_paths:
+            raise FileNotFoundError(
+                f"No files found matching pattern '{self.hparams.file_pattern}' "
+                f"in directory '{self.hparams.data_dir}'"
             )
-            self.val_dataset = SNPDataset(
-                val_file,
-                snp_key=self.snp_key,
-                max_samples=self.max_samples,
-                cache_in_memory=self.cache_in_memory
-            )
-            self.test_dataset = SNPDataset(
-                test_file,
-                snp_key=self.snp_key,
-                max_samples=self.max_samples,
-                cache_in_memory=self.cache_in_memory
-            )
-            return
-        
-        # Otherwise, create full dataset and split
-        full_dataset = SNPDataset(
-            self.data_dir,
-            snp_key=self.snp_key,
-            max_samples=self.max_samples,
-            cache_in_memory=self.cache_in_memory
+            
+        train_paths, val_paths = train_test_split(
+            file_paths,
+            test_size=self.hparams.val_split,
+            random_state=self.hparams.seed,
+            shuffle=True
         )
         
-        # Calculate split sizes
-        total_size = len(full_dataset)
-        train_size = int(total_size * self.train_split)
-        val_size = int(total_size * self.val_split)
-        test_size = total_size - train_size - val_size
-        
-        # Split dataset
-        generator = torch.Generator().manual_seed(self.seed)
-        self.train_dataset, self.val_dataset, self.test_dataset = torch.utils.data.random_split(
-            full_dataset, 
-            [train_size, val_size, test_size],
-            generator=generator
+        self.train_dataset = SNPDataset(
+            train_paths,
+            max_freq_points=self.hparams.max_freq_points,
+            cache_in_memory=self.hparams.cache_in_memory
+        )
+        self.val_dataset = SNPDataset(
+            val_paths,
+            max_freq_points=self.hparams.max_freq_points,
+            cache_in_memory=self.hparams.cache_in_memory
         )
     
     def train_dataloader(self):
+        """Returns the training dataloader."""
         return DataLoader(
             self.train_dataset,
-            batch_size=self.batch_size,
+            batch_size=self.hparams.batch_size,
             shuffle=True,
-            num_workers=self.num_workers,
-            pin_memory=self.pin_memory,
-            persistent_workers=self.num_workers > 0
+            num_workers=self.hparams.num_workers,
+            pin_memory=self.hparams.pin_memory,
+            persistent_workers=self.hparams.num_workers > 0
         )
     
     def val_dataloader(self):
+        """Returns the validation dataloader."""
         return DataLoader(
             self.val_dataset,
-            batch_size=self.batch_size,
+            batch_size=self.hparams.batch_size,
             shuffle=False,
-            num_workers=self.num_workers,
-            pin_memory=self.pin_memory,
-            persistent_workers=self.num_workers > 0
-        )
-    
-    def test_dataloader(self):
-        return DataLoader(
-            self.test_dataset,
-            batch_size=self.batch_size,
-            shuffle=False,
-            num_workers=self.num_workers,
-            pin_memory=self.pin_memory,
-            persistent_workers=self.num_workers > 0
-        )
-    
-    def predict_dataloader(self):
-        """Predict dataloader uses full dataset without shuffling"""
-        full_dataset = SNPDataset(
-            self.data_dir,
-            snp_key=self.snp_key,
-            max_samples=self.max_samples,
-            cache_in_memory=self.cache_in_memory
-        )
-        
-        return DataLoader(
-            full_dataset,
-            batch_size=self.batch_size,
-            shuffle=False,
-            num_workers=self.num_workers,
-            pin_memory=self.pin_memory
+            num_workers=self.hparams.num_workers,
+            pin_memory=self.hparams.pin_memory,
+            persistent_workers=self.hparams.num_workers > 0
         )
 
 

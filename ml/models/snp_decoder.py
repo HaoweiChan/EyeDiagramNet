@@ -41,7 +41,7 @@ class SNPDecoder(nn.Module):
     def _inverse_snp_transform(self, x):
         """Inverse power transformation with mixed precision"""
         if self.use_mixed_precision and x.is_cuda:
-            with torch.cuda.amp.autocast(enabled=True):
+            with torch.amp.autocast(enabled=True):
                 return x.sign() * torch.pow(x.abs() + 1e-8, self._power)
         else:
             return x.sign() * torch.pow(x.abs() + 1e-8, self._power)
@@ -54,7 +54,7 @@ class SNPDecoder(nn.Module):
         
         # Decode from embedding to frequency space
         if self.use_mixed_precision and hidden_states.is_cuda:
-            with torch.cuda.amp.autocast(enabled=True):
+            with torch.amp.autocast(enabled=True):
                 freq_features = self.embed_decoder(hidden_states.view(-1, e))  # (b*half_p, freq_length)
         else:
             freq_features = self.embed_decoder(hidden_states.view(-1, e))  # (b*half_p, freq_length)
