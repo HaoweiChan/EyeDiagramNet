@@ -21,8 +21,6 @@ trainer:
         dirpath: saved/snp_ssl_improved/checkpoints
         filename: snp-encoder-epoch{epoch:02d}-train_loss{train_loss:.5f}
         auto_insert_metric_name: false
-        save_last: true
-        save_top_k: 5
         mode: min
     - class_path: lightning.pytorch.callbacks.LearningRateMonitor
       init_args:
@@ -82,7 +80,7 @@ data:
     data_dirs:
       - /proj/siaiadm/AI_training_data/D2D/vertical/snp_for_UCIE_20250121
       - /proj/siaiadm/AI_training_data/D2D/from_enzo
-    file_pattern: "*.S96P"
+    file_pattern: "*.s96p"
     batch_size: 32
     num_workers: 4
     pin_memory: true

@@ -60,12 +60,32 @@ class SNPDataModule(LightningDataModule):
         """Finds all S-parameter files and assigns them to the training set."""
         all_file_paths = []
         for data_dir in self.hparams.data_dirs:
-            all_file_paths.extend(
-                [Path(p) for p in glob(os.path.join(data_dir, self.hparams.file_pattern))]
-            )
+            # Handle case-insensitive matching for file extensions
+            base_pattern = self.hparams.file_pattern
+            patterns = []
+            
+            # If pattern contains file extension, create both upper and lowercase variants
+            if '.' in base_pattern:
+                patterns.append(base_pattern)
+                patterns.append(base_pattern.lower())
+                patterns.append(base_pattern.upper())
+                # Remove duplicates while preserving order
+                patterns = list(dict.fromkeys(patterns))
+            else:
+                patterns = [base_pattern]
+            
+            for pattern in patterns:
+                all_file_paths.extend(
+                    [Path(p) for p in glob(os.path.join(data_dir, pattern))]
+                )
+        
+        # Remove duplicates (same file found with different case patterns)
+        all_file_paths = list(dict.fromkeys(all_file_paths))
         
         if not all_file_paths:
             raise FileNotFoundError(f"No files found for pattern '{self.hparams.file_pattern}'")
+        
+        print(f"Found {len(all_file_paths)} SNP files matching pattern '{self.hparams.file_pattern}' (case-insensitive)")
             
         self.train_dataset = SNPDataset(
             all_file_paths,
