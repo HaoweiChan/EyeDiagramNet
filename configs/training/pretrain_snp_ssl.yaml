@@ -28,12 +28,12 @@ trainer:
     - class_path: ml.callbacks.visualization_callbacks.SParameterVisualizer
       init_args:
         num_samples: 2
-    - class_path: lightning.pytorch.callbacks.EarlyStopping
-      init_args:
-        monitor: train_loss
-        patience: 50
-        mode: min
-        verbose: true
+    # - class_path: lightning.pytorch.callbacks.EarlyStopping
+    #   init_args:
+    #     monitor: train_loss
+    #     patience: 50
+    #     mode: min
+    #     verbose: true
     - class_path: lightning.pytorch.callbacks.GradientAccumulationScheduler
       init_args:
         scheduling: {0: 1, 100: 2, 200: 4}
@@ -44,7 +44,7 @@ model:
     encoder:
       class_path: ml.models.snp_model.OptimizedSNPEmbedding
       init_args:
-        model_dim: 768
+        model_dim: 384
         freq_length: 256
         use_checkpointing: false
         use_mixed_precision: true
@@ -52,7 +52,7 @@ model:
     decoder:
       class_path: ml.models.snp_model.PhysicsAwareSNPDecoder
       init_args:
-        model_dim: 768
+        model_dim: 384
         freq_length: 256
         num_attention_layers: 2
         num_heads: 8
@@ -81,19 +81,17 @@ data:
     data_dirs:
       - /proj/siaiadm/AI_training_data/D2D/vertical/snp_for_UCIE_20250121
       - /proj/siaiadm/AI_training_data/D2D/from_enzo
+      - /proj/siaiadm/AI_training_data/D2D/UCIE_Trace/pattern2/cowos_8mi
+      - /proj/siaiadm/AI_training_data/D2D/UCIE_Trace/pattern2/cowos_9mi
+      # - /proj/siaiadm/AI_training_data/D2D/UCIE_Trace/pattern2/emib
+      # - /proj/siaiadm/AI_training_data/D2D/UCIE_Trace/pattern2/cowos_8mi_0124
+      # - /proj/siaiadm/AI_training_data/D2D/UCIE_Trace/pattern2/cowos_9mi_0124
+      # - /proj/siaiadm/AI_training_data/D2D/UCIE_Trace/pattern2/emib_9mi_0124
+      # - /proj/siaiadm/AI_training_data/D2D/UCIE_Trace/pattern2/emib_10mi_0124
     file_pattern: "*.s96p"
     batch_size: 32
     num_workers: 4
     pin_memory: true
-    cache_in_memory: true
-    augmentation_config:
-      rotation_prob: 0.5
-      reflection_prob: 0.5
-      port_permutation_prob: 0.3
-      freq_mask_prob: 0.2
-      freq_mask_ratio: 0.15
-      noise_prob: 0.1
-      noise_std: 0.01
 
 optimizer:
   class_path: torch.optim.AdamW
