@@ -68,17 +68,20 @@ class SNPDataModule(LightningDataModule):
             
         all_file_paths = []
         for data_dir in self.hparams.data_dirs:
-            # Walk through all subdirectories
-            for root, dirs, files in os.walk(data_dir):
-                for file in files:
-                    # Check if file matches the pattern (case-insensitive)
-                    # Convert pattern wildcards to regex
-                    import re
+            # Only look in the specified directory, not subdirectories
+            data_path = Path(data_dir)
+            if not data_path.exists():
+                rank_zero_info(f"Warning: Directory {data_dir} does not exist, skipping...")
+                continue
+                
+            # Use glob to find files matching the pattern (case-insensitive)
+            # Get all files in the directory
+            for file_path in data_path.iterdir():
+                if file_path.is_file():
+                    # Case-insensitive pattern matching
                     import fnmatch
-                    
-                    # Use fnmatch for glob-style pattern matching (case-insensitive)
-                    if fnmatch.fnmatch(file.lower(), self.hparams.file_pattern.lower()):
-                        all_file_paths.append(Path(root) / file)
+                    if fnmatch.fnmatch(file_path.name.lower(), self.hparams.file_pattern.lower()):
+                        all_file_paths.append(file_path)
         
         if not all_file_paths:
             raise FileNotFoundError(f"No files found for pattern '{self.hparams.file_pattern}'")
@@ -95,7 +98,8 @@ class SNPDataModule(LightningDataModule):
             shuffle=True,
             num_workers=0,
             pin_memory=self.hparams.pin_memory,
-            persistent_workers=False
+            persistent_workers=False,
+            collate_fn=collate_snp_batch
         )
 
 def collate_snp_batch(batch: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
@@ -108,6 +112,25 @@ def collate_snp_batch(batch: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.T
         # Same shape, can stack normally
         return {'snp_vert': torch.stack(snp_list)}
     else:
-        # Different shapes, need to pad or handle differently
-        # For now, raise an error - in practice you might want to pad
-        raise ValueError(f"Inconsistent SNP shapes in batch: {shapes}")
+        # Different shapes - pad to the maximum shape
+        # Find maximum dimensions
+        max_freq = max(s[0] for s in shapes)
+        max_p1 = max(s[1] for s in shapes)
+        max_p2 = max(s[2] for s in shapes)
+        
+        # Pad each tensor to the maximum shape
+        padded_snps = []
+        for snp in snp_list:
+            f, p1, p2 = snp.shape
+            # Calculate padding for each dimension (pad_left, pad_right)
+            pad_f = (0, max_freq - f)
+            pad_p1 = (0, max_p1 - p1)
+            pad_p2 = (0, max_p2 - p2)
+            
+            # Pad the real and imaginary parts separately
+            snp_real = torch.nn.functional.pad(snp.real, (pad_p2[0], pad_p2[1], pad_p1[0], pad_p1[1], pad_f[0], pad_f[1]), value=0)
+            snp_imag = torch.nn.functional.pad(snp.imag, (pad_p2[0], pad_p2[1], pad_p1[0], pad_p1[1], pad_f[0], pad_f[1]), value=0)
+            padded_snp = torch.complex(snp_real, snp_imag)
+            padded_snps.append(padded_snp)
+        
+        return {'snp_vert': torch.stack(padded_snps)}
