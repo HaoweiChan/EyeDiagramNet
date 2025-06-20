@@ -81,13 +81,13 @@ data:
     data_dirs:
       - /proj/siaiadm/AI_training_data/D2D/vertical/snp_for_UCIE_20250121
       - /proj/siaiadm/AI_training_data/D2D/from_enzo
-      - /proj/siaiadm/AI_training_data/D2D/UCIE_Trace/pattern2/cowos_8mi
-      - /proj/siaiadm/AI_training_data/D2D/UCIE_Trace/pattern2/cowos_9mi
-      # - /proj/siaiadm/AI_training_data/D2D/UCIE_Trace/pattern2/emib
-      # - /proj/siaiadm/AI_training_data/D2D/UCIE_Trace/pattern2/cowos_8mi_0124
-      # - /proj/siaiadm/AI_training_data/D2D/UCIE_Trace/pattern2/cowos_9mi_0124
-      # - /proj/siaiadm/AI_training_data/D2D/UCIE_Trace/pattern2/emib_9mi_0124
-      # - /proj/siaiadm/AI_training_data/D2D/UCIE_Trace/pattern2/emib_10mi_0124
+      - /proj/siaiadm/AI_training_data/D2D/UCIe_Trace/pattern2/cowos_8mi/snp
+      - /proj/siaiadm/AI_training_data/D2D/UCIe_Trace/pattern2/cowos_9mi/snp
+      # - /proj/siaiadm/AI_training_data/D2D/UCIe_Trace/pattern2/emib/snp
+      # - /proj/siaiadm/AI_training_data/D2D/UCIe_Trace/pattern2/cowos_8mi_0124/snp
+      # - /proj/siaiadm/AI_training_data/D2D/UCIe_Trace/pattern2/cowos_9mi_0124/snp
+      # - /proj/siaiadm/AI_training_data/D2D/UCIe_Trace/pattern2/emib_9mi_0124/snp
+      # - /proj/siaiadm/AI_training_data/D2D/UCIe_Trace/pattern2/emib_10mi_0124/snp
     file_pattern: "*.s96p"
     batch_size: 32
     num_workers: 4
