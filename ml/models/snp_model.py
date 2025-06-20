@@ -444,3 +444,216 @@ class ImprovedSNPDecoder(nn.Module):
             snp_vert = snp_vert.view(b, d, output_freq_length, p, p)
         
         return snp_vert
+
+class AttentionSNPDecoder(nn.Module):
+    """
+    Attention-based decoder that models port-to-port interactions explicitly.
+    Uses self-attention to enrich port embeddings followed by pairwise projection.
+    """
+    
+    def __init__(
+        self,
+        model_dim,
+        freq_length,
+        num_attention_layers=2,
+        num_heads=8,
+        mlp_hidden_ratio=4,
+        dropout_rate=0.1,
+        use_separate_phase_mag=True,
+        use_checkpointing=False,
+        use_mixed_precision=True,
+        enforce_symmetry=False
+    ):
+        super().__init__()
+        self.model_dim = model_dim
+        self.freq_length = freq_length
+        self.use_checkpointing = use_checkpointing
+        self.use_mixed_precision = use_mixed_precision
+        self.use_separate_phase_mag = use_separate_phase_mag
+        self.enforce_symmetry = enforce_symmetry
+        
+        # Port-level self-attention layers
+        self.attention_layers = nn.ModuleList([
+            nn.TransformerEncoderLayer(
+                d_model=model_dim,
+                nhead=num_heads,
+                dim_feedforward=model_dim * 4,
+                dropout=dropout_rate,
+                activation='gelu',
+                batch_first=True,
+                norm_first=True  # Pre-norm for better stability
+            )
+            for _ in range(num_attention_layers)
+        ])
+        
+        # Pairwise feature dimension
+        pairwise_dim = model_dim * 2
+        
+        if self.use_separate_phase_mag:
+            # Separate pathways for magnitude and phase
+            self.magnitude_mlp = nn.Sequential(
+                nn.Linear(pairwise_dim, pairwise_dim * mlp_hidden_ratio),
+                nn.LayerNorm(pairwise_dim * mlp_hidden_ratio),
+                nn.GELU(),
+                nn.Dropout(dropout_rate),
+                nn.Linear(pairwise_dim * mlp_hidden_ratio, freq_length),
+                nn.ReLU()  # Ensure positive magnitude
+            )
+            
+            self.phase_mlp = nn.Sequential(
+                nn.Linear(pairwise_dim, pairwise_dim * mlp_hidden_ratio),
+                nn.LayerNorm(pairwise_dim * mlp_hidden_ratio),
+                nn.GELU(),
+                nn.Dropout(dropout_rate),
+                nn.Linear(pairwise_dim * mlp_hidden_ratio, freq_length),
+                nn.Tanh()  # Bounded phase representation
+            )
+        else:
+            # Direct complex projection
+            self.complex_mlp = nn.Sequential(
+                nn.Linear(pairwise_dim, pairwise_dim * mlp_hidden_ratio),
+                nn.LayerNorm(pairwise_dim * mlp_hidden_ratio),
+                nn.GELU(),
+                nn.Dropout(dropout_rate),
+                nn.Linear(pairwise_dim * mlp_hidden_ratio, freq_length * 2)
+            )
+        
+        # Learnable power for inverse transform
+        self.power = nn.Parameter(torch.tensor(4.0))
+        
+    def _inverse_snp_transform(self, x):
+        with torch.amp.autocast(device_type=x.device.type, enabled=self.use_mixed_precision):
+            return x.sign() * torch.pow(x.abs() + 1e-8, self.power.abs())
+    
+    def _apply_attention(self, port_embeddings):
+        """Apply self-attention layers to port embeddings"""
+        x = port_embeddings
+        
+        for layer in self.attention_layers:
+            if self.use_checkpointing and self.training:
+                x = torch.utils.checkpoint.checkpoint(layer, x, use_reentrant=False)
+            else:
+                with torch.amp.autocast(device_type=x.device.type, enabled=self.use_mixed_precision):
+                    x = layer(x)
+        
+        return x
+    
+    def _create_pairwise_features(self, port_embeddings):
+        """Create pairwise features by concatenating port embeddings"""
+        b, p, e = port_embeddings.shape
+        
+        # Expand to create all pairs
+        port_i = port_embeddings.unsqueeze(2).expand(b, p, p, e)  # (B, P, P, E)
+        port_j = port_embeddings.unsqueeze(1).expand(b, p, p, e)  # (B, P, P, E)
+        
+        # Concatenate to form pairwise features
+        pairwise_features = torch.cat([port_i, port_j], dim=-1)  # (B, P, P, 2E)
+        
+        return pairwise_features
+    
+    def forward(self, hidden_states_snp, output_freq_length: int):
+        """
+        Decode port embeddings to S-parameter matrix using attention.
+        
+        Args:
+            hidden_states_snp: Port embeddings of shape (B, P, E) or (B, D, P, E)
+            output_freq_length: Target frequency dimension
+            
+        Returns:
+            Reconstructed S-parameters of shape (B, F, P*2, P*2) or (B, D, F, P*2, P*2)
+        """
+        # Handle different input dimensions
+        if hidden_states_snp.dim() == 4:
+            b, d, half_p, e = hidden_states_snp.size()
+            hidden_states = hidden_states_snp.view(b * d, half_p, e)
+            batch_size = b * d
+            has_d_dim = True
+        else:
+            b, half_p, e = hidden_states_snp.size()
+            hidden_states = hidden_states_snp
+            batch_size = b
+            has_d_dim = False
+        
+        # Apply self-attention to enrich port embeddings
+        attended_embeddings = self._apply_attention(hidden_states)
+        
+        # Create pairwise features
+        pairwise_features = self._create_pairwise_features(attended_embeddings)
+        
+        # Flatten for MLP processing
+        b_p_p, _, _, pairwise_dim = pairwise_features.shape
+        pairwise_flat = pairwise_features.view(-1, pairwise_dim)
+        
+        if self.use_separate_phase_mag:
+            # Process magnitude and phase separately
+            with torch.amp.autocast(device_type=hidden_states.device.type, enabled=self.use_mixed_precision):
+                magnitude = self.magnitude_mlp(pairwise_flat)  # (B*P*P, F)
+                phase_features = self.phase_mlp(pairwise_flat)  # (B*P*P, F)
+            
+            # Scale phase to [-pi, pi]
+            phase = phase_features * torch.pi
+            
+            # Reshape
+            magnitude = magnitude.view(batch_size, half_p, half_p, self.freq_length)
+            phase = phase.view(batch_size, half_p, half_p, self.freq_length)
+            
+            # Interpolate to target frequency
+            mag_for_interp = rearrange(magnitude, 'b p1 p2 f -> (b p1 p2) 1 f')
+            phase_for_interp = rearrange(phase, 'b p1 p2 f -> (b p1 p2) 1 f')
+            
+            mag_interp = F.interpolate(mag_for_interp, size=output_freq_length, mode='linear', align_corners=False)
+            phase_interp = F.interpolate(phase_for_interp, size=output_freq_length, mode='linear', align_corners=False)
+            
+            # Reshape back
+            mag_interp = rearrange(mag_interp, '(b p1 p2) 1 f -> b f p1 p2', b=batch_size, p1=half_p, p2=half_p)
+            phase_interp = rearrange(phase_interp, '(b p1 p2) 1 f -> b f p1 p2', b=batch_size, p1=half_p, p2=half_p)
+            
+            # Apply inverse power transform to magnitude
+            mag_transformed = torch.pow(mag_interp + 1e-8, self.power.abs())
+            
+            # Reconstruct complex S-parameters
+            snp_half = mag_transformed * torch.exp(1j * phase_interp)
+            
+        else:
+            # Direct complex projection
+            with torch.amp.autocast(device_type=hidden_states.device.type, enabled=self.use_mixed_precision):
+                complex_features = self.complex_mlp(pairwise_flat)  # (B*P*P, F*2)
+            
+            # Reshape and interpolate
+            complex_features = complex_features.view(batch_size, half_p, half_p, self.freq_length * 2)
+            complex_for_interp = rearrange(complex_features, 'b p1 p2 (f c) -> (b p1 p2) c f', c=2)
+            complex_interp = F.interpolate(complex_for_interp, size=output_freq_length, mode='linear', align_corners=False)
+            
+            # Convert to complex
+            complex_interp = rearrange(complex_interp, '(b p1 p2) c f -> b f p1 p2 c', b=batch_size, p1=half_p, p2=half_p)
+            snp_half = torch.view_as_complex(complex_interp)
+            
+            # Apply inverse transform
+            snp_half = torch.view_as_complex(
+                self._inverse_snp_transform(torch.view_as_real(snp_half))
+            )
+        
+        # Reconstruct full P×P matrix from half_p×half_p
+        p = half_p * 2
+        device = hidden_states.device
+        snp_vert = torch.zeros(batch_size, output_freq_length, p, p, dtype=torch.complex64, device=device)
+        
+        # Fill the matrix - the encoder interleaves ports, so we need to expand accordingly
+        # Top-left quadrant
+        snp_vert[:, :, :half_p, :half_p] = snp_half
+        # Top-right quadrant
+        snp_vert[:, :, :half_p, half_p:] = snp_half
+        # Bottom-left quadrant
+        snp_vert[:, :, half_p:, :half_p] = snp_half
+        # Bottom-right quadrant
+        snp_vert[:, :, half_p:, half_p:] = snp_half
+        
+        # Optionally enforce symmetry (S_ij = S_ji)
+        if self.enforce_symmetry:
+            snp_vert = (snp_vert + snp_vert.transpose(-2, -1)) / 2
+        
+        # Reshape back if needed
+        if has_d_dim:
+            snp_vert = snp_vert.view(b, d, output_freq_length, p, p)
+        
+        return snp_vert
