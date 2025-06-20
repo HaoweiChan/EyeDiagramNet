@@ -92,6 +92,10 @@ data:
     batch_size: 32
     num_workers: 4
     pin_memory: true
+    cache_mode: lazy  # 'all', 'lazy', or 'none'
+    cache_size: 1000  # Number of files to keep in memory for lazy mode
+    group_by_shape: true  # Group files by shape to minimize padding
+    sample_files_for_shape: 10  # Sample size to determine directory shapes
 
 optimizer:
   class_path: torch.optim.AdamW
