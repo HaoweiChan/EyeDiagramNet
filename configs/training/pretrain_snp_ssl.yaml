@@ -50,7 +50,7 @@ model:
         use_mixed_precision: true
         use_tx_rx_tokens: false
     decoder:
-      class_path: ml.models.snp_model.AttentionSNPDecoder
+      class_path: ml.models.snp_model.PhysicsAwareSNPDecoder
       init_args:
         model_dim: 768
         freq_length: 256
@@ -58,10 +58,11 @@ model:
         num_heads: 8
         mlp_hidden_ratio: 4
         dropout_rate: 0.1
-        use_separate_phase_mag: true
+        use_frequency_conv: true
+        conv_kernel_size: 5
         use_checkpointing: false
         use_mixed_precision: true
-        enforce_symmetry: false
+        enforce_reciprocity: true
     loss_fn:
       class_path: ml.utils.snp_losses.ImprovedSNPReconstructionLoss
       init_args:
