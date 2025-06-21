@@ -50,7 +50,7 @@ model:
         use_mixed_precision: true
         use_tx_rx_tokens: false
     decoder:
-      class_path: ml.models.snp_model.PhysicsAwareSNPDecoder
+      class_path: ml.models.snp_model.SNPDecoder
       init_args:
         model_dim: 384
         freq_length: 256
