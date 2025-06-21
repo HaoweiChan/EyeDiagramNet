@@ -64,7 +64,7 @@ trainer:
 model:
   class_path: ml.modules.trace_ew_module.TraceEWModule
   init_args:
-    ckpt_path: ./saved/ew_xfmr/version_0/checkpoints/last.ckpt
+    ckpt_path: null
     strict: false
     ew_scaler: 50
     ew_threshold: 0.1

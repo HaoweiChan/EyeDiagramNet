@@ -130,61 +130,7 @@ def latent_regularization(embeddings, reg_type='l2', beta=1.0):
 
 class SNPReconstructionLoss(nn.Module):
     """
-    Combined loss for SNP reconstruction with configurable components.
-    Prioritizes log-magnitude and phase for better perceptual results.
-    """
-    
-    def __init__(
-        self,
-        magnitude_weight: float = 1.0,
-        phase_weight: float = 0.5,
-        latent_reg_type: str = 'l2',
-        latent_reg_weight: float = 0.01
-    ):
-        super().__init__()
-        self.magnitude_weight = magnitude_weight
-        self.phase_weight = phase_weight
-        self.latent_reg_type = latent_reg_type
-        self.latent_reg_weight = latent_reg_weight
-    
-    def forward(self, pred, target, embeddings=None):
-        """
-        Calculates total loss based on log-magnitude and phase.
-        """
-        loss_dict = {}
-        
-        # --- Main Reconstruction Loss ---
-        pred_mag = torch.abs(pred)
-        target_mag = torch.abs(target)
-        mag_loss = log_magnitude_loss(pred_mag, target_mag)
-        
-        pred_phase = torch.angle(pred)
-        target_phase = torch.angle(target)
-        ph_loss = phase_loss(pred_phase, target_phase)
-        
-        recon_loss = (self.magnitude_weight * mag_loss) + (self.phase_weight * ph_loss)
-        
-        loss_dict['reconstruction'] = recon_loss
-        loss_dict['log_magnitude_loss'] = mag_loss
-        loss_dict['phase_loss'] = ph_loss
-        total_loss = recon_loss
-        
-        # --- Latent Regularization ---
-        if embeddings is not None and self.latent_reg_weight > 0:
-            reg_loss = latent_regularization(
-                embeddings, 
-                self.latent_reg_type, 
-                self.latent_reg_weight
-            )
-            loss_dict['regularization'] = reg_loss
-            total_loss = total_loss + reg_loss
-        
-        loss_dict['total'] = total_loss
-        return total_loss, loss_dict
-
-class ImprovedSNPReconstructionLoss(nn.Module):
-    """
-    Improved loss for SNP reconstruction that addresses phase learning issues.
+    Combined loss for SNP reconstruction with that addresses phase learning issues.
     Uses multiple complementary loss terms for stability.
     """
     

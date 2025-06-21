@@ -239,14 +239,12 @@ class EyeWidthRegressor(nn.Module):
 
         # Process snp into hidden states
         if self.use_gradient_checkpointing and self.training:
-            # Wrap the call in a function to handle extra args for checkpointing
-            def create_snp_hidden_states(snp_vert):
-                return self.snp_encoder(snp_vert, self.tx_token, self.rx_token)
+            # Pass all tensor arguments positionally for checkpointing
             hidden_states_vert = torch.utils.checkpoint.checkpoint(
-                create_snp_hidden_states, snp_vert, use_reentrant=False
+                self.snp_encoder, snp_vert, self.tx_token, self.rx_token, use_reentrant=False
             )
         else:
-            hidden_states_vert = self.snp_encoder(snp_vert, tx_token=self.tx_token, rx_token=self.rx_token) # (B, D, P, M)
+            hidden_states_vert = self.snp_encoder(snp_vert, tx_token=self.tx_token, rx_token=self.rx_token)
 
         # Process direction embedding
         hidden_states_dir = self.dir_projection(direction) # (B, P, M)

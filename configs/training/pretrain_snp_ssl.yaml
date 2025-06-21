@@ -13,12 +13,12 @@ trainer:
     class_path: lightning.pytorch.loggers.TensorBoardLogger
     init_args:
       save_dir: saved
-      name: snp_ssl_improved
+      name: snp_ssl
   callbacks:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
         monitor: train_loss
-        dirpath: saved/snp_ssl_improved/checkpoints
+        dirpath: saved/snp_ssl/checkpoints
         filename: snp-encoder-epoch{epoch:02d}-train_loss{train_loss:.5f}
         auto_insert_metric_name: false
         mode: min
@@ -64,7 +64,7 @@ model:
         use_mixed_precision: true
         enforce_reciprocity: true
     loss_fn:
-      class_path: ml.utils.snp_losses.ImprovedSNPReconstructionLoss
+      class_path: ml.utils.snp_losses.SNPReconstructionLoss
       init_args:
         magnitude_weight: 1.0
         phase_weight: 1.5

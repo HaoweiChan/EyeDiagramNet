@@ -181,8 +181,9 @@ class OptimizedSNPEmbedding(nn.Module):
         if self.use_tx_rx_tokens and d == 2:
             if tx_token is None or rx_token is None:
                 raise ValueError("tx_token and rx_token must be provided when use_tx_rx_tokens is True.")
-            hidden_states_snp[:, 0].add_(tx_token)
-            hidden_states_snp[:, 1].add_(rx_token)
+            # Use positional arguments for checkpointing compatibility
+            hidden_states_snp[:, 0] = hidden_states_snp[:, 0] + tx_token
+            hidden_states_snp[:, 1] = hidden_states_snp[:, 1] + rx_token
         
         return hidden_states_snp
 
