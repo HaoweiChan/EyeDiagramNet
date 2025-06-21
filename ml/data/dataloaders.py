@@ -86,9 +86,30 @@ class TraceSeqEWDataloader(LightningDataModule):
             for pkl_file in Path(self.label_dir, name).glob("*.pkl"):
                 with open(pkl_file, "rb") as f:
                     loaded = pickle.load(f)
-                snp_file = Path(loaded["snp_horiz"]).stem.replace("-", "_")
+
+                # Handle backward compatibility for data format
+                if 'meta' in loaded and 'snp_horiz' in loaded['meta']:
+                    # New format: metadata is nested
+                    snp_horiz_path = loaded['meta']['snp_horiz']
+                else:
+                    # Old format: metadata at top level
+                    snp_horiz_path = loaded.get('snp_horiz')
+
+                if not snp_horiz_path:
+                    rank_zero_info(f"Skipping malformed pickle: {pkl_file.name} ('snp_horiz' not found).")
+                    continue
+
+                snp_file = Path(snp_horiz_path).stem.replace("-", "_")
                 snp_vert = tuple(zip(loaded["snp_txs"], loaded["snp_rxs"]))
-                key = int(snp_file.split("_")[-1].split(".")[0])
+
+                # The key must match the case_id from the CSV file
+                try:
+                    key = int(snp_file.split("_")[-1].split(".")[0])
+                except (ValueError, IndexError):
+                    rank_zero_info(f"Could not parse case ID from snp_horiz: '{snp_file}'. "
+                                   f"Skipping pickle file: {pkl_file.name}")
+                    continue
+
                 labels[key] = (
                     loaded["configs"],
                     loaded["directions"],
