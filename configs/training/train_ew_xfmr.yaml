@@ -6,6 +6,7 @@ trainer:
     class_path: lightning.pytorch.strategies.DDPStrategy
     init_args:
       find_unused_parameters: false
+      static_graph: true
   devices: -1
   num_nodes: 8
   precision: 16-mixed
