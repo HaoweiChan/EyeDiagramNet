@@ -229,7 +229,7 @@ class EyeWidthRegressor(nn.Module):
         # Process trace sequence
         if self.use_gradient_checkpointing and self.training:
             hidden_states_seq = torch.utils.checkpoint.checkpoint(
-                self.trace_encoder, trace_seq, use_reentrant=False
+                self.trace_encoder, trace_seq, use_reentrant=True
             )
         else:
             hidden_states_seq = self.trace_encoder(trace_seq)  # (B, P, M)
@@ -241,7 +241,7 @@ class EyeWidthRegressor(nn.Module):
         if self.use_gradient_checkpointing and self.training:
             # Pass all tensor arguments positionally for checkpointing
             hidden_states_vert = torch.utils.checkpoint.checkpoint(
-                self.snp_encoder, snp_vert, self.tx_token, self.rx_token, use_reentrant=False
+                self.snp_encoder, snp_vert, self.tx_token, self.rx_token, use_reentrant=True
             )
         else:
             hidden_states_vert = self.snp_encoder(snp_vert, tx_token=self.tx_token, rx_token=self.rx_token)
@@ -289,7 +289,7 @@ class EyeWidthRegressor(nn.Module):
         # Run transformer for the signals
         if self.use_gradient_checkpointing and self.training:
             hidden_states_sig = torch.utils.checkpoint.checkpoint(
-                self.signal_encoder, hidden_states, use_reentrant=False
+                self.signal_encoder, hidden_states, use_reentrant=True
             )
         else:
             hidden_states_sig = self.signal_encoder(hidden_states)
