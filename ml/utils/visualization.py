@@ -95,8 +95,13 @@ def plot_ew_curve(outputs, metrics, ew_threshold, sigma=2):
 
     # Conversions
     pred_mask = pred_ew > ew_threshold
-    upper_mask = np.ma.masked_where(~pred_mask, pred_ew + sigma * pred_sigma)
-    lower_masked = np.ma.masked_where(~pred_mask, pred_ew - sigma * pred_sigma)
+
+    # Calculate and clip uncertainty bounds to be within [0, 100]
+    upper_bound = np.clip(pred_ew + sigma * pred_sigma, a_min=None, a_max=100.0)
+    lower_bound = np.clip(pred_ew - sigma * pred_sigma, a_min=0.0, a_max=None)
+    
+    upper_mask = np.ma.masked_where(~pred_mask, upper_bound)
+    lower_masked = np.ma.masked_where(~pred_mask, lower_bound)
 
     stage_key = next(iter(metrics)).split('_')[0].replace('/', '').capitalize()
     metrics = {k.split('/')[1]: v for k, v in metrics.items() if v != 0}

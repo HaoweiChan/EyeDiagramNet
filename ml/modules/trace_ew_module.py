@@ -70,7 +70,7 @@ class TraceEWModule(LightningModule):
         ckpt_path: str = None,
         strict: bool = False,
         compile_model: bool = False,
-        ew_scaler: int = 50,
+        ew_scaler: int = 100,
         ew_threshold: float = 0.3,
         use_laplace_on_fit_end: bool = True,
     ):
