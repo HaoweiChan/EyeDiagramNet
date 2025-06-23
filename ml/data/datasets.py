@@ -34,13 +34,19 @@ def get_loader_from_dataset(
 ):
     drop_last = shuffle
 
+    # Optimize num_workers based on system capabilities
+    import os
+    cpu_count = os.cpu_count()
+    # Use fewer workers to avoid overwhelming the system
+    num_workers = min(4, cpu_count // 2) if cpu_count else 2
+
     loader = DataLoader(
         dataset=dataset,
         batch_size=batch_size,
         shuffle=shuffle,
-        # pin_memory=True,
-        num_workers=8,
-        persistent_workers=True,
+        pin_memory=True,  # Enable for GPU trainingAdd commentMore actions
+        num_workers=num_workers,
+        persistent_workers=True if num_workers > 0 else False,
         drop_last=drop_last,
         # collate_fn=collate_fn
     )

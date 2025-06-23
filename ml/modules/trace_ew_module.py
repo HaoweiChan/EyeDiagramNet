@@ -139,7 +139,7 @@ class TraceEWModule(LightningModule):
                 rank_zero_info("Attempting to compile model with torch.compile...")
                 self.model = torch.compile(
                     self.model, 
-                    mode="default",
+                    mode="reduce-overhead",
                     dynamic=True,
                     fullgraph=False
                 )
@@ -481,16 +481,17 @@ class TraceEWModule(LightningModule):
             losses.append(loss)
 
             # (5) Update metrics & maybe collect samples
-            self.update_metrics(
-                stage,
-                loss.detach(),
-                extras["pred_ew"],
-                extras["true_ew"],
-                extras["pred_prob"],
-                extras["true_prob"],
-                extras["pred_sigma"]
-            )
-            self._maybe_collect_samples(stage, name, batch_idx, extras)
+            with torch.no_grad():
+                self.update_metrics(
+                    stage,
+                    loss.detach(),
+                    extras["pred_ew"],
+                    extras["true_ew"],
+                    extras["pred_prob"],
+                    extras["true_prob"],
+                    extras["pred_sigma"]
+                )
+                self._maybe_collect_samples(stage, name, batch_idx, extras)
 
         mean_loss = torch.stack(losses).mean()
         self.log(
@@ -517,9 +518,6 @@ class TraceEWModule(LightningModule):
         
         # Pre-compute common values to avoid redundant operations
         mask = true_prob.bool()
-        # Use in-place operations to reduce memory allocations
-        pred_prob_flat = pred_prob.flatten()
-        true_prob_flat = true_prob.flatten()
         
         # Only compute masked values once for regression metrics
         if mask.any():
@@ -546,7 +544,7 @@ class TraceEWModule(LightningModule):
             if 'loss' in key:
                 metric.update(loss)
             elif 'f1' in key or 'accuracy' in key:
-                metric.update(pred_prob_flat, true_prob_flat)
+                metric.update(pred_prob.flatten(), true_prob.flatten())
             elif 'cov' in key and key in coverage_metrics:
                 in_range_flat, true_mask_flat = coverage_metrics[key]
                 metric.update(in_range_flat, true_mask_flat)
@@ -594,9 +592,19 @@ class TraceEWModule(LightningModule):
             unused_params = []
             total_params = 0
             
+            # When gradient checkpointing is enabled, it's expected that parameters
+            # within the checkpointed modules will not have gradients available at this point.
+            grad_checkpointing_active = getattr(self.model, 'use_gradient_checkpointing', False)
+            checkpointed_modules = ['trace_encoder', 'snp_encoder', 'signal_encoder']
+
             for name, param in self.named_parameters():
                 if param.requires_grad:
                     total_params += 1
+
+                    # If checkpointing is on, skip checking params from modules we know are wrapped.
+                    if grad_checkpointing_active and any(mod_name in name for mod_name in checkpointed_modules):
+                        continue
+
                     if param.grad is None:
                         unused_params.append(name)
             
