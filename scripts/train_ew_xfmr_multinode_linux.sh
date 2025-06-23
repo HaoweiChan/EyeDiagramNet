@@ -35,9 +35,11 @@ cat > $lsf_script << 'END_SCRIPT'
 #BSUB -e test.err
 #BSUB -n test
 
-# === PYTHON COMMAND TO UPDATE ===
-PYTHON_SCRIPT="python -m ml.trainer fit --config configs/training/train_ew_xfmr.yaml"
-# ================================
+# === TRAINER COMMAND TO UPDATE ===
+# This is the command that will be launched by torchrun on each node.
+# Do NOT include "python" or "torchrun" here.
+TRAINER_COMMAND="ml/trainer.py fit --config configs/training/train_ew_xfmr.yaml"
+# =================================
 
 MPI_PREFIX=/mktoss/openmpi/4.0.3.ubuntu22/x86-64
 
@@ -103,7 +105,7 @@ rdzv_id="$RANDOM"
 
 GPU_cores=$(($nproc_per_node * $nnodes))
 
-GPU_SCRIPT="torchrun --nnodes=$nnodes --nproc_per_node=$nproc_per_node --max_restart=3 --rdzv_id $rdzv_id --rdzv-backend=c10d --rdzv-endpoint=$myname:$masterport $PYTHON_SCRIPT"
+GPU_SCRIPT="torchrun --nnodes=$nnodes --nproc_per_node=$nproc_per_node --max_restart=3 --rdzv_id $rdzv_id --rdzv-backend=c10d --rdzv-endpoint=$myname:$masterport $TRAINER_COMMAND"
 
 # Define MPI options
 HOST_N_COMMAND=$(echo $GPU_HOST | sed 's/[0-9]\+//1g')
