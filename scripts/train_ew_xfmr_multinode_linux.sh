@@ -35,6 +35,10 @@ cat > $lsf_script << 'END_SCRIPT'
 #BSUB -e test.err
 #BSUB -n test
 
+# === PYTHON COMMAND TO UPDATE ===
+PYTHON_SCRIPT="python -m ml.trainer fit --config configs/training/train_ew_xfmr.yaml"
+# ================================
+
 MPI_PREFIX=/mktoss/openmpi/4.0.3.ubuntu22/x86-64
 
 # Parse LSB_MCPU_HOSTS to get GPU and CPU hosts
@@ -99,7 +103,6 @@ rdzv_id="$RANDOM"
 
 GPU_cores=$(($nproc_per_node * $nnodes))
 
-PYTHON_SCRIPT="trainer.py fit --config configs/train_ew.xfrm.yml"
 GPU_SCRIPT="torchrun --nnodes=$nnodes --nproc_per_node=$nproc_per_node --max_restart=3 --rdzv_id $rdzv_id --rdzv-backend=c10d --rdzv-endpoint=$myname:$masterport $PYTHON_SCRIPT"
 
 # Define MPI options
