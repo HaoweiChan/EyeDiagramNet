@@ -8,12 +8,15 @@ module load Python3/3.11.8_gpu_torch251
 source /proj/siaiadm/ew_predictor/.venv/sipi/bin/activate.csh
 
 # Check GPU availability
-bhosts GPU_3090 4
-# bhosts GPU_A6000 8
+bhosts GPU_3090_4
+# bhosts GPU_A6000_8
 
 # Create temporary LSF script
+echo "Creating temporary LSF script..."
 set lsf_script = /tmp/multinode_$$.lsf
-cat > $lsf_script << 'EOF'
+echo "LSF script path: $lsf_script"
+
+cat > $lsf_script << 'END_SCRIPT'
 #!/bin/bash
 # Required Directives
 #BSUB -q gpu
@@ -116,13 +119,18 @@ echo -e "MPI_PREFIX submitted:\n$MPI_PREFIX"
 mpirun --prefix $MPI_PREFIX $MPI_OPTIONS $FINAL_SCRIPT
 mpirun --prefix $MPI_PREFIX $MPI_OPTIONS $PODMAN_SCRIPT
 mpirun --prefix $MPI_PREFIX $MPI_OPTIONS $GPU_SCRIPT
-EOF
+END_SCRIPT
+
+echo "LSF script created successfully"
+echo "Script contents:"
+head -20 $lsf_script
 
 # Submit the job
 echo "Submitting multinode training job..."
 bsub < $lsf_script
 
 # Clean up temporary file
+echo "Cleaning up temporary file..."
 rm -f $lsf_script
 
 echo "Job submitted successfully!" 
