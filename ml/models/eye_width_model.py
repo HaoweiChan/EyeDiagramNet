@@ -227,14 +227,12 @@ class EyeWidthRegressor(nn.Module):
             hidden_states_sig (torch.Tensor, optional): Hidden states of shared embedding before output head of shape (B, P, D), only returned if output_hidden_states is True.
         """
         # Process trace sequence
-        print ("trace_seq: ", trace_seq.shape)
         if self.use_gradient_checkpointing and self.training:
             hidden_states_seq = torch.utils.checkpoint.checkpoint(
                 self.trace_encoder, trace_seq, use_reentrant=False
             )
         else:
             hidden_states_seq = self.trace_encoder(trace_seq)  # (B, P, M)
-        print ("hidden_states_seq: ", hidden_states_seq.shape)
 
         # Process boundary conditions with structured processor
         hidden_states_fix = self.boundary_processor(boundary).unsqueeze(1) # (B, 1, M)
