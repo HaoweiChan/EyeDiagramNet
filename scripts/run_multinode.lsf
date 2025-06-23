@@ -6,7 +6,7 @@
 
 # --- LSF Directives ---
 #BSUB -m GPU_3090_4
-#BSUB -gpu "num=32"
+#BSUB -gpu "num={{GPU_NUM}}"
 #BSUB -P d_09017
 #BSUB -Is
 #BSUB -q ML_GPU
@@ -23,7 +23,7 @@ echo "PYTHONPATH set to: $PYTHONPATH"
 # === TRAINER COMMAND TO UPDATE ===
 # This is the command that will be launched by torchrun on each node.
 # Do NOT include "python" or "torchrun" here.
-TRAINER_COMMAND="ml/trainer.py fit --config configs/training/train_ew_xfmr.yaml"
+TRAINER_COMMAND="{{TRAINER_COMMAND}}"
 # =================================
 
 echo "Trainer command set to: $TRAINER_COMMAND"
