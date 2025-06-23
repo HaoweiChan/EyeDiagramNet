@@ -58,10 +58,12 @@ class TraceSeqTransformer(nn.Module):
         """Encoder of sequence input for extracting information between line sequence"""
         # Create a mask to filter null token
         null_mask = (seq_input == -1).any(-1)
-        seq_input[null_mask] = 0 # prevent error for embeddings
+        # Use torch.where to avoid modifying seq_input in-place.
+        # This is required for gradient checkpointing with use_reentrant=False.
+        seq_input_safe = torch.where(null_mask.unsqueeze(-1), 0.0, seq_input)
 
         # Split sequence using semantic processor
-        layers, types, feats, spatials = TraceSequenceProcessor.split_for_model(seq_input)
+        layers, types, feats, spatials = TraceSequenceProcessor.split_for_model(seq_input_safe)
         layers, types = layers.long(), types.long() # (B, L, 1)
 
         # Get embedding for layer, type, and feature info
@@ -84,8 +86,10 @@ class TraceSeqTransformer(nn.Module):
 
         # Extract signal port information (type == 0)
         bs, _, c = hidden_states_seq.size()
-        masked_types = types.clone()
-        masked_types[null_mask] = -1
+        
+        # Use torch.where to avoid in-place modification on the masked_types tensor.
+        masked_types = torch.where(null_mask.unsqueeze(-1), -1, types)
+
         idx_sig_ports = (masked_types.squeeze(-1) == 0).nonzero(as_tuple=True)
         hidden_states_seq = hidden_states_seq[idx_sig_ports].view(bs, -1, c)  # (B, P, C)
 
