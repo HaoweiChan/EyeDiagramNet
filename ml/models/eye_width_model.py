@@ -227,12 +227,14 @@ class EyeWidthRegressor(nn.Module):
             hidden_states_sig (torch.Tensor, optional): Hidden states of shared embedding before output head of shape (B, P, D), only returned if output_hidden_states is True.
         """
         # Process trace sequence
+        print ("trace_seq: ", trace_seq.shape)
         if self.use_gradient_checkpointing and self.training:
             hidden_states_seq = torch.utils.checkpoint.checkpoint(
-                self.trace_encoder, trace_seq, use_reentrant=True
+                self.trace_encoder, trace_seq, use_reentrant=False
             )
         else:
             hidden_states_seq = self.trace_encoder(trace_seq)  # (B, P, M)
+        print ("hidden_states_seq: ", hidden_states_seq.shape)
 
         # Process boundary conditions with structured processor
         hidden_states_fix = self.boundary_processor(boundary).unsqueeze(1) # (B, 1, M)
@@ -241,7 +243,7 @@ class EyeWidthRegressor(nn.Module):
         if self.use_gradient_checkpointing and self.training:
             # Pass all tensor arguments positionally for checkpointing
             hidden_states_vert = torch.utils.checkpoint.checkpoint(
-                self.snp_encoder, snp_vert, self.tx_token, self.rx_token, use_reentrant=True
+                self.snp_encoder, snp_vert, self.tx_token, self.rx_token, use_reentrant=False
             )
         else:
             hidden_states_vert = self.snp_encoder(snp_vert, tx_token=self.tx_token, rx_token=self.rx_token)
@@ -268,20 +270,12 @@ class EyeWidthRegressor(nn.Module):
         
         hidden_states_vert = rearrange(hidden_states_vert, "b d p e -> b (d p) e") # concat tx and rx snp states
         
-        # Pre-allocate concatenated tensor for better memory efficiency
-        total_seq_len = hidden_states_seq.size(1) + hidden_states_vert.size(1) + 1
-        hidden_states = torch.empty(
-            (hidden_states_seq.size(0), total_seq_len, hidden_states_seq.size(2)),
-            device=hidden_states_seq.device, dtype=hidden_states_seq.dtype
-        )
-        
-        # Use slice assignment instead of torch.cat
-        seq_len = hidden_states_seq.size(1)
-        vert_len = hidden_states_vert.size(1)
-        
-        hidden_states[:, :seq_len] = hidden_states_seq
-        hidden_states[:, seq_len:seq_len+vert_len] = hidden_states_vert  
-        hidden_states[:, -1:] = hidden_states_fix + self.fix_token
+        # Concatenate all hidden states
+        hidden_states = torch.cat((
+            hidden_states_seq,
+            hidden_states_vert,
+            hidden_states_fix + self.fix_token
+        ), dim=1)
 
         # Final norm before signal transformer
         hidden_states = self.norm_concat_tokens(hidden_states)
@@ -289,7 +283,7 @@ class EyeWidthRegressor(nn.Module):
         # Run transformer for the signals
         if self.use_gradient_checkpointing and self.training:
             hidden_states_sig = torch.utils.checkpoint.checkpoint(
-                self.signal_encoder, hidden_states, use_reentrant=True
+                self.signal_encoder, hidden_states, use_reentrant=False
             )
         else:
             hidden_states_sig = self.signal_encoder(hidden_states)
