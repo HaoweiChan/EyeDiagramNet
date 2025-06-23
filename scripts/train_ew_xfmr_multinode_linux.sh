@@ -35,6 +35,9 @@ cat > $lsf_script << 'END_SCRIPT'
 #BSUB -e test.err
 #BSUB -n test
 
+# Set PYTHONPATH to include the project root, allowing for module imports like "ml.trainer"
+export PYTHONPATH=${PWD}:${PYTHONPATH}
+
 # === TRAINER COMMAND TO UPDATE ===
 # This is the command that will be launched by torchrun on each node.
 # Do NOT include "python" or "torchrun" here.
