@@ -328,41 +328,57 @@ class EyeWidthSimulator:
         return rf.Network(frequency=freq, s=s_new, z0=ntwk.z0)
 
     def add_inductance(self, ntwk: rf.Network, L_tx: float, L_rx: float) -> rf.Network:
-        """Add series inductors to network ports.
+        """Add series inductors to network ports based on transmission direction.
         
+        This method uses a vectorized approach to add inductance to the correct
+        ports based on the `directions` parameter, avoiding loops for efficiency
+        and clarity.
+
         Args:
-            ntwk: Network to modify
-            L_tx: Inductance for input ports
-            L_rx: Inductance for output ports
+            ntwk (rf.Network): Network to modify.
+            L_tx (float): Inductance for the transmit-side port of a line.
+            L_rx (float): Inductance for the receive-side port of a line.
             
         Returns:
-            Network with added inductance
+            rf.Network: Network with added inductance, respecting port directions.
         """
         freq = ntwk.frequency
         num_ports = ntwk.nports
+        num_lines = num_ports // 2
 
-        # Calculate inductive impedance
+        # Ensure directions is a numpy array, defaulting to all '1's (forward).
+        directions = np.array(self.params.directions if self.params.directions is not None else [1] * num_lines)
+
+        # Calculate inductive impedance, shaped for broadcasting.
         omega = 2 * np.pi * freq.f
-        zL_in = 1j * omega * L_tx
-        zL_out = 1j * omega * L_rx
+        zL_tx = (1j * omega * L_tx)[:, np.newaxis]
+        zL_rx = (1j * omega * L_rx)[:, np.newaxis]
 
-        # Convert to arrays
-        zL_in_array = zL_in[:, np.newaxis]
-        zL_out_array = zL_out[:, np.newaxis]
-
-        # Convert to impedance parameters
+        # Convert network to impedance parameters for modification.
         z_array = s2z(ntwk.s, ntwk.z0)
 
-        # Add inductance to diagonal elements
-        in_idx = np.arange(num_ports // 2)
-        out_idx = np.arange(num_ports // 2, num_ports)
-        z_array[:, in_idx, in_idx] += zL_in_array
-        z_array[:, out_idx, out_idx] += zL_out_array
+        # --- Vectorized application of inductance ---
+        # 1. Create boolean masks to identify forward and flipped lines.
+        dir_is_forward = (directions == 1)
+        dir_is_flipped = (directions == 0)
 
-        # Convert back to S-parameters
+        # 2. Get the indices for the first half (p1) and second half (p2) of ports.
+        p1_indices = np.arange(num_lines)
+        p2_indices = np.arange(num_lines, num_ports)
+
+        # 3. Apply inductance to diagonal impedance elements using the masks.
+        # For forward lines, p1 is TX and p2 is RX.
+        z_array[:, p1_indices[dir_is_forward], p1_indices[dir_is_forward]] += zL_tx
+        z_array[:, p2_indices[dir_is_forward], p2_indices[dir_is_forward]] += zL_rx
+
+        # For flipped lines, p1 is RX and p2 is TX.
+        z_array[:, p1_indices[dir_is_flipped], p1_indices[dir_is_flipped]] += zL_rx
+        z_array[:, p2_indices[dir_is_flipped], p2_indices[dir_is_flipped]] += zL_tx
+        
+        # Convert back to S-parameters.
         s_new = z2s(z_array, ntwk.z0)
 
-        # Create new network
+        # Create a new network with the updated S-parameters.
         return rf.Network(frequency=freq, s=s_new, z0=ntwk.z0)
 
     def add_ctle(self, ntwk: rf.Network, DC_gain: float, AC_gain: float, fp1: float, fp2: float, eps: float = 0) -> rf.Network:
