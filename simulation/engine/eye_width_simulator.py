@@ -232,10 +232,52 @@ class EyeWidthSimulator:
         self.params = TransientParams.from_config(config_dict)
         
         self.ntwk = self._load_and_cascade_networks()
-        self.ntwk, self.directions = self._assign_tx_rx_directions()
+        
+        # Assign Tx/Rx directions using the port flip utility
+        nlines = self.ntwk.s.shape[1] // 2
+        raw_directions = self.params.directions
+        
+        if raw_directions is None:
+            # Old implementation defaulted to all ports being non-flipped (directions=[1]*nlines).
+            # The port flip logic uses 0 for flip, so we use 1 (no flip) as the default.
+            directions_for_flip = [1] * nlines
+            self.directions = [1] * nlines
+        else:
+            # The provided directions use 0 for flip, which matches our new function.
+            directions_for_flip = raw_directions
+            self.directions = raw_directions
+        
+        self.ntwk = self._ntwk_port_flip(self.ntwk, directions_for_flip)
         
         # Store commonly used parameters as instance attributes
         self.num_lines = self.ntwk.s.shape[1] // 2
+
+    def _ntwk_port_flip(self, ntwk, directions):
+        """
+        Flips network ports based on a directions array.
+
+        A direction of 0 indicates that the corresponding port pair should be flipped.
+        For an 8-port network (4 lines), if directions[1] is 0, then ports 1 and 1 + 4 = 5
+        will be swapped.
+
+        Args:
+            ntwk (skrf.Network): The network whose ports are to be flipped.
+            directions (list or np.ndarray): A list where a 0 indicates a port flip.
+
+        Returns:
+            skrf.Network: A new network with the specified ports flipped.
+        """
+        port_flip_list = [i for i, direction in enumerate(directions) if direction == 0]
+        
+        port_num = ntwk.number_of_ports
+        port_index_list = list(range(port_num))
+
+        for port_to_flip in port_flip_list:
+            p1 = port_to_flip
+            p2 = port_to_flip + port_num // 2
+            port_index_list[p1], port_index_list[p2] = port_index_list[p2], port_index_list[p1]
+
+        return ntwk.subnetwork(port_index_list)
 
     # ===============================================
     # NETWORK COMPONENT METHODS (moved from standalone functions)
@@ -832,24 +874,6 @@ class EyeWidthSimulator:
             ntwk = self.add_inductance(ntwk_horiz, self.params.L_tx, self.params.L_rx)
             
         return ntwk
-
-    def _assign_tx_rx_directions(self):
-        nlines = self.ntwk.s.shape[1] // 2
-        directions = self.params.directions
-        
-        if directions is None:
-            directions = [1] * nlines
-        else:
-            directions = np.array(directions)
-        
-        mask = directions.astype(bool)
-        front_ports = np.arange(0, nlines)
-        back_ports = front_ports + nlines
-        curr_ports = np.dstack([front_ports, back_ports]).reshape(-1)
-        front_ports[mask], back_ports[mask] = back_ports[mask], front_ports[mask]
-        next_ports = np.dstack([front_ports, back_ports]).reshape(-1)
-        self.ntwk.renumber(curr_ports, next_ports)
-        return self.ntwk, directions
 
 # ===============================================
 # MODULE-LEVEL FUNCTIONS (PUBLIC INTERFACE)
