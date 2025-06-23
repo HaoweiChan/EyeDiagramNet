@@ -269,38 +269,38 @@ DDR_PARAMS = ParameterSet(
 )
 
 HBM2_PARAMS = ParameterSet(
-    R_tx=LinearParameter(low=8, high=20, numbers=5),
+    R_tx=LinearParameter(low=8, high=20, step=5),
     R_rx=DiscreteParameter(values=[1e9]),
     C_tx=LinearParameter(low=0.1, high=0.5, step=0.1, scaler=1e-12),
     C_rx=LinearParameter(low=0.1, high=0.5, step=0.1, scaler=1e-12),
     L_tx=LinearParameter(low=0., high=2., step=0.2, scaler=1e-9),
     L_rx=LinearParameter(low=0., high=2., step=0.2, scaler=1e-9),
-    pulse_amplitude=LinearParameter(low=0.35, high=0.45, step=0.05),
+    pulse_amplitude=LinearParameter(low=0.35, high=0.45, step=0.1),
     bits_per_sec=LinearParameter(low=10, high=12.8, numbers=8, scaler=1e9),
     vmask=DiscreteParameter(values=[0.05])
 )
 
 UCIE_PARAMS = ParameterSet(
-    R_tx=LinearParameter(low=20, high=40, numbers=5),
+    R_tx=LinearParameter(low=20, high=40, step=5),
     R_rx=DiscreteParameter(values=[1e9]),
     C_tx=LinearParameter(low=0.1, high=0.5, step=0.1, scaler=1e-12),
     C_rx=LinearParameter(low=0.1, high=0.5, step=0.1, scaler=1e-12),
     L_tx=LinearParameter(low=0., high=2., step=0.2, scaler=1e-9),
     L_rx=LinearParameter(low=0., high=2., step=0.2, scaler=1e-9),
-    pulse_amplitude=LinearParameter(low=0.35, high=0.45, step=0.05),
+    pulse_amplitude=LinearParameter(low=0.3, high=0.8, step=0.1),
     bits_per_sec=LinearParameter(low=10, high=12.8, numbers=8, scaler=1e9),
     vmask=DiscreteParameter(values=[0.05])
 )
 
 MIX_PARAMS = ParameterSet(
-    R_tx=LinearParameter(low=10, high=40, numbers=5),
+    R_tx=LinearParameter(low=5, high=40, step=5),
     R_rx=DiscreteParameter(values=[1e9]),
     C_tx=LinearParameter(low=0.1, high=0.5, step=0.1, scaler=1e-12),
     C_rx=LinearParameter(low=0.1, high=0.5, step=0.1, scaler=1e-12),
     L_tx=LinearParameter(low=0., high=2., step=0.2, scaler=1e-9),
     L_rx=LinearParameter(low=0., high=2., step=0.2, scaler=1e-9),
-    pulse_amplitude=LinearParameter(low=0.3, high=0.8, step=0.05),
-    bits_per_sec=LinearParameter(low=10, high=16, step=0.5, scaler=1e9),
+    pulse_amplitude=LinearParameter(low=0.3, high=0.8, step=0.1),
+    bits_per_sec=LinearParameter(low=10, high=32, step=2, scaler=1e9),
     vmask=LinearParameter(low=0.02, high=0.05, step=0.01)
 )
 
