@@ -490,6 +490,14 @@ def main():
                         comparison_data['sample_indices'].extend([sample_idx] * len(pickle_ew.flatten()))
                         
                         # Print sample comparison
+                        print("    Config:")
+                        config_dict = config if isinstance(config, dict) else config.to_dict()
+                        for k, v in config_dict.items():
+                            if isinstance(v, float):
+                                print(f"      {k}: {v:.6f}")
+                            else:
+                                print(f"      {k}: {v}")
+                        print(f"    Directions: {directions}")
                         print(f"    Pickle EW: {pickle_ew}")
                         print(f"    Simulated EW:  {simulated_ew}")
                         print(f"    Difference: {diff}")
