@@ -493,16 +493,13 @@ def main():
                         print("    Config:")
                         config_dict = config if isinstance(config, dict) else config.to_dict()
                         for k, v in config_dict.items():
-                            if isinstance(v, float):
-                                print(f"      {k}: {v:.4e}")
-                            else:
-                                print(f"      {k}: {v}")
+                            print(f"      {k}: {v:.1e}")
                         print(f"    Directions: {directions}")
                         print(f"    Pickle EW: {pickle_ew}")
                         print(f"    Simulated EW:  {simulated_ew}")
                         print(f"    Difference: {diff}")
-                        print(f"    Max abs diff: {np.abs(diff).max():.4e}")
-                        print(f"    Max rel error: {rel_error.max():.4e}")
+                        print(f"    Max abs diff: {np.abs(diff).max():.1f}")
+                        print(f"    Max rel error: {rel_error.max():.1f}")
                         
                     except Exception as e:
                         print(f"    Error in simulation: {e}")
