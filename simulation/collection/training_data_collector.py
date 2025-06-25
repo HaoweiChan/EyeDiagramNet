@@ -30,12 +30,12 @@ from pathlib import Path
 from datetime import datetime
 from collections import defaultdict
 
+from common.signal_utils import read_snp
 from simulation.parameters.bound_param import PARAM_SETS_MAP
 from simulation.engine.eye_width_simulator import snp_eyewidth_simulation
 from simulation.io.config_utils import load_config, resolve_trace_pattern, resolve_vertical_dirs, build_argparser
 from simulation.io.snp_utils import parse_snps, generate_vertical_snp_pairs
 from simulation.parameters.param_utils import parse_param_types, modify_params_for_inductance
-from common.signal_utils import read_snp
 
 # Global profiling state
 _profiling_data = threading.local()
@@ -261,6 +261,21 @@ def get_snp_from_cache(snp_path, cache_info):
 
     return ntwk
 
+def _get_valid_block_sizes(n_lines):
+    """Finds divisors of n_lines that result in an even number of blocks."""
+    divisors = []
+    for i in range(1, int(n_lines**0.5) + 1):
+        if n_lines % i == 0:
+            if (n_lines // i) % 2 == 0:
+                divisors.append(i)
+            if i * i != n_lines:
+                j = n_lines // i
+                if (n_lines // j) % 2 == 0:
+                    divisors.append(j)
+    if not divisors:  # Fallback for odd n_lines
+        divisors.append(1)
+    return divisors
+
 def collect_snp_batch_simulation_data(task_batch, combined_params, pickle_dir, 
                                     param_type_names, enable_direction=True, debug=False):
     """
@@ -326,7 +341,23 @@ def collect_snp_batch_simulation_data(task_batch, combined_params, pickle_dir,
             try:
                 # Set directions
                 if enable_direction:
-                    sim_directions = np.random.randint(0, 2, size=n_lines)
+                    # Generate directions in a block-wise pattern
+                    valid_block_sizes = _get_valid_block_sizes(n_lines)
+                    block_size = np.random.choice(valid_block_sizes)
+                    n_blocks = n_lines // block_size
+                    
+                    # Create an equal number of 0 and 1 blocks and shuffle them
+                    blocks = [0] * (n_blocks // 2) + [1] * (n_blocks // 2)
+                    if n_blocks % 2 != 0:
+                        blocks.append(np.random.randint(0,2))
+
+                    np.random.shuffle(blocks)
+                    
+                    # Repeat the blocks to create the final directions array
+                    sim_directions = np.repeat(blocks, block_size)
+                    # Truncate if n_blocks was odd and we added an extra
+                    if len(sim_directions) > n_lines:
+                        sim_directions = sim_directions[:n_lines]
                 else:
                     sim_directions = np.ones(n_lines, dtype=int)
                 
