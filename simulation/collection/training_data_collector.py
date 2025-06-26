@@ -3,13 +3,18 @@
 # -----------------------------------------------------------------------------
 # Limit BLAS / OpenMP thread usage BEFORE NumPy/SciPy are imported.
 # This must be done at import time to ensure MKL / OpenBLAS obey the limits.
+# Can be overridden by config or environment variables.
 # -----------------------------------------------------------------------------
 import os
-os.environ.setdefault("OMP_NUM_THREADS", "1")
-os.environ.setdefault("MKL_NUM_THREADS", "1")
-os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
-os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "1")
-os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+import platform
+
+# Allow config to override BLAS thread count
+default_blas_threads = os.environ.get("BLAS_THREADS", "2")
+os.environ.setdefault("OMP_NUM_THREADS", default_blas_threads)
+os.environ.setdefault("MKL_NUM_THREADS", default_blas_threads)
+os.environ.setdefault("OPENBLAS_NUM_THREADS", default_blas_threads)
+os.environ.setdefault("VECLIB_MAXIMUM_THREADS", default_blas_threads)
+os.environ.setdefault("NUMEXPR_NUM_THREADS", default_blas_threads)
 
 # After the limits are in place we can safely import heavy numerical libs.
 
@@ -29,6 +34,7 @@ from tqdm import tqdm
 from pathlib import Path
 from datetime import datetime
 from collections import defaultdict
+from queue import Queue, Empty
 
 from common.signal_utils import read_snp
 from simulation.parameters.bound_param import PARAM_SETS_MAP
@@ -41,6 +47,8 @@ from simulation.parameters.param_utils import parse_param_types, modify_params_f
 _profiling_data = threading.local()
 # Global monitoring control
 _monitor_proc = None
+# Global progress queue for inter-process communication
+_progress_queue = None
 
 def get_worker_id():
     """Get unique worker identifier for profiling"""
@@ -151,7 +159,7 @@ def stop_background_monitoring():
 # Global shared memory registry for cleanup
 _shared_memory_blocks = []
 
-def get_optimal_workers():
+def get_optimal_workers(config_blas_threads=2):
     """Calculate optimal number of workers based on system resources"""
     # Get system info
     cpu_count = psutil.cpu_count()
@@ -159,18 +167,86 @@ def get_optimal_workers():
     
     print(f"System: {cpu_count} CPUs, {memory_gb:.1f}GB RAM")
     
-    # For large S96P files (~66MB each), be conservative
-    # Each worker can use 500MB-1GB during processing
-    memory_based_workers = max(1, int(memory_gb / 2))  # 2GB per worker
-    cpu_based_workers = min(8, cpu_count)  # Cap at 8 for I/O limits
+    # Calculate workers based on memory and CPU
+    # Each worker uses ~1-2GB during processing
+    memory_based_workers = max(1, int(memory_gb / 1.5))
     
+    # For CPU-based calculation, consider BLAS threads
+    # If using 2-4 BLAS threads per worker, reduce process count accordingly
+    cpu_based_workers = max(1, cpu_count // max(1, config_blas_threads))
+    
+    # No artificial cap - use all available resources
     optimal_workers = min(memory_based_workers, cpu_based_workers)
-    print(f"Optimal workers determined: {optimal_workers} (memory-based: {memory_based_workers}, cpu-based: {cpu_based_workers})")
+    print(f"Optimal workers determined: {optimal_workers} (memory-based: {memory_based_workers}, cpu-based: {cpu_based_workers}, BLAS threads: {config_blas_threads})")
     
     return optimal_workers
 
+class BufferedPickleWriter:
+    """Buffered writer for pickle files to reduce I/O overhead"""
+    
+    def __init__(self, pickle_file, batch_size=10):
+        self.pickle_file = Path(pickle_file)
+        self.batch_size = batch_size
+        self.buffer = []
+        self.data = self._load_existing_data()
+    
+    def _load_existing_data(self):
+        """Load existing pickle data"""
+        if self.pickle_file.exists():
+            try:
+                with open(self.pickle_file, 'rb') as f:
+                    return pickle.load(f)
+            except:
+                pass
+        return {
+            'configs': [],
+            'line_ews': [], 
+            'snp_txs': [],
+            'snp_rxs': [],
+            'directions': [],
+            'meta': {}
+        }
+    
+    def add_result(self, result):
+        """Add a simulation result to the buffer"""
+        self.buffer.append(result)
+        if len(self.buffer) >= self.batch_size:
+            self.flush()
+    
+    def flush(self):
+        """Write buffered results to disk"""
+        if not self.buffer:
+            return
+        
+        # Add all buffered results to data
+        for result in self.buffer:
+            self.data['configs'].append(result['config_values'])
+            self.data['line_ews'].append(result['line_ews'])
+            self.data['snp_txs'].append(result['snp_tx'])
+            self.data['snp_rxs'].append(result['snp_rx'])
+            self.data['directions'].append(result['directions'])
+        
+        # Update meta if needed
+        if self.buffer and not self.data['meta'].get('config_keys'):
+            first_result = self.buffer[0]
+            self.data['meta']['config_keys'] = first_result['config_keys']
+            self.data['meta']['snp_horiz'] = first_result.get('snp_horiz', '')
+            self.data['meta']['n_ports'] = first_result.get('n_ports', 0)
+            self.data['meta']['param_types'] = first_result.get('param_types', [])
+        
+        # Write to disk
+        self.pickle_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.pickle_file, 'wb') as f:
+            pickle.dump(self.data, f)
+        
+        self.buffer.clear()
+    
+    def close(self):
+        """Flush remaining data and close"""
+        self.flush()
+
 class SNPCache:
-    """Shared memory cache for SNP files to avoid redundant loading across processes."""
+    """Shared memory cache for vertical SNP files only"""
     
     def __init__(self):
         self.cache = {}  # {snp_path: metadata}
@@ -220,13 +296,14 @@ class SNPCache:
                 pass
         self.memory_blocks.clear()
 
-def init_worker_process(vertical_cache_info):
-    """Initialize worker process with shared memory access and signal handling."""
+def init_worker_process(vertical_cache_info, progress_queue):
+    """Initialize worker process with shared memory access and progress reporting."""
     signal.signal(signal.SIGINT, signal.SIG_IGN)
 
-    # Store cache info globally in worker
-    global _vertical_cache_info
+    # Store cache info and progress queue globally in worker
+    global _vertical_cache_info, _progress_queue
     _vertical_cache_info = vertical_cache_info
+    _progress_queue = progress_queue
 
 def get_snp_from_cache(snp_path, cache_info):
     """Get SNP data from a shared memory cache, or read from disk as a fallback."""
@@ -246,16 +323,12 @@ def get_snp_from_cache(snp_path, cache_info):
                          buffer=f_shm.buf)
 
     # Construct Network object without duplicating the underlying data.
-    # The S‑parameter and frequency arrays now *share* the same shared‑memory
-    # buffers across all worker processes, eliminating the per‑process copy
-    # that was previously blowing up RAM usage.
     ntwk = rf.Network()
     ntwk.s = s_array
     ntwk.f = f_array
     ntwk.z0 = np.asarray(shm_info['z0'])
 
     # Keep shared‑memory segments alive for the lifetime of `ntwk`
-    # so they are not freed prematurely.
     ntwk._s_shm = s_shm
     ntwk._f_shm = f_shm
 
@@ -276,65 +349,62 @@ def _get_valid_block_sizes(n_lines):
         divisors.append(1)
     return divisors
 
-def collect_snp_batch_simulation_data(task_batch, combined_params, pickle_dir, 
-                                    param_type_names, enable_direction=True, debug=False):
+def report_progress(completed_samples):
+    """Report progress to main process via queue"""
+    global _progress_queue
+    if _progress_queue:
+        try:
+            _progress_queue.put(('progress', completed_samples), timeout=0.1)
+        except:
+            pass  # Queue full or other error, skip
+
+def collect_trace_simulation_data(trace_snp_file, vertical_pairs_with_counts, combined_params, 
+                                pickle_dir, param_type_names, enable_direction=True, 
+                                batch_size=10, debug=False):
     """
-    Process a batch of simulations for the same horizontal SNP file.
-    This reduces I/O overhead by loading the horizontal file once and writing results once.
+    Collect eye width simulation data for a single trace SNP with multiple vertical pairs.
+    This is the new coarse-grained task that processes all samples for one trace file.
     
     Args:
-        task_batch: List of (trace_snp_file, vertical_snp_pair, sample_count) tuples for same trace file
+        trace_snp_file: Path to horizontal trace SNP file
+        vertical_pairs_with_counts: List of (vertical_snp_pair, sample_count) tuples
         combined_params: ParameterSet containing all required parameters  
         pickle_dir: Directory to save pickle files
         param_type_names: List of parameter type names
         enable_direction: Whether to use random directions (True) or all ones (False)
+        batch_size: Number of simulations to buffer before writing to disk
         debug: Debug mode flag
     """
-    if not task_batch:
+    if not vertical_pairs_with_counts:
         return
-        
-    # All tasks in batch share the same horizontal trace SNP
-    trace_snp_file = task_batch[0][0]
     
-    # Load horizontal SNP directly from disk (each process handles one horizontal SNP)
+    # Load horizontal SNP once per trace file
     trace_ntwk = read_snp(trace_snp_file)
-
     n_ports = trace_ntwk.nports
     n_lines = n_ports // 2
     if n_lines == 0:
         raise ValueError(f"Invalid n_ports={n_ports}, n_lines would be 0")
     
-    trace_snp_path = Path(trace_snp_file) # Still need path for pickle filename
+    trace_snp_path = Path(trace_snp_file)
     pickle_file = Path(pickle_dir) / f"{trace_snp_path.stem}.pkl"
     
+    # Initialize buffered writer
+    writer = BufferedPickleWriter(pickle_file, batch_size)
+    
     if debug:
-        print(f"Processing batch of {len(task_batch)} tasks for {trace_snp_path.name}")
-        print(f"Detected {n_ports} ports ({n_lines} lines) from horizontal SNP loaded from disk")
+        print(f"Processing {len(vertical_pairs_with_counts)} vertical pairs for {trace_snp_path.name}")
+        print(f"Detected {n_ports} ports ({n_lines} lines)")
     
-    # Load existing pickle data once
-    if pickle_file.exists():
-        with open(pickle_file, 'rb') as f:
-            data = pickle.load(f)
-    else:
-        data = {
-            'configs': [],
-            'line_ews': [], 
-            'snp_txs': [],
-            'snp_rxs': [],
-            'directions': [],
-            'meta': {}
-        }
+    total_completed = 0
     
-    # Process all tasks in batch
-    batch_results = []
-    
-    for _, vertical_snp_pair, sample_count in task_batch:
+    # Process all vertical pairs and their samples
+    for vertical_snp_pair, sample_count in vertical_pairs_with_counts:
         # Load vertical SNPs from cache
         snp_tx_path, snp_rx_path = vertical_snp_pair
         tx_ntwk = get_snp_from_cache(snp_tx_path, _vertical_cache_info)
         rx_ntwk = get_snp_from_cache(snp_rx_path, _vertical_cache_info)
         
-        for _ in range(sample_count):
+        for sample_idx in range(sample_count):
             # Sample parameters
             combined_config = combined_params.sample()
             
@@ -377,19 +447,30 @@ def collect_snp_batch_simulation_data(task_batch, combined_params, pickle_dir,
                 line_ew = np.array(line_ew)
                 line_ew[line_ew >= 99.9] = -0.1
                 
-                # Store result
+                # Create result
                 config_values, config_keys = combined_config.to_list(return_keys=True)
-                batch_results.append({
+                result = {
                     'config_values': config_values,
                     'config_keys': config_keys,
                     'line_ews': line_ew.tolist(),
                     'snp_tx': snp_tx_path.as_posix(),
                     'snp_rx': snp_rx_path.as_posix(),
-                    'directions': sim_directions.tolist()
-                })
+                    'directions': sim_directions.tolist(),
+                    'snp_horiz': str(trace_snp_path),
+                    'n_ports': n_ports,
+                    'param_types': param_type_names
+                }
+                
+                # Add to buffered writer
+                writer.add_result(result)
+                total_completed += 1
+                
+                # Report progress periodically
+                if total_completed % 5 == 0:
+                    report_progress(1)
                 
                 if debug:
-                    print(f"  Completed simulation: EW={line_ew}, Dir={sim_directions}")
+                    print(f"  Completed simulation {sample_idx+1}/{sample_count}: EW={line_ew}")
                     
             except Exception as e:
                 print(f"Error in simulation for {trace_snp_path.name}: {e}")
@@ -398,40 +479,14 @@ def collect_snp_batch_simulation_data(task_batch, combined_params, pickle_dir,
                     traceback.print_exc()
                 continue
     
-    # Append all batch results to data
-    for result in batch_results:
-        data['configs'].append(result['config_values'])
-        data['line_ews'].append(result['line_ews'])
-        data['snp_txs'].append(result['snp_tx'])
-        data['snp_rxs'].append(result['snp_rx'])
-        data['directions'].append(result['directions'])
+    # Ensure all data is written
+    writer.close()
     
-    # Update meta once per batch
-    if batch_results and not data['meta'].get('config_keys'):
-        data['meta']['snp_horiz'] = str(trace_snp_path)
-        data['meta']['config_keys'] = batch_results[0]['config_keys']
-        data['meta']['n_ports'] = n_ports
-        data['meta']['param_types'] = param_type_names
-    
-    # Write updated data once per batch
-    pickle_file.parent.mkdir(parents=True, exist_ok=True)
-    with open(pickle_file, 'wb') as f:
-        pickle.dump(data, f)
+    # Final progress report
+    report_progress(total_completed - (total_completed % 5))
     
     if debug:
-        print(f"Batch completed: {len(batch_results)} simulations saved to {pickle_file}")
-
-def collect_snp_simulation_data(trace_snp_file, vertical_snp_pair, params_set, 
-                               pickle_dir, param_type_names, enable_direction=True, directions=None, debug=False):
-    """
-    Collect eye width simulation data for a single trace SNP with vertical SNP pair.
-    This is kept for backward compatibility and single-task processing.
-    """
-    # Use batch function with single task
-    task_batch = [(trace_snp_file, vertical_snp_pair, 1)]
-    collect_snp_batch_simulation_data(
-        task_batch, params_set, pickle_dir, param_type_names, enable_direction, debug
-    )
+        print(f"Completed {total_completed} simulations for {trace_snp_path.name}")
 
 def cleanup_shared_memory():
     """Clean up all shared memory blocks"""
@@ -443,70 +498,127 @@ def cleanup_shared_memory():
             pass
     _shared_memory_blocks.clear()
 
-def run_with_executor(batch_list, combined_params, trace_specific_output_dir, param_types, 
-                     enable_direction, num_workers, vertical_cache_info=None):
+def progress_monitor(progress_queue, total_expected, interval=5):
+    """Monitor progress from worker processes"""
+    completed = 0
+    last_report = time.time()
+    start_time = time.time()
+    
+    while completed < total_expected:
+        try:
+            msg_type, value = progress_queue.get(timeout=interval)
+            if msg_type == 'progress':
+                completed += value
+                
+                now = time.time()
+                if now - last_report >= interval:
+                    elapsed = now - start_time
+                    rate = completed / elapsed if elapsed > 0 else 0
+                    eta = (total_expected - completed) / rate if rate > 0 else 0
+                    print(f"Progress: {completed}/{total_expected} ({100*completed/total_expected:.1f}%) "
+                          f"Rate: {rate:.1f}/sec ETA: {eta:.0f}s", flush=True)
+                    last_report = now
+                    
+        except Empty:
+            # Timeout - print current status
+            now = time.time()
+            elapsed = now - start_time
+            rate = completed / elapsed if elapsed > 0 else 0
+            print(f"Progress: {completed}/{total_expected} ({100*completed/total_expected:.1f}%) "
+                  f"Rate: {rate:.1f}/sec", flush=True)
+
+def get_multiprocessing_start_method():
+    """Get appropriate multiprocessing start method for the platform"""
+    system = platform.system()
+    if system == "Darwin":  # macOS
+        return "spawn"  # forkserver not available on macOS
+    elif system == "Linux":
+        return "forkserver"  # Preferred on Linux
+    else:
+        return "spawn"  # Safe default
+
+def run_with_executor(trace_tasks, combined_params, trace_specific_output_dir, param_types, 
+                     enable_direction, num_workers, batch_size, vertical_cache_info=None):
     """
-    Run simulations using ProcessPoolExecutor
+    Run simulations using ProcessPoolExecutor with optimized task distribution
     
     Args:
-        batch_list: List of task batches
+        trace_tasks: List of (trace_snp_file, vertical_pairs_with_counts) tuples
         combined_params: Parameter set
         trace_specific_output_dir: Output directory
         param_types: Parameter types
         enable_direction: Direction flag
         num_workers: Number of workers
+        batch_size: Batch size for buffered writing
         vertical_cache_info: Shared memory cache info for vertical SNPs
     """
     
     print(f"Using ProcessPoolExecutor with {num_workers} processes...")
-    multiprocessing.set_start_method("forkserver", force=True)
+    
+    # Set appropriate start method
+    start_method = get_multiprocessing_start_method()
+    print(f"Using multiprocessing start method: {start_method}")
+    try:
+        multiprocessing.set_start_method(start_method, force=True)
+    except RuntimeError:
+        # Already set, continue
+        pass
+    
+    # Create progress queue
+    progress_queue = multiprocessing.Queue()
+    
+    # Calculate total expected simulations for progress tracking
+    total_expected = sum(
+        sum(count for _, count in vertical_pairs_with_counts)
+        for _, vertical_pairs_with_counts in trace_tasks
+    )
     
     executor_start_time = time.time()
+    
+    # Start progress monitor in separate thread
+    progress_thread = threading.Thread(
+        target=progress_monitor, 
+        args=(progress_queue, total_expected, 5),
+        daemon=True
+    )
+    progress_thread.start()
     
     with concurrent.futures.ProcessPoolExecutor(
         max_workers=num_workers, 
         initializer=init_worker_process,
-        initargs=(vertical_cache_info or {},)
+        initargs=(vertical_cache_info or {}, progress_queue)
     ) as executor:
         futures = [
             executor.submit(
-                collect_snp_batch_simulation_data,
-                batch_tasks, combined_params, trace_specific_output_dir, 
-                param_types, enable_direction, False
+                collect_trace_simulation_data,
+                trace_snp_file, vertical_pairs_with_counts, combined_params, 
+                trace_specific_output_dir, param_types, enable_direction, batch_size, False
             )
-            for batch_tasks in batch_list
+            for trace_snp_file, vertical_pairs_with_counts in trace_tasks
         ]
         
-        print(f"Submitted {len(futures)} batches to ProcessPoolExecutor")
+        print(f"Submitted {len(futures)} trace files to ProcessPoolExecutor")
         
-        # =================================================================
-        # NEW: Print full tracebacks for any failed batch immediately
-        failed_batches = []
-        completed_batches = 0
+        # Process results
+        failed_tasks = []
+        completed_tasks = 0
 
-        for future in tqdm(
-            concurrent.futures.as_completed(futures),
-            total=len(futures),
-            desc="Processing batches (processes)"
-        ):
+        for future in concurrent.futures.as_completed(futures):
             exc = future.exception()
             if exc is not None:
-                print("\n--- Batch FAILED ------------------------------------")
+                print("\n--- Task FAILED ------------------------------------")
                 print("Exception:")
                 traceback.print_exception(type(exc), exc, exc.__traceback__)
-                failed_batches.append(exc)
+                failed_tasks.append(exc)
             else:
-                completed_batches += 1
-                if completed_batches % 10 == 0 or completed_batches <= 5:
-                    elapsed = time.time() - executor_start_time
-                    rate = completed_batches / elapsed
-                    print(f"Completed {completed_batches}/{len(futures)} batches, rate: {rate:.2f} batches/sec")
+                completed_tasks += 1
 
         total_time = time.time() - executor_start_time
-        print(f"ProcessPoolExecutor completed in {total_time:.2f}s, avg rate: {total_time/len(futures):.0f} sec/batch")
+        print(f"ProcessPoolExecutor completed in {total_time:.2f}s")
+        print(f"Completed {completed_tasks}/{len(futures)} trace files")
 
-        if failed_batches:
-            print(f"\nWarning: {len(failed_batches)} batches failed in total.")
+        if failed_tasks:
+            print(f"\nWarning: {len(failed_tasks)} trace files failed.")
 
 def main():
     """Main function for parallel data collection"""
@@ -529,6 +641,13 @@ def main():
         stop_background_monitoring()
         return
     
+    # Apply BLAS thread configuration from config
+    runner_config = config.get('runner', {})
+    blas_threads = runner_config.get('blas_threads', 2)
+    if blas_threads != int(os.environ.get("OMP_NUM_THREADS", "2")):
+        print(f"Note: BLAS threads set to {os.environ.get('OMP_NUM_THREADS')} in environment, "
+              f"config specifies {blas_threads}. Environment takes precedence.")
+    
     # Resolve dataset paths
     horizontal_dataset = config.get('dataset', {}).get('horizontal_dataset', {})
     vertical_dataset = config.get('dataset', {}).get('vertical_dataset')
@@ -550,8 +669,11 @@ def main():
     
     debug = args.debug if args.debug else config.get('debug', False)
     
+    # Get batch size from config
+    batch_size = runner_config.get('batch_size', 10)
+    
     # Determine number of workers: Command-line -> Config file -> Optimal calculation
-    config_workers = config.get('runner', {}).get('max_workers')
+    config_workers = runner_config.get('max_workers')
     if args.max_workers:
         max_workers = args.max_workers
         print(f"Using max_workers from command line: {max_workers}")
@@ -560,7 +682,7 @@ def main():
         print(f"Using max_workers from config file: {max_workers}")
     else:
         print("max_workers not specified, calculating optimal number...")
-        max_workers = get_optimal_workers()
+        max_workers = get_optimal_workers(blas_threads)
     
     print(f"Using configuration:")
     print(f"  Trace pattern: {trace_pattern_key} -> {trace_pattern}")
@@ -572,6 +694,8 @@ def main():
     print(f"  Enable inductance: {enable_inductance}")
     print(f"  Debug mode: {debug}")
     print(f"  Max workers: {max_workers}")
+    print(f"  Batch size: {batch_size}")
+    print(f"  BLAS threads: {blas_threads}")
     
     # Create base output directory and trace-specific subdirectory
     base_output_dir = output_dir
@@ -614,8 +738,8 @@ def main():
         except Exception as e:
             print(f"Warning: Could not save config file: {e}")
     
-    # Build task batches grouped by trace SNP file
-    task_batches = defaultdict(list)  # {trace_snp_file: [(trace_snp, vertical_pair, samples_needed)]}
+    # Build optimized task structure: one task per trace file
+    trace_tasks = []  # [(trace_snp_file, [(vertical_pair, samples_needed), ...])]
     
     for trace_snp, vertical_pair in zip(trace_snps, vertical_pairs):
         pickle_file = trace_specific_output_dir / f"{Path(trace_snp).stem}.pkl"
@@ -631,35 +755,32 @@ def main():
         
         if current_samples < max_samples:
             samples_needed = max_samples - current_samples
-            task_batches[trace_snp].append((trace_snp, vertical_pair, samples_needed))
+            trace_tasks.append((trace_snp, [(vertical_pair, samples_needed)]))
     
-    # Convert to list of batches
-    batch_list = [batch_tasks for batch_tasks in task_batches.values() if batch_tasks]
-    total_tasks = sum(sum(samples for _, _, samples in batch) for batch in batch_list)
+    total_simulations = sum(
+        sum(count for _, count in vertical_pairs_with_counts)
+        for _, vertical_pairs_with_counts in trace_tasks
+    )
     
-    print(f"Created {len(batch_list)} batches for {total_tasks} total simulations")
+    print(f"Created {len(trace_tasks)} trace file tasks for {total_simulations} total simulations")
     
-    if len(batch_list) == 0:
+    if len(trace_tasks) == 0:
         print("All files already have sufficient samples")
         stop_background_monitoring()
         return
     
     # Initialize shared memory cache for vertical SNPs only
-    # Optimization: Horizontal SNPs don't need shared memory since each batch processes
-    # only one horizontal SNP file. Only vertical SNPs are truly shared across processes.
     vertical_cache = None
     vertical_cache_info = {}
     
     if not debug:
         print("Setting up shared memory cache for vertical SNP files...")
-        print("Note: Horizontal SNPs are loaded per-process to save memory")
         try:
-            # Cache all unique vertical SNPs that will be used across processes.
-            # This includes the auto-generated "thru" SNP.
+            # Cache all unique vertical SNPs that will be used across processes
             vertical_cache = SNPCache()
             unique_vertical_snps = set()
-            for batch_tasks in batch_list:
-                for _, vertical_pair, _ in batch_tasks:
+            for _, vertical_pairs_with_counts in trace_tasks:
+                for vertical_pair, _ in vertical_pairs_with_counts:
                     unique_vertical_snps.update(vertical_pair)
             
             if unique_vertical_snps:
@@ -680,20 +801,18 @@ def main():
     # Run simulations
     try:
         if not debug:
-            run_with_executor(batch_list, combined_params, trace_specific_output_dir, param_types, 
-                             enable_direction, max_workers, vertical_cache_info)
+            run_with_executor(trace_tasks, combined_params, trace_specific_output_dir, param_types, 
+                             enable_direction, max_workers, batch_size, vertical_cache_info)
         else:
             # Debug mode - run sequentially
-            # In debug mode, we are in the main process, so worker globals are not set.
-            # We need to manually use the cache info.
             global _vertical_cache_info
             _vertical_cache_info = vertical_cache_info
 
-            for i, batch_tasks in enumerate(tqdm(batch_list, desc="Debug processing batches")):
-                print(f"\n--- Batch {i+1}/{len(batch_list)} ---")
-                collect_snp_batch_simulation_data(
-                    batch_tasks, combined_params, trace_specific_output_dir,
-                    param_types, enable_direction, True
+            for i, (trace_snp_file, vertical_pairs_with_counts) in enumerate(trace_tasks):
+                print(f"\n--- Debug Task {i+1}/{len(trace_tasks)} ---")
+                collect_trace_simulation_data(
+                    trace_snp_file, vertical_pairs_with_counts, combined_params, 
+                    trace_specific_output_dir, param_types, enable_direction, batch_size, True
                 )
         
         print(f"Data collection completed. Results saved to: {trace_specific_output_dir}")

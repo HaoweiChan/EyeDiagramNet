@@ -31,4 +31,7 @@ boundary:
 
 # Runner configuration
 runner:
-  max_workers: 8
+  max_workers: 16        # Increased from 8 to utilize more CPU cores
+  batch_size: 20         # Simulations per pickle write for better I/O efficiency
+  blas_threads: 2        # BLAS threads per worker (1-4 recommended)
+  progress_interval: 5   # Progress reporting interval in seconds
