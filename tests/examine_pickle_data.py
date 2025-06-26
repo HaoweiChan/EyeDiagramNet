@@ -494,6 +494,9 @@ def main():
                         config_dict = config if isinstance(config, dict) else config.to_dict()
                         for k, v in config_dict.items():
                             print(f"      {k}: {v:.1e}")
+                        print(f"    SNP horiz: {snp_horiz}")
+                        print(f"    SNP TX: {snp_tx}")
+                        print(f"    SNP RX: {snp_rx}")
                         print(f"    Directions: {directions}")
                         print(f"    Pickle EW: {pickle_ew}")
                         print(f"    Simulated EW:  {simulated_ew}")

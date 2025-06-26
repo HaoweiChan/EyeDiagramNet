@@ -578,7 +578,7 @@ def run_with_executor(trace_tasks, combined_params, trace_specific_output_dir, p
     # Start progress monitor in separate thread
     progress_thread = threading.Thread(
         target=progress_monitor, 
-        args=(progress_queue, total_expected, 5),
+        args=(progress_queue, total_expected, 300),
         daemon=True
     )
     progress_thread.start()
