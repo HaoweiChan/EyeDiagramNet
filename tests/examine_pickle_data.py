@@ -30,7 +30,7 @@ except ImportError:
 
 # Try to import simulation functions for comparison
 try:
-    from simulation.engine.sparam_to_ew import snp_eyewidth_simulation
+    from simulation.engine.sparam_to_ew import snp_eyewidth_simulation as legacy_snp_eyewidth_simulation
     VALIDATION_AVAILABLE = True
 except ImportError as e:
     print(f"Warning: Could not import validation modules: {e}")
@@ -442,7 +442,7 @@ def main():
                         config = reconstruct_config(data, sample_idx)
                         
                         # Run simulation
-                        result = snp_eyewidth_simulation(
+                        result = legacy_snp_eyewidth_simulation(
                             config,
                             (snp_horiz, snp_tx, snp_rx),
                             directions,
@@ -497,7 +497,7 @@ def main():
                         print(f"    SNP horiz: {snp_horiz}")
                         print(f"    SNP TX: {snp_tx}")
                         print(f"    SNP RX: {snp_rx}")
-                        print(f"    Directions: {directions}")
+                        print(f"    Directions: {', '.join(map(str, directions.tolist())) if directions is not None else 'None'}")
                         print(f"    Pickle EW: {pickle_ew}")
                         print(f"    Simulated EW:  {simulated_ew}")
                         print(f"    Difference: {diff}")

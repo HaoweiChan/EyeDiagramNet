@@ -80,7 +80,9 @@ def main():
     if LEGACY_AVAILABLE:
         print("\n1. Running legacy `snp_eyewidth_simulation`...")
         try:
-            ew_legacy = legacy_snp_eyewidth_simulation(config)
+            # The legacy function expects snp_files and directions passed as separate arguments.
+            snp_files = (config.snp_horiz, config.snp_tx, config.snp_rx)
+            ew_legacy = legacy_snp_eyewidth_simulation(config, snp_files, config.directions)
             results['legacy'] = np.array(ew_legacy)
             print(f"  Result: {results['legacy']}")
         except Exception as e:
