@@ -42,9 +42,9 @@ def main():
         return
 
     # Define paths to S-parameter files for the test
-    snp_horiz = os.path.join(data_dir, "tlines4_seed0.s8p")
-    snp_tx = os.path.join(data_dir, "vertical", "tlines4_seed1.s8p")
-    snp_rx = os.path.join(data_dir, "vertical", "tlines4_seed2.s8p")
+    snp_horiz = "/proj/siaiadm/AI_training_data/D2D/UCIe_Trace/pattern2/cowos_9mi/snp/UCIe_pattern2_cowos_9mi-1.s96p"
+    snp_tx    = "/proj/siaiadm/ew_predictor/data/add_ind/pattern2_cowos_9mi/auto_thru_96port.s96p"
+    snp_rx    = "/proj/siaiadm/ew_predictor/data/add_ind/pattern2_cowos_9mi/auto_thru_96port.s96p"
 
     # Verify that all required S-parameter files exist before proceeding
     for f_path in [snp_horiz, snp_tx, snp_rx]:
@@ -67,7 +67,16 @@ def main():
         "snp_horiz": snp_horiz,
         "snp_tx": snp_tx,
         "snp_rx": snp_rx,
-        "directions": [1, 0, 1, 0]  # Example for 4 lines
+        "directions": [
+            0, 0, 0, 0, 0, 0,
+            1, 1, 1, 1, 1, 1,
+            1, 1, 1, 1, 1, 1,
+            1, 1, 1, 1, 1, 1,
+            0, 0, 0, 0, 0, 0,
+            1, 1, 1, 1, 1, 1,
+            0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0
+        ]
     }
 
     # The SampleResult class is used to hold the configuration
