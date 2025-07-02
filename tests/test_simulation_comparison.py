@@ -12,12 +12,12 @@ except ImportError:
     LEGACY_AVAILABLE = False
     print("Info: Could not import `snp_eyewidth_simulation` from `simulation.engine.sparam_to_ew`. This source will be skipped.")
 
-# Source 2: The current EyeWidthSimulator class and its wrapper function.
+# Source 2: The current EyeWidthSimulator class.
 try:
-    from simulation.engine.eye_width_simulator import EyeWidthSimulator, snp_eyewidth_simulation as new_snp_eyewidth_simulation
+    from simulation.engine.eye_width_simulator import EyeWidthSimulator
     from simulation.parameters.bound_param import SampleResult
     NEW_SIMULATOR_AVAILABLE = True
-    print("Successfully imported `EyeWidthSimulator` and new `snp_eyewidth_simulation`.")
+    print("Successfully imported `EyeWidthSimulator`.")
 except ImportError as e:
     NEW_SIMULATOR_AVAILABLE = False
     print(f"Error: Could not import current simulation modules: {e}")
@@ -91,7 +91,7 @@ def main():
         try:
             # The legacy function expects snp_files and directions passed as separate arguments.
             snp_files = (config.snp_horiz, config.snp_tx, config.snp_rx)
-            ew_legacy = legacy_snp_eyewidth_simulation(config, snp_files, config.directions)
+            ew_legacy, _ = legacy_snp_eyewidth_simulation(config, snp_files, config.directions, device="cpu")
             results['legacy'] = np.array(ew_legacy)
             print(f"  Result: {results['legacy']}")
         except Exception as e:
@@ -110,32 +110,10 @@ def main():
         print(f"  Error running new `EyeWidthSimulator` class: {e}")
         traceback.print_exc()
         results['new_class'] = None
-    
-    # Run with the wrapper function from the new module
-    print("\n3. Running new `snp_eyewidth_simulation` wrapper function...")
-    try:
-        ew_new_wrapper = new_snp_eyewidth_simulation(config)
-        results['new_wrapper'] = np.array(ew_new_wrapper)
-        print(f"  Result: {results['new_wrapper']}")
-    except Exception as e:
-        print(f"  Error running new `snp_eyewidth_simulation` wrapper: {e}")
-        traceback.print_exc()
-        results['new_wrapper'] = None
 
     # --- Compare Results ---
     print("\n\n--- COMPARISON SUMMARY ---")
     print("="*50)
-
-    # Compare the two current methods first
-    if results.get('new_class') is not None and results.get('new_wrapper') is not None:
-        if np.allclose(results['new_class'], results['new_wrapper']):
-            print("✅ SUCCESS: `EyeWidthSimulator` class and its wrapper function results match.")
-        else:
-            print("❌ FAILURE: `EyeWidthSimulator` class and its wrapper function results DO NOT match.")
-            print(f"   Class Result:   {results['new_class']}")
-            print(f"   Wrapper Result: {results['new_wrapper']}")
-    else:
-        print("⚠️ SKIPPED: Comparison between new methods due to simulation errors.")
 
     # Compare legacy with current method if legacy was available
     if LEGACY_AVAILABLE:
