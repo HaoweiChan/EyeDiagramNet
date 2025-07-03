@@ -67,16 +67,17 @@ def main():
         "snp_horiz": snp_horiz,
         "snp_tx": snp_tx,
         "snp_rx": snp_rx,
-        "directions": [
-            0, 0, 0, 0, 0, 0,
-            1, 1, 1, 1, 1, 1,
-            1, 1, 1, 1, 1, 1,
-            1, 1, 1, 1, 1, 1,
-            0, 0, 0, 0, 0, 0,
-            1, 1, 1, 1, 1, 1,
-            0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0
-        ]
+        "directions": [1] * 48
+        # "directions": [
+        #     0, 0, 0, 0, 0, 0,
+        #     1, 1, 1, 1, 1, 1,
+        #     1, 1, 1, 1, 1, 1,
+        #     1, 1, 1, 1, 1, 1,
+        #     0, 0, 0, 0, 0, 0,
+        #     1, 1, 1, 1, 1, 1,
+        #     0, 0, 0, 0, 0, 0,
+        #     0, 0, 0, 0, 0, 0
+        # ]
     }
 
     # The SampleResult class is used to hold the configuration
