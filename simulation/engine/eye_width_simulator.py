@@ -806,8 +806,9 @@ class EyeWidthSimulator:
 
     def calculate_waveform(self, test_patterns, response_matrices):
         """
-        Waveform calculation optimized with vectorized FFT convolutions.
-        This replaces the nested loops with a much faster implementation.
+        Waveform calculation implemented to be bit-exact with the legacy version.
+        This version uses np.convolve and matches the legacy summation order to
+        ensure identical output, replacing the faster but less precise FFT-based method.
         """
         pattern_length = test_patterns.shape[2]
         response_length = response_matrices.shape[2]
@@ -816,34 +817,29 @@ class EyeWidthSimulator:
         # Pre-allocate output waveform array
         waveform = np.zeros((self.params.n_perUI_intrp, conv_length, self.num_lines))
         
-        # Use an efficient FFT length for performance
-        fft_len = scipy.fft.next_fast_len(conv_length)
-
         # Process each output line
         for output_line_idx in range(self.num_lines):
             # Get patterns and responses for the current output line
             patterns_for_output = test_patterns[output_line_idx]
-            responses_for_output = response_matrices[output_line_idx]
-
-            # Transpose responses to [samples_per_ui, num_lines, response_length] for easier broadcasting
-            responses_for_output = np.transpose(responses_for_output, (2, 0, 1))
-
-            # --- FFT-based convolution ---
-            # 1. Compute FFT of patterns and responses
-            fft_patterns = np.fft.fft(patterns_for_output, n=fft_len, axis=1)
-            fft_responses = np.fft.fft(responses_for_output, n=fft_len, axis=2)
             
-            # 2. Perform element-wise multiplication in frequency domain.
-            product_fft = fft_patterns[np.newaxis, :, :] * fft_responses
+            # Transpose responses to [samples_per_ui, num_lines, response_length]
+            # to match the legacy loop structure for convolution.
+            responses_for_output = np.transpose(response_matrices[output_line_idx], (2, 0, 1))
 
-            # 3. Sum the products over all input lines (to combine main signal and crosstalk).
-            summed_fft = np.sum(product_fft, axis=1)
+            # This array stores all convolution results for the current output line before summing,
+            # exactly matching the legacy implementation's approach to ensure bit-wise equality.
+            # Shape: [samples_per_ui, conv_length, num_input_lines]
+            waves_to_add = np.zeros((self.params.n_perUI_intrp, conv_length, self.num_lines))
 
-            # 4. Compute inverse FFT to get the final waveform in the time domain.
-            line_waveform = np.fft.ifft(summed_fft, axis=1)[:, :conv_length].real
-
-            # Store the resulting waveform for the current output line
-            waveform[:, :, output_line_idx] = line_waveform
+            # Perform convolution for each sample in UI and each input line
+            for pt in range(self.params.n_perUI_intrp):
+                for input_line_idx in range(self.num_lines):
+                    pattern = patterns_for_output[input_line_idx]
+                    response = responses_for_output[pt, input_line_idx]
+                    waves_to_add[pt, :, input_line_idx] = np.convolve(pattern, response)
+            
+            # Sum over the input lines axis after all convolutions are done, matching legacy logic.
+            waveform[:, :, output_line_idx] = np.sum(waves_to_add, axis=2)
         
         return waveform
 
