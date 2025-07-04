@@ -717,63 +717,89 @@ class EyeWidthSimulator:
 
     def calculate_eyewidth_percentage(self, half_steady, waveform, vref_num=None):
         """
-        Eye width percentage calculation with an adaptive vref search strategy
-        that matches the legacy implementation for bit-wise identical output.
+        Calculate eye width percentage using an adaptive voltage reference search.
+        
+        This implementation matches the legacy behavior exactly, including the specific
+        voltage calculation formula and boundary search strategy.
+        
+        Args:
+            half_steady: Half of the steady-state voltage level
+            waveform: Waveform data with shape [samples_per_ui, conv_length, num_lines]
+            vref_num: Number of voltage reference points to test (default: 11)
+            
+        Returns:
+            Array of eye width percentages for each line
         """
-        # --- Configuration Constants ---
-        VREF_STEP = 0.005
-        VREF_CENTER_MULTIPLIER = 0.085
-        DEFAULT_VREF_NUM_POINTS = 11
-        VREF_SEARCH_RANGE_STEPS = 5
-        MAX_VREF_SEARCH_ITERATIONS = 100
-
+        # Constants for voltage reference calculation
+        DEFAULT_VREF_POINTS = 11
+        VOLTAGE_STEP = 0.005  # 5mV steps
+        VOLTAGE_RANGE_MULTIPLIER = 5  # ±25mV range
+        CENTER_VOLTAGE_FACTOR = 0.085  # Legacy scaling factor
+        MAX_SEARCH_ITERATIONS = 100  # Safety limit for boundary search
+        
         if vref_num is None:
-            vref_num = DEFAULT_VREF_NUM_POINTS
+            vref_num = DEFAULT_VREF_POINTS
 
         def calculate_eye_width_for_vref(vref):
-            """Nested helper to calculate eyewidth for a given vref."""
-            vih = vref + self.params.vmask
-            vil = vref - self.params.vmask
-            eyewidths = np.zeros(self.num_lines, dtype=int)
+            """Calculate eye width for all lines at a given voltage reference."""
+            voltage_high = vref + self.params.vmask
+            voltage_low = vref - self.params.vmask
+            eye_widths = np.zeros(self.num_lines, dtype=int)
             
-            valid_points_all = (waveform > vih) | (waveform < vil)
-            eye_indices_all = np.all(valid_points_all, axis=1)
+            # Check which points are outside the eye mask (valid eye opening)
+            valid_eye_points = (waveform > voltage_high) | (waveform < voltage_low)
+            eye_indices_per_line = np.all(valid_eye_points, axis=1)
             
             for line_idx in range(self.num_lines):
-                eyewidths[line_idx] = self.calculate_eye_width(eye_indices_all[:, line_idx])
-            return eyewidths
+                eye_widths[line_idx] = self.calculate_eye_width(eye_indices_per_line[:, line_idx])
+            return eye_widths
 
-        vref_test_center = VREF_CENTER_MULTIPLIER * round(half_steady / VREF_STEP)
-        vref_search_radius = VREF_SEARCH_RANGE_STEPS * VREF_STEP
-        vref_test_values = np.linspace(
-            start=vref_test_center - vref_search_radius,
-            stop=vref_test_center + vref_search_radius,
+        # Calculate initial voltage reference search range
+        # Legacy formula: center = 0.085 * round(half_steady / 0.005)
+        vref_center = CENTER_VOLTAGE_FACTOR * round(half_steady / VOLTAGE_STEP)
+        vref_range = VOLTAGE_RANGE_MULTIPLIER * VOLTAGE_STEP
+        
+        vref_test_points = np.linspace(
+            start=vref_center - vref_range,
+            stop=vref_center + vref_range,
             num=vref_num,
             endpoint=True,
         )
 
-        eye_width_results = np.array([calculate_eye_width_for_vref(vref) for vref in vref_test_values])
+        # Test all voltage reference points
+        eye_width_results = np.array([calculate_eye_width_for_vref(vref) for vref in vref_test_points])
         min_eye_widths = np.min(eye_width_results, axis=1)
         best_vref_idx = np.argmax(min_eye_widths)
         
+        # Determine final eye width based on where the best result was found
         if min_eye_widths[best_vref_idx] == -1:
-            final_eyewidth = calculate_eye_width_for_vref(self.params.vref_dfl)
+            # No valid eye found in search range, use default voltage reference
+            final_eye_width = calculate_eye_width_for_vref(self.params.vref_dfl)
         elif 0 < best_vref_idx < vref_num - 1:
-            final_eyewidth = eye_width_results[best_vref_idx]
+            # Best result is in the middle of the range, use it directly
+            final_eye_width = eye_width_results[best_vref_idx]
         else:
-            direction = 1 if best_vref_idx == vref_num - 1 else -1
-            vref_current = vref_test_values[best_vref_idx]
-            eyewidth_current = eye_width_results[best_vref_idx]
+            # Best result is at a boundary, search further in that direction
+            search_direction = 1 if best_vref_idx == vref_num - 1 else -1
+            current_vref = vref_test_points[best_vref_idx]
+            best_eye_width = eye_width_results[best_vref_idx]
             
-            for _ in range(MAX_VREF_SEARCH_ITERATIONS):
-                vref_next = vref_current + direction * VREF_STEP
-                eyewidth_next = calculate_eye_width_for_vref(vref_next)
-                if np.min(eyewidth_next) < np.min(eyewidth_current):
+            # Continue searching until eye width stops improving
+            for _ in range(MAX_SEARCH_ITERATIONS):
+                next_vref = current_vref + search_direction * VOLTAGE_STEP
+                next_eye_width = calculate_eye_width_for_vref(next_vref)
+                
+                if np.min(next_eye_width) > np.min(best_eye_width):
+                    # Found better result, continue searching
+                    best_eye_width = next_eye_width
+                    current_vref = next_vref
+                else:
+                    # No improvement, stop searching
                     break
-                vref_current, eyewidth_current = vref_next, eyewidth_next
-            final_eyewidth = eyewidth_current
+            final_eye_width = best_eye_width
         
-        return 100 * final_eyewidth / self.params.n_perUI_intrp
+        # Convert to percentage
+        return 100 * final_eye_width / self.params.n_perUI_intrp
 
     def calculate_waveform(self, test_patterns, response_matrices):
         """
