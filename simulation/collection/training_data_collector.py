@@ -542,10 +542,10 @@ def progress_monitor(progress_queue, total_expected, interval=5):
                 now = time.time()
                 if now - last_report >= interval:
                     elapsed = now - start_time
-                    rate = completed / elapsed if elapsed > 0 else 0
-                    eta = (total_expected - completed) / rate if rate > 0 else 0
+                    avg_time_per_task = elapsed / completed if completed > 0 else 0
+                    eta = (total_expected - completed) * avg_time_per_task
                     print(f"Progress: {completed}/{total_expected} ({100*completed/total_expected:.1f}%) "
-                          f"Rate: {rate:.1f}/sec ETA: {eta:.0f}s", flush=True)
+                          f"Avg: {avg_time_per_task:.2f}s/task ETA: {eta:.0f}s", flush=True)
                     last_report = now
             elif msg_type == 'stop':
                 break
@@ -554,16 +554,16 @@ def progress_monitor(progress_queue, total_expected, interval=5):
             # Timeout - print current status
             now = time.time()
             elapsed = now - start_time
-            rate = completed / elapsed if elapsed > 0 else 0
+            avg_time_per_task = elapsed / completed if completed > 0 else 0
             print(f"Progress: {completed}/{total_expected} ({100*completed/total_expected:.1f}%) "
-                  f"Rate: {rate:.1f}/sec", flush=True)
+                  f"Avg: {avg_time_per_task:.2f}s/task", flush=True)
     
     # Final status report
     final_time = time.time()
     elapsed = final_time - start_time
-    rate = completed / elapsed if elapsed > 0 else 0
+    avg_time_per_task = elapsed / completed if completed > 0 else 0
     print(f"Progress monitor completed: {completed}/{total_expected} ({100*completed/total_expected:.1f}%) "
-          f"in {elapsed:.1f}s (avg {rate:.1f}/sec)", flush=True)
+          f"in {elapsed:.1f}s (avg {avg_time_per_task:.2f}s/task)", flush=True)
 
 def get_multiprocessing_start_method():
     """Get appropriate multiprocessing start method for the platform"""
@@ -612,7 +612,7 @@ def run_with_executor(trace_tasks, combined_params, trace_specific_output_dir, p
     progress_queue = multiprocessing.Queue()
     progress_thread = threading.Thread(
         target=progress_monitor,
-        args=(progress_queue, total_expected, 5),
+        args=(progress_queue, total_expected, 60),
         daemon=True,
         name="ProgressMonitor"
     )
