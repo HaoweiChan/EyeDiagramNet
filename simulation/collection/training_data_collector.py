@@ -8,13 +8,26 @@
 import os
 import platform
 
-# Allow config to override BLAS thread count
-default_blas_threads = os.environ.get("BLAS_THREADS", "2")
+# Platform-aware BLAS thread defaults
+def get_platform_blas_default():
+    """Get platform-appropriate BLAS thread default"""
+    system = platform.system()
+    if system == "Linux":
+        return "1"  # Aggressive: Maximize process parallelism
+    elif system == "Darwin":  # macOS
+        return "2"  # Balanced: Share threads between BLAS and processes
+    else:
+        return "2"  # Safe default for unknown platforms
+
+# Allow config to override BLAS thread count, with platform-aware defaults
+default_blas_threads = os.environ.get("BLAS_THREADS", get_platform_blas_default())
 os.environ.setdefault("OMP_NUM_THREADS", default_blas_threads)
 os.environ.setdefault("MKL_NUM_THREADS", default_blas_threads)
 os.environ.setdefault("OPENBLAS_NUM_THREADS", default_blas_threads)
 os.environ.setdefault("VECLIB_MAXIMUM_THREADS", default_blas_threads)
 os.environ.setdefault("NUMEXPR_NUM_THREADS", default_blas_threads)
+
+print(f"Platform: {platform.system()}, BLAS threads: {default_blas_threads}")
 
 # After the limits are in place we can safely import heavy numerical libs.
 
@@ -25,16 +38,13 @@ import pickle
 import psutil
 import threading
 import traceback
-import skrf as rf
 import numpy as np
 import multiprocessing
 import concurrent.futures
 import multiprocessing.shared_memory as shm
-from tqdm import tqdm
+from queue import Empty
 from pathlib import Path
 from datetime import datetime
-from collections import defaultdict
-from queue import Queue, Empty
 
 from common.signal_utils import read_snp
 from simulation.parameters.bound_param import PARAM_SETS_MAP
@@ -49,11 +59,8 @@ _profiling_data = threading.local()
 _monitor_proc = None
 # Global progress queue for inter-process communication
 _progress_queue = None
-
 # Global shared memory registry for cleanup
 _shared_memory_blocks = []
-
-
 
 def get_worker_id():
     """Get unique worker identifier for profiling"""
@@ -162,24 +169,61 @@ def stop_background_monitoring():
         print("[MONITOR] System resource monitoring stopped.", flush=True)
 
 def get_optimal_workers(config_blas_threads=2):
-    """Calculate optimal number of workers based on system resources"""
+    """Calculate optimal number of workers based on system resources and platform"""
     # Get system info
     cpu_count = psutil.cpu_count()
     memory_gb = psutil.virtual_memory().total / (1024**3)
+    system = platform.system()
     
-    print(f"System: {cpu_count} CPUs, {memory_gb:.1f}GB RAM")
+    print(f"System: {cpu_count} CPUs, {memory_gb:.1f}GB RAM, Platform: {system}")
     
-    # Calculate workers based on memory and CPU
-    # Each worker uses ~1-2GB during processing
-    memory_based_workers = max(1, int(memory_gb / 1.5))
+    # Platform-aware resource allocation
+    if system == "Darwin":  # macOS - Conservative for development/testing
+        print("Using macOS resource allocation (conservative)")
+        # Conservative settings for shared development environment
+        # Target: <50% CPU usage, <20GB RAM
+        max_memory_gb = min(memory_gb, 20.0)  # Cap at 20GB for safety
+        memory_per_worker = 1.5  # Conservative memory estimate per worker
+        cpu_utilization_target = 0.5  # Use 50% of cores
+        
+        # Calculate workers based on memory and CPU constraints
+        memory_based_workers = max(1, int(max_memory_gb / memory_per_worker))
+        cpu_based_workers = max(1, int(cpu_count * cpu_utilization_target // max(1, config_blas_threads)))
+        
+        # Use minimum to ensure we don't exceed any constraint
+        optimal_workers = min(memory_based_workers, cpu_based_workers)
+        
+    elif system == "Linux":  # Linux - Aggressive for production
+        print("Using Linux resource allocation (aggressive)")
+        # Aggressive settings to maximize server utilization
+        # Target: 90-95% CPU usage, use most available RAM
+        memory_per_worker = 1.0  # More efficient memory usage per worker
+        cpu_utilization_target = 0.95  # Use 95% of cores
+        
+        # Reserve some memory for system (10% or 2GB, whichever is larger)
+        reserved_memory = max(memory_gb * 0.1, 2.0)
+        available_memory = memory_gb - reserved_memory
+        
+        # Calculate workers based on memory and CPU
+        memory_based_workers = max(1, int(available_memory / memory_per_worker))
+        cpu_based_workers = max(1, int(cpu_count * cpu_utilization_target // max(1, config_blas_threads)))
+        
+        # Use minimum but prefer higher worker count for Linux
+        optimal_workers = min(memory_based_workers, cpu_based_workers)
+        
+    else:  # Unknown platform - Use conservative defaults
+        print(f"Unknown platform {system}, using conservative defaults")
+        memory_per_worker = 1.5
+        cpu_utilization_target = 0.5
+        
+        memory_based_workers = max(1, int(memory_gb * 0.8 / memory_per_worker))
+        cpu_based_workers = max(1, int(cpu_count * cpu_utilization_target // max(1, config_blas_threads)))
+        optimal_workers = min(memory_based_workers, cpu_based_workers)
     
-    # For CPU-based calculation, consider BLAS threads
-    # If using 2-4 BLAS threads per worker, reduce process count accordingly
-    cpu_based_workers = max(1, cpu_count // max(1, config_blas_threads))
-    
-    # Conservative approach: use fewer workers to avoid oversubscription
-    optimal_workers = min(memory_based_workers, cpu_based_workers, cpu_count // 2)
-    print(f"Optimal workers determined: {optimal_workers} (memory-based: {memory_based_workers}, cpu-based: {cpu_based_workers}, BLAS threads: {config_blas_threads})")
+    print(f"Resource calculation:")
+    print(f"  Memory-based workers: {memory_based_workers} ({memory_per_worker}GB per worker)")
+    print(f"  CPU-based workers: {cpu_based_workers} (target {cpu_utilization_target*100:.0f}% CPU, {config_blas_threads} BLAS threads)")
+    print(f"  Selected workers: {optimal_workers}")
     
     return optimal_workers
 
@@ -448,6 +492,9 @@ def collect_trace_simulation_data(trace_snp_file, vertical_pairs_with_counts, co
                 writer.add_result(result)
                 total_completed += 1
                 
+                # Report progress after each simulation
+                report_progress(1)
+                
                 if debug:
                     print(f"  Completed simulation {sample_idx+1}/{sample_count}: EW={line_ew}")
                     
@@ -500,6 +547,8 @@ def progress_monitor(progress_queue, total_expected, interval=5):
                     print(f"Progress: {completed}/{total_expected} ({100*completed/total_expected:.1f}%) "
                           f"Rate: {rate:.1f}/sec ETA: {eta:.0f}s", flush=True)
                     last_report = now
+            elif msg_type == 'stop':
+                break
                     
         except Empty:
             # Timeout - print current status
@@ -508,6 +557,13 @@ def progress_monitor(progress_queue, total_expected, interval=5):
             rate = completed / elapsed if elapsed > 0 else 0
             print(f"Progress: {completed}/{total_expected} ({100*completed/total_expected:.1f}%) "
                   f"Rate: {rate:.1f}/sec", flush=True)
+    
+    # Final status report
+    final_time = time.time()
+    elapsed = final_time - start_time
+    rate = completed / elapsed if elapsed > 0 else 0
+    print(f"Progress monitor completed: {completed}/{total_expected} ({100*completed/total_expected:.1f}%) "
+          f"in {elapsed:.1f}s (avg {rate:.1f}/sec)", flush=True)
 
 def get_multiprocessing_start_method():
     """Get appropriate multiprocessing start method for the platform"""
@@ -552,12 +608,23 @@ def run_with_executor(trace_tasks, combined_params, trace_specific_output_dir, p
         for _, vertical_pairs_with_counts in trace_tasks
     )
     
+    # Create progress queue and start progress monitor
+    progress_queue = multiprocessing.Queue()
+    progress_thread = threading.Thread(
+        target=progress_monitor,
+        args=(progress_queue, total_expected, 5),
+        daemon=True,
+        name="ProgressMonitor"
+    )
+    progress_thread.start()
+    print(f"Started progress monitor for {total_expected} simulations")
+    
     executor_start_time = time.time()
     
     with concurrent.futures.ProcessPoolExecutor(
         max_workers=num_workers, 
         initializer=init_worker_process,
-        initargs=(vertical_cache_info or {}, None)
+        initargs=(vertical_cache_info or {}, progress_queue)
     ) as executor:
         futures = [
             executor.submit(
@@ -586,21 +653,80 @@ def run_with_executor(trace_tasks, combined_params, trace_specific_output_dir, p
                 completed_tasks += 1
                 sim_count = future.result()
                 total_simulations_completed += sim_count
-                
-                elapsed = time.time() - executor_start_time
-                sec_per_sim = elapsed / total_simulations_completed if total_simulations_completed > 0 else 0
-                eta = (total_expected - total_simulations_completed) * sec_per_sim if sec_per_sim > 0 else 0
-                print(f"Progress: {completed_tasks}/{len(futures)} tasks, "
-                      f"{total_simulations_completed}/{total_expected} simulations "
-                      f"({100*total_simulations_completed/total_expected:.1f}%) "
-                      f"Rate: {sec_per_sim:.2f}s/sim ETA: {eta/60:.1f}min", flush=True)
+
+        # Signal progress monitor to stop
+        try:
+            progress_queue.put(('stop', None), timeout=1.0)
+        except:
+            pass
+        
+        progress_thread.join(timeout=2)
 
         total_time = time.time() - executor_start_time
         print(f"ProcessPoolExecutor completed in {total_time:.2f}s")
         print(f"Completed {completed_tasks}/{len(futures)} trace files")
+        print(f"Total simulations completed: {total_simulations_completed}/{total_expected}")
 
         if failed_tasks:
             print(f"\nWarning: {len(failed_tasks)} trace files failed.")
+
+def validate_resource_usage():
+    """Validate that current resource allocation is within platform-appropriate bounds"""
+    system = platform.system()
+    cpu_count = psutil.cpu_count()
+    memory_gb = psutil.virtual_memory().total / (1024**3)
+    
+    # Get current process info
+    current_process = psutil.Process()
+    current_memory_gb = current_process.memory_info().rss / (1024**3)
+    
+    # Platform-specific validation
+    if system == "Darwin":  # macOS
+        # Validate CPU usage (should be <50% sustained)
+        cpu_percent = psutil.cpu_percent(interval=1)
+        if cpu_percent > 60:  # 10% tolerance
+            print(f"WARNING: CPU usage {cpu_percent:.1f}% exceeds macOS target (50%)")
+        
+        # Validate memory usage (should be <20GB total)
+        memory_used = psutil.virtual_memory().used / (1024**3)
+        if memory_used > 22:  # 2GB tolerance
+            print(f"WARNING: Memory usage {memory_used:.1f}GB exceeds macOS target (20GB)")
+            
+        print(f"macOS resource validation: CPU {cpu_percent:.1f}%, Memory {memory_used:.1f}GB")
+        
+    elif system == "Linux":  # Linux
+        # For Linux, just log current usage (aggressive usage is expected)
+        cpu_percent = psutil.cpu_percent(interval=1)
+        memory_used = psutil.virtual_memory().used / (1024**3)
+        print(f"Linux resource validation: CPU {cpu_percent:.1f}%, Memory {memory_used:.1f}GB (aggressive usage expected)")
+        
+    return True
+
+def validate_worker_allocation(num_workers, blas_threads):
+    """Validate that worker allocation is appropriate for the platform"""
+    system = platform.system()
+    cpu_count = psutil.cpu_count()
+    memory_gb = psutil.virtual_memory().total / (1024**3)
+    
+    total_threads = num_workers * blas_threads
+    
+    if system == "Darwin":  # macOS
+        # Should not exceed 50% of cores
+        if total_threads > cpu_count * 0.6:  # 10% tolerance
+            print(f"WARNING: Total threads ({total_threads}) may exceed macOS target (50% of {cpu_count} cores)")
+            
+        # Memory check
+        estimated_memory = num_workers * 1.5  # 1.5GB per worker estimate
+        if estimated_memory > 22:  # 2GB tolerance above 20GB target
+            print(f"WARNING: Estimated memory usage ({estimated_memory:.1f}GB) may exceed macOS target (20GB)")
+            
+    elif system == "Linux":  # Linux
+        # Should use most cores aggressively
+        if total_threads < cpu_count * 0.8:
+            print(f"INFO: Thread usage ({total_threads}) is conservative for Linux (could use up to 95% of {cpu_count} cores)")
+            
+    print(f"Worker allocation validation: {num_workers} workers × {blas_threads} BLAS threads = {total_threads} total threads")
+    return True
 
 def main():
     """Main function for parallel data collection"""
@@ -654,11 +780,16 @@ def main():
     # Get batch size from config
     batch_size = runner_config.get('batch_size', 10)
     
-    # Determine number of workers: Command-line -> Config file -> Optimal calculation
+    # Determine number of workers: Command-line -> Environment -> Config file -> Optimal calculation
+    env_workers = os.environ.get('MAX_WORKERS')
     config_workers = runner_config.get('max_workers')
+    
     if args.max_workers:
         max_workers = args.max_workers
         print(f"Using max_workers from command line: {max_workers}")
+    elif env_workers:
+        max_workers = int(env_workers)
+        print(f"Using max_workers from environment variable: {max_workers}")
     elif config_workers:
         max_workers = config_workers
         print(f"Using max_workers from config file: {max_workers}")
@@ -678,6 +809,12 @@ def main():
     print(f"  Max workers: {max_workers}")
     print(f"  Batch size: {batch_size}")
     print(f"  BLAS threads: {blas_threads}")
+    
+    # Validate resource allocation before starting
+    print("\n--- Resource Validation ---")
+    validate_worker_allocation(max_workers, blas_threads)
+    validate_resource_usage()
+    print("---------------------------\n")
     
     # Create base output directory and trace-specific subdirectory
     base_output_dir = output_dir
@@ -765,8 +902,20 @@ def main():
                              enable_direction, max_workers, batch_size, vertical_cache_info)
         else:
             # Debug mode - run sequentially
-            global _vertical_cache_info
+            global _vertical_cache_info, _progress_queue
             _vertical_cache_info = vertical_cache_info
+
+            # Create progress queue and start progress monitor for debug mode too
+            progress_queue = multiprocessing.Queue()
+            progress_thread = threading.Thread(
+                target=progress_monitor,
+                args=(progress_queue, total_simulations, 5),
+                daemon=True,
+                name="DebugProgressMonitor"
+            )
+            progress_thread.start()
+            _progress_queue = progress_queue
+            print(f"Started debug progress monitor for {total_simulations} simulations")
 
             for i, (trace_snp_file, vertical_pairs_with_counts) in enumerate(trace_tasks):
                 print(f"\n--- Debug Task {i+1}/{len(trace_tasks)} ---")
@@ -774,8 +923,21 @@ def main():
                     trace_snp_file, vertical_pairs_with_counts, combined_params, 
                     trace_specific_output_dir, param_types, enable_direction, batch_size, True
                 )
+            
+            # Signal progress monitor to stop
+            try:
+                progress_queue.put(('stop', None), timeout=1.0)
+            except:
+                pass
+            
+            progress_thread.join(timeout=2)
         
         print(f"Data collection completed. Results saved to: {trace_specific_output_dir}")
+        
+        # Final resource validation
+        print("\n--- Final Resource Validation ---")
+        validate_resource_usage()
+        print("--------------------------------")
         
     finally:
         # Stop background monitoring
