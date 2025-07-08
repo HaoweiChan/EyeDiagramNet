@@ -63,14 +63,8 @@ class _ForwardWrapper(nn.Module):
         # For likelihood='regression', Laplace expects a single output (mean)
         values, _, _ = self.base(trace_seq, direction, boundary, snp_vert, port_positions)
         
-        # Ensure values is always 2D (B, P) for Laplace compatibility
-        if values.dim() == 1:
-            # If values is (B,), make it (B, 1)
-            values = values.unsqueeze(-1)
-        elif values.dim() == 0:
-            # If values is scalar, make it (1, 1)
-            values = values.unsqueeze(0).unsqueeze(-1)
-        # If values is already 2D, keep it as is
+        # Ensure values is 1D for Laplace regression (flatten all outputs)
+        values = values.view(-1).contiguous()  # Flatten to 1D and ensure contiguous layout
         
         return values
 
