@@ -414,7 +414,7 @@ class EyeWidthSimulator:
         rl_one = (out == inp) & (inp >= n//2)  # Return loss
         fext_mul = (out != inp + n//2) & (inp < n//2) & (out >= n//2)  # Far-end crosstalk multiply
         fext_zero = (out != inp + n//2) & (inp >= n//2) & (out < n//2)  # Far-end crosstalk zero
-        next_zero = (out != inp) & (inp > n//2) & (out >= n//2)  # Near-end crosstalk zero
+        next_zero = (out != inp) & (inp >= n//2) & (out >= n//2)  # Near-end crosstalk zero
 
         # Apply masks to S-parameters
         ntwk.s[:, out[il_pos], inp[il_pos]] *= TF
