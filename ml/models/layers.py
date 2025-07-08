@@ -173,14 +173,14 @@ class RotaryTransformerLayer(nn.Module):
         k = k.transpose(1, 2)
         v = v.transpose(1, 2)
 
-        # Scaled dot-product attention
-        scores = (q @ k.transpose(-2, -1)) / (self.head_dim ** 0.5)  # (B, H, L, L)
-        attn = torch.softmax(scores, dim=-1)
-        attn = self.dropout(attn)
-
-        # Apply to v
-        out = attn @ v  # (B, H, L, head_dim)
-        out = out.transpose(1, 2).reshape(B, L, D)  # (B, L, D)
+        # use optimized scaled dot-product attention
+        out = F.scaled_dot_product_attention(
+            query=q, 
+            key=k, 
+            value=v,
+            dropout_p=self.dropout.p if self.training else 0.0
+        )                                                  # (B, H, L, head_dim)
+        out = out.transpose(1,2).reshape(B, L, D)          # (B, L, D)
         out = self.out_proj(self.dropout(out))
 
         # 5) Residual + norm + FFN
