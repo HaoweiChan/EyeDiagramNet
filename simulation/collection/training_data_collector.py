@@ -61,6 +61,52 @@ _monitor_proc = None
 _progress_queue = None
 # Global shared memory registry for cleanup
 _shared_memory_blocks = []
+# Global shutdown control
+_shutdown_event = threading.Event()
+_executor = None
+_progress_thread = None
+
+def signal_handler(signum, frame):
+    """Handle SIGINT (Ctrl+C) for graceful shutdown"""
+    global _shutdown_event, _executor, _progress_thread
+    
+    print("\n[SHUTDOWN] Received interrupt signal (Ctrl+C). Initiating graceful shutdown...", flush=True)
+    _shutdown_event.set()
+    
+    # Stop progress monitoring first
+    if _progress_thread and _progress_thread.is_alive():
+        print("[SHUTDOWN] Stopping progress monitor...", flush=True)
+        try:
+            if _progress_queue:
+                _progress_queue.put(('stop', None), timeout=1.0)
+        except:
+            pass
+        _progress_thread.join(timeout=3)
+        print("[SHUTDOWN] Progress monitor stopped.", flush=True)
+    
+    # Shutdown executor
+    if _executor:
+        print("[SHUTDOWN] Shutting down ProcessPoolExecutor...", flush=True)
+        _executor.shutdown(wait=False, cancel_futures=True)
+        print("[SHUTDOWN] ProcessPoolExecutor shutdown initiated.", flush=True)
+    
+    # Stop background monitoring
+    stop_background_monitoring()
+    
+    # Clean up resources
+    cleanup_shared_memory()
+    
+    print("[SHUTDOWN] Cleanup completed. Exiting...", flush=True)
+    
+    # Force exit if needed
+    import sys
+    sys.exit(130)  # Standard exit code for SIGINT
+
+def register_signal_handlers():
+    """Register signal handlers for graceful shutdown"""
+    signal.signal(signal.SIGINT, signal_handler)
+    if hasattr(signal, 'SIGTERM'):
+        signal.signal(signal.SIGTERM, signal_handler)
 
 def get_worker_id():
     """Get unique worker identifier for profiling"""
@@ -159,14 +205,25 @@ def start_background_monitoring(interval=10):
         _monitor_proc.start()
 
 def stop_background_monitoring():
-    """Stop background system monitoring process."""
+    """Stop background system monitoring process with graceful shutdown."""
     global _monitor_proc
     if _monitor_proc is not None:
         print("[MONITOR] Stopping system resource monitoring...", flush=True)
-        _monitor_proc.terminate()
-        _monitor_proc.join(timeout=2)
-        _monitor_proc = None
-        print("[MONITOR] System resource monitoring stopped.", flush=True)
+        try:
+            _monitor_proc.terminate()
+            _monitor_proc.join(timeout=5)  # Give more time for graceful shutdown
+            
+            # Force kill if still alive
+            if _monitor_proc.is_alive():
+                print("[MONITOR] Force killing monitoring process...", flush=True)
+                _monitor_proc.kill()
+                _monitor_proc.join(timeout=2)
+                
+        except Exception as e:
+            print(f"[MONITOR] Error stopping monitoring process: {e}", flush=True)
+        finally:
+            _monitor_proc = None
+            print("[MONITOR] System resource monitoring stopped.", flush=True)
 
 def get_optimal_workers(config_blas_threads=2):
     """Calculate optimal number of workers based on system resources and platform"""
@@ -228,13 +285,18 @@ def get_optimal_workers(config_blas_threads=2):
     return optimal_workers
 
 class BufferedPickleWriter:
-    """Buffered writer for pickle files to reduce I/O overhead"""
+    """Buffered writer for pickle files to reduce I/O overhead with interrupt safety"""
     
     def __init__(self, pickle_file, batch_size=10):
         self.pickle_file = Path(pickle_file)
         self.batch_size = batch_size
         self.buffer = []
         self.data = self._load_existing_data()
+        self._closed = False
+        
+        # Register atexit handler to ensure cleanup
+        import atexit
+        atexit.register(self._emergency_cleanup)
     
     def _load_existing_data(self):
         """Load existing pickle data"""
@@ -255,41 +317,71 @@ class BufferedPickleWriter:
     
     def add_result(self, result):
         """Add a simulation result to the buffer"""
+        if self._closed or _shutdown_event.is_set():
+            # If shutdown is in progress, flush immediately
+            self.buffer.append(result)
+            self.flush()
+            return
+            
         self.buffer.append(result)
         if len(self.buffer) >= self.batch_size:
             self.flush()
     
     def flush(self):
         """Write buffered results to disk"""
-        if not self.buffer:
+        if not self.buffer or self._closed:
             return
         
-        # Add all buffered results to data
-        for result in self.buffer:
-            self.data['configs'].append(result['config_values'])
-            self.data['line_ews'].append(result['line_ews'])
-            self.data['snp_txs'].append(result['snp_tx'])
-            self.data['snp_rxs'].append(result['snp_rx'])
-            self.data['directions'].append(result['directions'])
-        
-        # Update meta if needed
-        if self.buffer and not self.data['meta'].get('config_keys'):
-            first_result = self.buffer[0]
-            self.data['meta']['config_keys'] = first_result['config_keys']
-            self.data['meta']['snp_horiz'] = first_result.get('snp_horiz', '')
-            self.data['meta']['n_ports'] = first_result.get('n_ports', 0)
-            self.data['meta']['param_types'] = first_result.get('param_types', [])
-        
-        # Write to disk
-        self.pickle_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.pickle_file, 'wb') as f:
-            pickle.dump(self.data, f)
-        
-        self.buffer.clear()
+        try:
+            # Add all buffered results to data
+            for result in self.buffer:
+                self.data['configs'].append(result['config_values'])
+                self.data['line_ews'].append(result['line_ews'])
+                self.data['snp_txs'].append(result['snp_tx'])
+                self.data['snp_rxs'].append(result['snp_rx'])
+                self.data['directions'].append(result['directions'])
+            
+            # Update meta if needed
+            if self.buffer and not self.data['meta'].get('config_keys'):
+                first_result = self.buffer[0]
+                self.data['meta']['config_keys'] = first_result['config_keys']
+                self.data['meta']['snp_horiz'] = first_result.get('snp_horiz', '')
+                self.data['meta']['n_ports'] = first_result.get('n_ports', 0)
+                self.data['meta']['param_types'] = first_result.get('param_types', [])
+            
+            # Write to disk
+            self.pickle_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.pickle_file, 'wb') as f:
+                pickle.dump(self.data, f)
+            
+            self.buffer.clear()
+            
+        except Exception as e:
+            # If normal write fails during shutdown, try emergency save
+            if _shutdown_event.is_set():
+                try:
+                    emergency_file = self.pickle_file.with_suffix('.emergency.pkl')
+                    with open(emergency_file, 'wb') as f:
+                        pickle.dump({'buffer': self.buffer, 'existing_data': self.data}, f)
+                    print(f"[EMERGENCY] Saved buffered data to {emergency_file}", flush=True)
+                except:
+                    print(f"[ERROR] Failed to save data during shutdown: {e}", flush=True)
+            else:
+                raise
     
     def close(self):
         """Flush remaining data and close"""
-        self.flush()
+        if not self._closed:
+            self.flush()
+            self._closed = True
+    
+    def _emergency_cleanup(self):
+        """Emergency cleanup for atexit"""
+        if not self._closed and self.buffer:
+            try:
+                self.close()
+            except:
+                pass
 
 class SNPCache:
     """Shared memory cache for vertical SNP files only"""
@@ -372,11 +464,11 @@ def _get_valid_block_sizes(n_lines):
     return divisors
 
 def report_progress(completed_samples):
-    """Report progress to main process via queue"""
+    """Report progress to main process via queue (non-blocking)"""
     global _progress_queue
-    if _progress_queue:
+    if _progress_queue and not _shutdown_event.is_set():
         try:
-            _progress_queue.put(('progress', completed_samples), timeout=1.0)
+            _progress_queue.put(('progress', completed_samples), timeout=0.1)
         except:
             pass  # Queue full or other error, skip
 
@@ -426,12 +518,21 @@ def collect_trace_simulation_data(trace_snp_file, vertical_pairs_with_counts, co
     
     # Process all vertical pairs and their samples
     for vertical_snp_pair, sample_count in vertical_pairs_with_counts:
+        # Check for shutdown between vertical pairs
+        if _shutdown_event.is_set():
+            profile_print(f"Shutdown detected, stopping {trace_snp_path.name} early")
+            break
+            
         # Load vertical SNPs from cache
         snp_tx_path, snp_rx_path = vertical_snp_pair
         tx_ntwk = get_snp_from_cache(snp_tx_path, _vertical_cache_info)
         rx_ntwk = get_snp_from_cache(snp_rx_path, _vertical_cache_info)
         
         for sample_idx in range(sample_count):
+            # Check for shutdown between samples
+            if _shutdown_event.is_set():
+                profile_print(f"Shutdown detected, stopping {trace_snp_path.name} early")
+                break
             # Sample parameters
             combined_config = combined_params.sample()
             
@@ -504,6 +605,10 @@ def collect_trace_simulation_data(trace_snp_file, vertical_pairs_with_counts, co
                     import traceback
                     traceback.print_exc()
                 continue
+        
+        # Break outer loop if shutdown detected during inner loop
+        if _shutdown_event.is_set():
+            break
     
     # Ensure all data is written
     writer.close()
@@ -518,24 +623,42 @@ def collect_trace_simulation_data(trace_snp_file, vertical_pairs_with_counts, co
     return total_completed
 
 def cleanup_shared_memory():
-    """Clean up all shared memory blocks"""
+    """Clean up all shared memory blocks with comprehensive error handling"""
+    print("[CLEANUP] Cleaning up shared memory blocks...", flush=True)
+    cleanup_count = 0
+    error_count = 0
+    
     for block in _shared_memory_blocks:
         try:
             block.close()
             block.unlink()
-        except:
-            pass
+            cleanup_count += 1
+        except FileNotFoundError:
+            # Already unlinked, this is fine
+            cleanup_count += 1
+        except Exception as e:
+            error_count += 1
+            print(f"[CLEANUP] Error cleaning up shared memory block: {e}", flush=True)
+    
     _shared_memory_blocks.clear()
+    
+    if cleanup_count > 0 or error_count > 0:
+        print(f"[CLEANUP] Shared memory cleanup: {cleanup_count} blocks cleaned, {error_count} errors", flush=True)
+    else:
+        print("[CLEANUP] No shared memory blocks to clean up", flush=True)
 
 def progress_monitor(progress_queue, total_expected, interval=5):
-    """Monitor progress from worker processes"""
+    """Monitor progress from worker processes with graceful shutdown support"""
     completed = 0
     last_report = time.time()
     start_time = time.time()
     
-    while completed < total_expected:
+    while completed < total_expected and not _shutdown_event.is_set():
         try:
-            msg_type, value = progress_queue.get(timeout=interval)
+            # Use shorter timeout to be more responsive to shutdown
+            timeout = min(interval, 2.0)
+            msg_type, value = progress_queue.get(timeout=timeout)
+            
             if msg_type == 'progress':
                 completed += value
                 
@@ -548,22 +671,33 @@ def progress_monitor(progress_queue, total_expected, interval=5):
                           f"Avg: {avg_time_per_task:.2f}s/task ETA: {eta:.0f}s", flush=True)
                     last_report = now
             elif msg_type == 'stop':
+                print("[PROGRESS] Received stop signal.", flush=True)
                 break
                     
         except Empty:
-            # Timeout - print current status
-            now = time.time()
-            elapsed = now - start_time
-            avg_time_per_task = elapsed / completed if completed > 0 else 0
-            print(f"Progress: {completed}/{total_expected} ({100*completed/total_expected:.1f}%) "
-                  f"Avg: {avg_time_per_task:.2f}s/task", flush=True)
+            # Check for shutdown during timeout
+            if _shutdown_event.is_set():
+                print("[PROGRESS] Shutdown event detected during timeout.", flush=True)
+                break
+                
+            # Timeout - print current status if we have progress
+            if completed > 0:
+                now = time.time()
+                elapsed = now - start_time
+                avg_time_per_task = elapsed / completed if completed > 0 else 0
+                print(f"Progress: {completed}/{total_expected} ({100*completed/total_expected:.1f}%) "
+                      f"Avg: {avg_time_per_task:.2f}s/task", flush=True)
     
     # Final status report
     final_time = time.time()
     elapsed = final_time - start_time
-    avg_time_per_task = elapsed / completed if completed > 0 else 0
-    print(f"Progress monitor completed: {completed}/{total_expected} ({100*completed/total_expected:.1f}%) "
-          f"in {elapsed:.1f}s (avg {avg_time_per_task:.2f}s/task)", flush=True)
+    if completed > 0:
+        avg_time_per_task = elapsed / completed
+        status = "interrupted" if _shutdown_event.is_set() else "completed"
+        print(f"Progress monitor {status}: {completed}/{total_expected} ({100*completed/total_expected:.1f}%) "
+              f"in {elapsed:.1f}s (avg {avg_time_per_task:.2f}s/task)", flush=True)
+    else:
+        print(f"Progress monitor terminated: no tasks completed in {elapsed:.1f}s", flush=True)
 
 def get_multiprocessing_start_method():
     """Get appropriate multiprocessing start method for the platform"""
@@ -578,7 +712,7 @@ def get_multiprocessing_start_method():
 def run_with_executor(trace_tasks, combined_params, trace_specific_output_dir, param_types, 
                      enable_direction, num_workers, batch_size, vertical_cache_info=None):
     """
-    Run simulations using ProcessPoolExecutor with optimized task distribution
+    Run simulations using ProcessPoolExecutor with optimized task distribution and graceful shutdown
     
     Args:
         trace_tasks: List of (trace_snp_file, vertical_pairs_with_counts) tuples
@@ -590,6 +724,7 @@ def run_with_executor(trace_tasks, combined_params, trace_specific_output_dir, p
         batch_size: Batch size for buffered writing
         vertical_cache_info: Shared memory cache info for vertical SNPs
     """
+    global _executor, _progress_thread
     
     print(f"Using ProcessPoolExecutor with {num_workers} processes...")
     
@@ -617,15 +752,19 @@ def run_with_executor(trace_tasks, combined_params, trace_specific_output_dir, p
         name="ProgressMonitor"
     )
     progress_thread.start()
+    _progress_thread = progress_thread
     print(f"Started progress monitor for {total_expected} simulations")
     
     executor_start_time = time.time()
     
-    with concurrent.futures.ProcessPoolExecutor(
+    executor = concurrent.futures.ProcessPoolExecutor(
         max_workers=num_workers, 
         initializer=init_worker_process,
         initargs=(vertical_cache_info or {}, progress_queue)
-    ) as executor:
+    )
+    _executor = executor
+    
+    try:
         futures = [
             executor.submit(
                 collect_trace_simulation_data,
@@ -643,6 +782,13 @@ def run_with_executor(trace_tasks, combined_params, trace_specific_output_dir, p
         total_simulations_completed = 0
 
         for future in concurrent.futures.as_completed(futures):
+            # Check for shutdown during result processing
+            if _shutdown_event.is_set():
+                print("[EXECUTOR] Shutdown detected, cancelling remaining futures...")
+                for f in futures:
+                    f.cancel()
+                break
+                
             exc = future.exception()
             if exc is not None:
                 print("\n--- Task FAILED ------------------------------------")
@@ -654,21 +800,46 @@ def run_with_executor(trace_tasks, combined_params, trace_specific_output_dir, p
                 sim_count = future.result()
                 total_simulations_completed += sim_count
 
-        # Signal progress monitor to stop
-        try:
-            progress_queue.put(('stop', None), timeout=1.0)
-        except:
-            pass
-        
-        progress_thread.join(timeout=2)
-
         total_time = time.time() - executor_start_time
-        print(f"ProcessPoolExecutor completed in {total_time:.2f}s")
+        
+        if _shutdown_event.is_set():
+            print(f"ProcessPoolExecutor interrupted after {total_time:.2f}s")
+        else:
+            print(f"ProcessPoolExecutor completed in {total_time:.2f}s")
+            
         print(f"Completed {completed_tasks}/{len(futures)} trace files")
         print(f"Total simulations completed: {total_simulations_completed}/{total_expected}")
 
         if failed_tasks:
             print(f"\nWarning: {len(failed_tasks)} trace files failed.")
+            
+    except KeyboardInterrupt:
+        print("[EXECUTOR] Keyboard interrupt detected in executor")
+        _shutdown_event.set()
+    except Exception as e:
+        print(f"[EXECUTOR] Unexpected error: {e}")
+        traceback.print_exc()
+    finally:
+        # Clean shutdown of executor and progress monitor
+        try:
+            print("[CLEANUP] Shutting down executor...")
+            executor.shutdown(wait=False, cancel_futures=True)
+            
+            # Stop progress monitor
+            try:
+                progress_queue.put(('stop', None), timeout=1.0)
+            except:
+                pass
+            
+            if progress_thread.is_alive():
+                progress_thread.join(timeout=5)
+                
+            print("[CLEANUP] Executor cleanup completed.")
+        except Exception as cleanup_error:
+            print(f"[CLEANUP] Error during cleanup: {cleanup_error}")
+        finally:
+            _executor = None
+            _progress_thread = None
 
 def validate_resource_usage():
     """Validate that current resource allocation is within platform-appropriate bounds"""
@@ -730,6 +901,10 @@ def validate_worker_allocation(num_workers, blas_threads):
 
 def main():
     """Main function for parallel data collection"""
+    # Register signal handlers for graceful shutdown
+    register_signal_handlers()
+    print("Registered signal handlers for graceful shutdown")
+    
     # Start background system monitoring immediately to show baseline system state
     start_background_monitoring(interval=600)
     print("Started system monitoring...")
@@ -939,7 +1114,17 @@ def main():
         validate_resource_usage()
         print("--------------------------------")
         
+    except KeyboardInterrupt:
+        print("\n[MAIN] Keyboard interrupt received in main function")
+        _shutdown_event.set()
+    except Exception as e:
+        print(f"\n[MAIN] Unexpected error in main function: {e}")
+        traceback.print_exc()
+        _shutdown_event.set()
     finally:
+        # Comprehensive cleanup
+        print("\n[CLEANUP] Starting final cleanup...")
+        
         # Stop background monitoring
         stop_background_monitoring()
         
@@ -947,6 +1132,29 @@ def main():
         if vertical_cache:
             vertical_cache.cleanup()
         cleanup_shared_memory()
+        
+        # Ensure executor and progress thread are cleaned up
+        global _executor, _progress_thread
+        if _executor:
+            try:
+                _executor.shutdown(wait=False, cancel_futures=True)
+            except:
+                pass
+            _executor = None
+            
+        if _progress_thread and _progress_thread.is_alive():
+            try:
+                _progress_thread.join(timeout=2)
+            except:
+                pass
+            _progress_thread = None
+        
+        if _shutdown_event.is_set():
+            print("[CLEANUP] Final cleanup completed after interrupt.")
+            import sys
+            sys.exit(130)  # Standard exit code for SIGINT
+        else:
+            print("[CLEANUP] Final cleanup completed successfully.")
 
 if __name__ == "__main__":
     main()
