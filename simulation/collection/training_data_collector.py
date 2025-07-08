@@ -50,6 +50,11 @@ _monitor_proc = None
 # Global progress queue for inter-process communication
 _progress_queue = None
 
+# Global shared memory registry for cleanup
+_shared_memory_blocks = []
+
+
+
 def get_worker_id():
     """Get unique worker identifier for profiling"""
     if hasattr(_profiling_data, 'worker_id'):
@@ -156,9 +161,6 @@ def stop_background_monitoring():
         _monitor_proc = None
         print("[MONITOR] System resource monitoring stopped.", flush=True)
 
-# Global shared memory registry for cleanup
-_shared_memory_blocks = []
-
 def get_optimal_workers(config_blas_threads=2):
     """Calculate optimal number of workers based on system resources"""
     # Get system info
@@ -175,8 +177,8 @@ def get_optimal_workers(config_blas_threads=2):
     # If using 2-4 BLAS threads per worker, reduce process count accordingly
     cpu_based_workers = max(1, cpu_count // max(1, config_blas_threads))
     
-    # No artificial cap - use all available resources
-    optimal_workers = min(memory_based_workers, cpu_based_workers)
+    # Conservative approach: use fewer workers to avoid oversubscription
+    optimal_workers = min(memory_based_workers, cpu_based_workers, cpu_count // 2)
     print(f"Optimal workers determined: {optimal_workers} (memory-based: {memory_based_workers}, cpu-based: {cpu_based_workers}, BLAS threads: {config_blas_threads})")
     
     return optimal_workers
@@ -306,33 +308,9 @@ def init_worker_process(vertical_cache_info, progress_queue):
     _progress_queue = progress_queue
 
 def get_snp_from_cache(snp_path, cache_info):
-    """Get SNP data from a shared memory cache, or read from disk as a fallback."""
-    if not cache_info or str(snp_path) not in cache_info:
-        return read_snp(snp_path) # Fallback for thread mode or uncached files
-
-    shm_info = cache_info[str(snp_path)]
-
-    s_shm = shm.SharedMemory(name=shm_info['s_name'])
-    s_array = np.ndarray(shm_info['s_shape'],
-                         dtype=shm_info['s_dtype'],
-                         buffer=s_shm.buf)
-
-    f_shm = shm.SharedMemory(name=shm_info['f_name'])
-    f_array = np.ndarray(shm_info['f_shape'],
-                         dtype=shm_info['f_dtype'],
-                         buffer=f_shm.buf)
-
-    # Construct Network object without duplicating the underlying data.
-    ntwk = rf.Network()
-    ntwk.s = s_array
-    ntwk.f = f_array
-    ntwk.z0 = np.asarray(shm_info['z0'])
-
-    # Keep shared‑memory segments alive for the lifetime of `ntwk`
-    ntwk._s_shm = s_shm
-    ntwk._f_shm = f_shm
-
-    return ntwk
+    """Load SNP data directly from disk for optimal performance."""
+    # Always load directly from disk - faster than shared memory overhead
+    return read_snp(snp_path)
 
 def _get_valid_block_sizes(n_lines):
     """Finds divisors of n_lines that result in an even number of blocks."""
@@ -354,7 +332,7 @@ def report_progress(completed_samples):
     global _progress_queue
     if _progress_queue:
         try:
-            _progress_queue.put(('progress', completed_samples), timeout=0.1)
+            _progress_queue.put(('progress', completed_samples), timeout=1.0)
         except:
             pass  # Queue full or other error, skip
 
@@ -380,6 +358,7 @@ def collect_trace_simulation_data(trace_snp_file, vertical_pairs_with_counts, co
     
     # Load horizontal SNP once per trace file
     trace_ntwk = read_snp(trace_snp_file)
+    
     n_ports = trace_ntwk.nports
     n_lines = n_ports // 2
     if n_lines == 0:
@@ -388,12 +367,16 @@ def collect_trace_simulation_data(trace_snp_file, vertical_pairs_with_counts, co
     trace_snp_path = Path(trace_snp_file)
     pickle_file = Path(pickle_dir) / f"{trace_snp_path.stem}.pkl"
     
+    total_simulations = sum(count for _, count in vertical_pairs_with_counts)
+    
     # Initialize buffered writer
     writer = BufferedPickleWriter(pickle_file, batch_size)
     
     if debug:
         print(f"Processing {len(vertical_pairs_with_counts)} vertical pairs for {trace_snp_path.name}")
         print(f"Detected {n_ports} ports ({n_lines} lines)")
+    
+    profile_print(f"Starting {trace_snp_path.name}: {total_simulations} simulations")
     
     total_completed = 0
     
@@ -465,10 +448,6 @@ def collect_trace_simulation_data(trace_snp_file, vertical_pairs_with_counts, co
                 writer.add_result(result)
                 total_completed += 1
                 
-                # Report progress periodically
-                if total_completed % 5 == 0:
-                    report_progress(1)
-                
                 if debug:
                     print(f"  Completed simulation {sample_idx+1}/{sample_count}: EW={line_ew}")
                     
@@ -482,11 +461,14 @@ def collect_trace_simulation_data(trace_snp_file, vertical_pairs_with_counts, co
     # Ensure all data is written
     writer.close()
     
-    # Final progress report
-    report_progress(total_completed - (total_completed % 5))
+    # Final progress report is not needed since we report after each simulation
+    
+    profile_print(f"Completed {trace_snp_path.name}: {total_completed} simulations")
     
     if debug:
         print(f"Completed {total_completed} simulations for {trace_snp_path.name}")
+    
+    return total_completed
 
 def cleanup_shared_memory():
     """Clean up all shared memory blocks"""
@@ -564,9 +546,6 @@ def run_with_executor(trace_tasks, combined_params, trace_specific_output_dir, p
         # Already set, continue
         pass
     
-    # Create progress queue
-    progress_queue = multiprocessing.Queue()
-    
     # Calculate total expected simulations for progress tracking
     total_expected = sum(
         sum(count for _, count in vertical_pairs_with_counts)
@@ -575,18 +554,10 @@ def run_with_executor(trace_tasks, combined_params, trace_specific_output_dir, p
     
     executor_start_time = time.time()
     
-    # Start progress monitor in separate thread
-    progress_thread = threading.Thread(
-        target=progress_monitor, 
-        args=(progress_queue, total_expected, 300),
-        daemon=True
-    )
-    progress_thread.start()
-    
     with concurrent.futures.ProcessPoolExecutor(
         max_workers=num_workers, 
         initializer=init_worker_process,
-        initargs=(vertical_cache_info or {}, progress_queue)
+        initargs=(vertical_cache_info or {}, None)
     ) as executor:
         futures = [
             executor.submit(
@@ -602,6 +573,7 @@ def run_with_executor(trace_tasks, combined_params, trace_specific_output_dir, p
         # Process results
         failed_tasks = []
         completed_tasks = 0
+        total_simulations_completed = 0
 
         for future in concurrent.futures.as_completed(futures):
             exc = future.exception()
@@ -612,6 +584,16 @@ def run_with_executor(trace_tasks, combined_params, trace_specific_output_dir, p
                 failed_tasks.append(exc)
             else:
                 completed_tasks += 1
+                sim_count = future.result()
+                total_simulations_completed += sim_count
+                
+                elapsed = time.time() - executor_start_time
+                sec_per_sim = elapsed / total_simulations_completed if total_simulations_completed > 0 else 0
+                eta = (total_expected - total_simulations_completed) * sec_per_sim if sec_per_sim > 0 else 0
+                print(f"Progress: {completed_tasks}/{len(futures)} tasks, "
+                      f"{total_simulations_completed}/{total_expected} simulations "
+                      f"({100*total_simulations_completed/total_expected:.1f}%) "
+                      f"Rate: {sec_per_sim:.2f}s/sim ETA: {eta/60:.1f}min", flush=True)
 
         total_time = time.time() - executor_start_time
         print(f"ProcessPoolExecutor completed in {total_time:.2f}s")
@@ -738,8 +720,8 @@ def main():
         except Exception as e:
             print(f"Warning: Could not save config file: {e}")
     
-    # Build optimized task structure: one task per trace file
-    trace_tasks = []  # [(trace_snp_file, [(vertical_pair, samples_needed), ...])]
+    # Build task structure - each task processes all samples for one trace file
+    trace_tasks = []  # [(trace_snp_file, [(vertical_pair, samples_needed)])]
     
     for trace_snp, vertical_pair in zip(trace_snps, vertical_pairs):
         pickle_file = trace_specific_output_dir / f"{Path(trace_snp).stem}.pkl"
@@ -762,41 +744,19 @@ def main():
         for _, vertical_pairs_with_counts in trace_tasks
     )
     
-    print(f"Created {len(trace_tasks)} trace file tasks for {total_simulations} total simulations")
+    print(f"Created {len(trace_tasks)} tasks for {total_simulations} total simulations")
+    print(f"Task distribution: {len(trace_tasks)} tasks, ~{total_simulations/len(trace_tasks) if trace_tasks else 0:.1f} simulations/task")
     
     if len(trace_tasks) == 0:
         print("All files already have sufficient samples")
         stop_background_monitoring()
         return
     
-    # Initialize shared memory cache for vertical SNPs only
+    # Skip shared memory cache for better performance - let each worker load files directly
     vertical_cache = None
     vertical_cache_info = {}
     
-    if not debug:
-        print("Setting up shared memory cache for vertical SNP files...")
-        try:
-            # Cache all unique vertical SNPs that will be used across processes
-            vertical_cache = SNPCache()
-            unique_vertical_snps = set()
-            for _, vertical_pairs_with_counts in trace_tasks:
-                for vertical_pair, _ in vertical_pairs_with_counts:
-                    unique_vertical_snps.update(vertical_pair)
-            
-            if unique_vertical_snps:
-                for snp_path in tqdm(unique_vertical_snps, desc="Caching vertical SNPs"):
-                    vertical_cache.add_snp(snp_path)
-                
-                vertical_cache_info = vertical_cache.get_cache_info()
-                print(f"Cached {len(vertical_cache_info)} vertical SNP files in shared memory.")
-            else:
-                print("No vertical SNPs found to cache.")
-            
-        except Exception as e:
-            print(f"Warning: Could not set up shared memory cache: {e}")
-            if vertical_cache: vertical_cache.cleanup()
-            vertical_cache = None
-            vertical_cache_info = {}
+    print("Using direct file loading for better performance...")
     
     # Run simulations
     try:
