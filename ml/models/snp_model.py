@@ -20,8 +20,7 @@ class SNPEmbedding(nn.Module):
 
         # Optimized: Use single projection instead of separate real/imag
         self.snp_proj = nn.Linear(freq_length * 2, freq_length)
-        # Use appropriate number of heads based on freq_length
-        # Ensure num_heads divides freq_length evenly
+        # Use appropriate number of heads based on freq_length evenly
         max_heads = min(8, freq_length // 16)  # Max heads with at least 16 dims per head
         num_heads = max_heads
         while num_heads > 1 and freq_length % num_heads != 0:
@@ -108,8 +107,7 @@ class OptimizedSNPEmbedding(nn.Module):
         nn.init.xavier_uniform_(self.snp_proj.weight)
         nn.init.zeros_(self.snp_proj.bias)
         
-        # Use appropriate number of heads based on freq_length
-        # Ensure num_heads divides freq_length evenly
+        # Use appropriate number of heads based on freq_length evenly
         max_heads = min(8, freq_length // 16)  # Max heads with at least 16 dims per head
         num_heads = max_heads
         while num_heads > 1 and freq_length % num_heads != 0:
@@ -185,6 +183,146 @@ class OptimizedSNPEmbedding(nn.Module):
             hidden_states_snp[:, 0] = hidden_states_snp[:, 0] + tx_token
             hidden_states_snp[:, 1] = hidden_states_snp[:, 1] + rx_token
         
+        return hidden_states_snp
+
+class FasterSNPEmbedding(nn.Module):
+    """
+    An even faster and more optimized SNP embedding module.
+    This version replaces the large linear projection with a 1D convolutional block,
+    which is more efficient for processing frequency-domain data. It also simplifies
+    the data reshaping logic for better performance.
+    """
+
+    def __init__(
+        self,
+        model_dim,
+        freq_length,
+        use_checkpointing=False,
+        use_mixed_precision=True,
+        use_tx_rx_tokens=True,
+        conv_kernel_size=7,
+        conv_channels=32,
+    ):
+        super().__init__()
+        self.freq_length = freq_length
+        self.model_dim = model_dim
+        self.use_checkpointing = use_checkpointing
+        self.use_mixed_precision = use_mixed_precision
+        self.use_tx_rx_tokens = use_tx_rx_tokens
+
+        # Efficient 1D convolutional block to replace the large linear projection
+        self.snp_conv_proj = nn.Sequential(
+            # Project real and imaginary parts independently
+            nn.Conv1d(2, conv_channels, kernel_size=1, bias=False),
+            nn.GELU(),
+            # Mix information across neighboring frequency points
+            nn.Conv1d(
+                conv_channels,
+                conv_channels,
+                kernel_size=conv_kernel_size,
+                padding=(conv_kernel_size - 1) // 2,
+                groups=conv_channels,
+                bias=False,
+            ),
+            nn.GELU(),
+            # Project to the final frequency dimension
+            nn.Conv1d(conv_channels, 1, kernel_size=1, bias=False),
+        )
+
+        # Encoder to condense port interaction information
+        max_heads = min(8, freq_length // 16)
+        num_heads = max_heads
+        while num_heads > 1 and freq_length % num_heads != 0:
+            num_heads -= 1
+        self.snp_encoder = ConditionEmbedding(
+            encoder_dim=freq_length, embed_dim=model_dim, num_heads=num_heads
+        )
+
+        self.register_buffer("_power_inv", torch.tensor(0.25))
+
+    def _snp_transform(self, x):
+        with torch.amp.autocast(
+            device_type=x.device.type, enabled=self.use_mixed_precision
+        ):
+            # Add a small epsilon to prevent NaNs for zero inputs
+            return x.sign() * torch.pow(x.abs() + 1e-9, self._power_inv)
+
+    def _process_snp_chunk(self, snp_chunk, b, d, p):
+        snp_chunk = torch.view_as_real(snp_chunk)
+        snp_chunk = self._snp_transform(snp_chunk)
+
+        # Reshape for convolutional processing
+        # Input shape for conv: (B*D*P1*P2, 2, F)
+        snp_chunk = rearrange(snp_chunk, "b d f p1 p2 ri -> (b d p1 p2) ri f")
+        
+        # Apply convolutional projection
+        # Output shape: (B*D*P1*P2, 1, F)
+        snp_chunk = self.snp_conv_proj(snp_chunk)
+
+        # Reshape for encoder
+        # Output shape: (B*D, P, P*F) -> (B*D, P, P, F)
+        snp_chunk = rearrange(
+            snp_chunk,
+            "(b d p1 p2) 1 f -> (b d) p1 (p2 f)",
+            b=b,
+            d=d,
+            p1=p,
+            p2=p,
+        )
+        return snp_chunk
+
+    def forward(self, snp_vert, tx_token=None, rx_token=None):
+        if snp_vert.dim() == 4:
+            b, f, p1, p2 = snp_vert.size()
+            snp_vert = snp_vert.unsqueeze(1)
+            d = 1
+        else:
+            b, d, f, p1, p2 = snp_vert.size()
+            if self.use_tx_rx_tokens and d != 2:
+                raise ValueError(
+                    "Input `snp_vert` must have 2 tensors (tx and rx) in dim 1."
+                )
+
+        if p1 != p2:
+            raise ValueError("SNP matrix must be square (P x P).")
+        p = p1
+
+        # Process SNP data, with optional gradient checkpointing
+        if self.use_checkpointing and self.training:
+            snp_vert = torch.utils.checkpoint.checkpoint(
+                self._process_snp_chunk, snp_vert, b, d, p, use_reentrant=False
+            )
+        else:
+            snp_vert = self._process_snp_chunk(snp_vert, b, d, p)
+
+        # Interleave near and far-end ports
+        half_p = p // 2
+        interleaved = torch.stack(
+            [snp_vert[:, :half_p], snp_vert[:, half_p:]], dim=2
+        )
+        snp_vert = rearrange(
+            interleaved, "b p1 d (p2 e) -> (b p1) (d p2) e", p1=half_p, d=2, p2=p
+        )
+
+        # Encode port interactions
+        with torch.amp.autocast(
+            device_type=snp_vert.device.type, enabled=self.use_mixed_precision
+        ):
+            hidden_states_snp = self.snp_encoder(snp_vert)
+
+        hidden_states_snp = rearrange(
+            hidden_states_snp, "(b d p) e -> b d p e", b=b, d=d, p=half_p
+        )
+
+        # Add Tx/Rx tokens if enabled
+        if self.use_tx_rx_tokens and d == 2:
+            if tx_token is None or rx_token is None:
+                raise ValueError(
+                    "`tx_token` and `rx_token` must be provided when `use_tx_rx_tokens` is True."
+                )
+            hidden_states_snp[:, 0].add_(tx_token)
+            hidden_states_snp[:, 1].add_(rx_token)
+
         return hidden_states_snp
 
 class SNPDecoder(nn.Module):
