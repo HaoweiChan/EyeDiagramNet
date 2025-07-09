@@ -71,6 +71,7 @@ model:
     ew_threshold: 0.1
     compile_model: false
     use_laplace_on_fit_end: false
+    ignore_snp: false
     model:
       class_path: ml.models.eye_width_model.EyeWidthRegressor
       init_args:

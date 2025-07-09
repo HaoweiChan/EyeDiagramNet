@@ -73,7 +73,8 @@ class TraceEWDataset(Dataset):
         boundaries,
         vert_snps,
         eye_widths,
-        train=False
+        train=False,
+        ignore_snp=False
     ):
         super().__init__()
 
@@ -83,6 +84,7 @@ class TraceEWDataset(Dataset):
 
         self.vert_snps = vert_snps
         self.vert_cache = SharedMemoryCache()
+        self.ignore_snp = ignore_snp
 
         self.eye_widths = torch.from_numpy(eye_widths).float()
         self.repetition = self.boundaries.size(1)
@@ -94,6 +96,11 @@ class TraceEWDataset(Dataset):
             signal_indices = torch.where(seq[:, 1] == 0)[0]
             port_pos = torch.arange(len(signal_indices))
             self.port_positions.append(port_pos)
+        
+        # Create dummy SNP data if ignoring SNPs
+        if self.ignore_snp:
+            # Create a small dummy SNP tensor: (2, F, P, P) where F=32, P=4 for minimal memory usage
+            self.dummy_snp = torch.zeros(2, 32, 4, 4, dtype=torch.complex64)
 
     def __len__(self):
         return len(self.trace_seqs) * self.repetition
@@ -105,18 +112,22 @@ class TraceEWDataset(Dataset):
         trace_seq = self.trace_seqs[seq_index]
         port_positions = self.port_positions[seq_index].clone()
 
-        # Retrieve the left and right snps
-        tx_vert_file, rx_vert_file = self.vert_snps[seq_index, bnd_index]
-        tx_vert_snp = self.vert_snp(tx_vert_file)
-        rx_vert_snp = self.vert_snp(rx_vert_file)
-        vert_snp = torch.stack((tx_vert_snp, flip_snp(rx_vert_snp)))
+        if self.ignore_snp:
+            # Return dummy SNP data without loading files
+            vert_snp = self.dummy_snp.clone()
+        else:
+            # Retrieve the left and right snps
+            tx_vert_file, rx_vert_file = self.vert_snps[seq_index, bnd_index]
+            tx_vert_snp = self.vert_snp(tx_vert_file)
+            rx_vert_snp = self.vert_snp(rx_vert_file)
+            vert_snp = torch.stack((tx_vert_snp, flip_snp(rx_vert_snp)))
 
         # Retrieve the boundary and eye width values
         direction = self.directions[seq_index, bnd_index]
         boundary = self.boundaries[seq_index, bnd_index]
         eye_width = self.eye_widths[seq_index, bnd_index]
 
-        if self.train and random.random() > 0.5:
+        if self.train and random.random() > 0.5 and not self.ignore_snp:
             trace_seq, direction, eye_width, vert_snp, port_positions = \
                 self.augment(trace_seq, direction, eye_width, vert_snp, port_positions)
         return trace_seq, direction, boundary, vert_snp, eye_width, port_positions

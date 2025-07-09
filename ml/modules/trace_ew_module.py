@@ -73,9 +73,14 @@ class TraceEWModule(LightningModule):
         ew_scaler: int = 100,
         ew_threshold: float = 0.3,
         use_laplace_on_fit_end: bool = True,
+        ignore_snp: bool = False,
     ):
         super().__init__()
         self.save_hyperparameters(ignore=['model'])
+
+        # Set ignore_snp on the model if it supports it
+        if hasattr(model, 'ignore_snp'):
+            model.ignore_snp = ignore_snp
 
         self.model = model
         self.train_step_outputs = {}

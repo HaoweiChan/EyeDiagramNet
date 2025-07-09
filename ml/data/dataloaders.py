@@ -25,6 +25,7 @@ class TraceSeqEWDataloader(LightningDataModule):
         batch_size: int,
         test_size: float = 0.2,
         scaler_path: str | None = None,
+        ignore_snp: bool = False,
     ):
         super().__init__()
         self.data_dirs = data_dirs
@@ -32,6 +33,7 @@ class TraceSeqEWDataloader(LightningDataModule):
         self.batch_size = batch_size
         self.test_size = test_size
         self.scaler_path = scaler_path
+        self.ignore_snp = ignore_snp
 
         # containers for datasets per "name"
         self.train_dataset: Dict[str, TraceEWDataset] = {}
@@ -76,7 +78,13 @@ class TraceSeqEWDataloader(LightningDataModule):
                     continue
 
                 snp_file = Path(snp_horiz_path).stem.replace("-", "_")
-                snp_vert = tuple(zip(loaded["snp_txs"], loaded["snp_rxs"]))
+                
+                # Handle SNP vertical data based on ignore_snp flag
+                if self.ignore_snp:
+                    # Use dummy SNP data when ignoring SNPs
+                    snp_vert = (("dummy_tx.snp", "dummy_rx.snp"),)
+                else:
+                    snp_vert = tuple(zip(loaded["snp_txs"], loaded["snp_rxs"]))
 
                 # The key must match the case_id from the CSV file
                 try:
@@ -109,7 +117,7 @@ class TraceSeqEWDataloader(LightningDataModule):
             eye_widths = np.asarray(eye_widths)
             eye_widths[eye_widths < 0] = 0 # Make -0.1 eye_widths to 0
 
-            rank_zero_info(f"{name}| input_seq {input_arr.shape} | eye_width {eye_widths.shape}")
+            rank_zero_info(f"{name}| input_seq {input_arr.shape} | eye_width {eye_widths.shape} | ignore_snp={self.ignore_snp}")
 
             # train/val split
             indices = np.arange(len(input_arr))
@@ -138,10 +146,10 @@ class TraceSeqEWDataloader(LightningDataModule):
 
             # build datasets
             self.train_dataset[name] = TraceEWDataset(
-                x_seq_tr, x_tok_tr, x_fix_tr, x_vert_tr, y_tr, train=True
+                x_seq_tr, x_tok_tr, x_fix_tr, x_vert_tr, y_tr, train=True, ignore_snp=self.ignore_snp
             )
             self.val_dataset[name] = TraceEWDataset(
-                x_seq_val, x_tok_val, x_fix_val, x_vert_val, y_val
+                x_seq_val, x_tok_val, x_fix_val, x_vert_val, y_val, ignore_snp=self.ignore_snp
             )
 
         # final transform with fitted scalers

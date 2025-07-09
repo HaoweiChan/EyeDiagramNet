@@ -25,6 +25,23 @@ class CustomLightningCLI(LightningCLI):
             except (IndexError, StopIteration, FileNotFoundError):
                 print("Warning: Could not automatically find checkpoint or scaler for prediction.")
                 pass
+        
+        # Pass ignore_snp flag from TraceEWModule to both nested model and datamodule
+        if hasattr(self.config, self.subcommand) and hasattr(getattr(self.config, self.subcommand), 'model'):
+            model_config = getattr(self.config, self.subcommand).model
+            if hasattr(model_config, 'init_args') and hasattr(model_config.init_args, 'ignore_snp'):
+                ignore_snp = model_config.init_args.ignore_snp
+                
+                # Pass to nested model (EyeWidthRegressor)
+                if hasattr(model_config.init_args, 'model') and hasattr(model_config.init_args.model, 'init_args'):
+                    model_config.init_args.model.init_args.ignore_snp = ignore_snp
+                    print(f"Propagated ignore_snp={ignore_snp} from TraceEWModule to EyeWidthRegressor")
+                
+                # Pass to datamodule
+                data_config = getattr(self.config, self.subcommand).data
+                if hasattr(data_config, 'init_args'):
+                    data_config.init_args.ignore_snp = ignore_snp
+                    print(f"Propagated ignore_snp={ignore_snp} from TraceEWModule to datamodule")
 
 def setup_torch_compile_fallback():
     """Fallback to eager mode if torch.compile fails."""

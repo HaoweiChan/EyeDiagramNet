@@ -101,6 +101,7 @@ class EyeWidthRegressor(nn.Module):
         use_gradient_checkpointing=False,
         pretrained_snp_path=None,
         freeze_snp_encoder=False,
+        ignore_snp=False,
     ):
         super().__init__()
 
@@ -108,6 +109,7 @@ class EyeWidthRegressor(nn.Module):
         self.output_dim = output_dim
         self.use_rope = use_rope
         self.use_gradient_checkpointing = use_gradient_checkpointing
+        self.ignore_snp = ignore_snp
 
         # Trace sequence encoder
         self.trace_encoder = TraceSeqTransformer(
@@ -155,20 +157,26 @@ class EyeWidthRegressor(nn.Module):
         self.boundary_processor = StructuredGatedBoundaryProcessor(model_dim)
         self.fix_token = nn.Parameter(torch.zeros(1, 1, self.model_dim))
 
-        # SNP encoder
-        self.snp_encoder = OptimizedSNPEmbedding(model_dim=model_dim, freq_length=freq_length, use_tx_rx_tokens=True)
-        self.tx_token = nn.Parameter(torch.randn(1, 1, model_dim) * 0.02)
-        self.rx_token = nn.Parameter(torch.randn(1, 1, model_dim) * 0.02)
-        
-        # Load pretrained SNP encoder if provided
-        if pretrained_snp_path is not None:
-            from ..utils.weight_transfer import load_pretrained_snp_encoder
-            load_pretrained_snp_encoder(
-                self, 
-                pretrained_snp_path, 
-                encoder_attr='snp_encoder',
-                freeze=freeze_snp_encoder
-            )
+        # SNP encoder (only create if not ignoring SNPs)
+        if not self.ignore_snp:
+            self.snp_encoder = OptimizedSNPEmbedding(model_dim=model_dim, freq_length=freq_length, use_tx_rx_tokens=True)
+            self.tx_token = nn.Parameter(torch.randn(1, 1, model_dim) * 0.02)
+            self.rx_token = nn.Parameter(torch.randn(1, 1, model_dim) * 0.02)
+            
+            # Load pretrained SNP encoder if provided
+            if pretrained_snp_path is not None:
+                from ..utils.weight_transfer import load_pretrained_snp_encoder
+                load_pretrained_snp_encoder(
+                    self, 
+                    pretrained_snp_path, 
+                    encoder_attr='snp_encoder',
+                    freeze=freeze_snp_encoder
+                )
+        else:
+            # Create dummy parameters to maintain interface compatibility
+            self.snp_encoder = None
+            self.tx_token = None
+            self.rx_token = None
         
         # Positional encoding (only used if not using RoPE)
         if not use_rope:
@@ -232,13 +240,21 @@ class EyeWidthRegressor(nn.Module):
         hidden_states_fix = self.boundary_processor(boundary).unsqueeze(1) # (B, 1, M)
 
         # Process snp into hidden states
-        if self.use_gradient_checkpointing and self.training:
-            # Pass all tensor arguments positionally for checkpointing
-            hidden_states_vert = torch.utils.checkpoint.checkpoint(
-                self.snp_encoder, snp_vert, self.tx_token, self.rx_token, use_reentrant=False
-            )
+        if not self.ignore_snp and self.snp_encoder is not None:
+            if self.use_gradient_checkpointing and self.training:
+                # Pass all tensor arguments positionally for checkpointing
+                hidden_states_vert = torch.utils.checkpoint.checkpoint(
+                    self.snp_encoder, snp_vert, self.tx_token, self.rx_token, use_reentrant=False
+                )
+            else:
+                hidden_states_vert = self.snp_encoder(snp_vert, tx_token=self.tx_token, rx_token=self.rx_token)
         else:
-            hidden_states_vert = self.snp_encoder(snp_vert, tx_token=self.tx_token, rx_token=self.rx_token)
+            # Create dummy SNP states with same dimensions as expected
+            batch_size = hidden_states_seq.size(0)
+            # Expected SNP output shape: (B, 2, num_traces, model_dim)
+            num_traces = hidden_states_seq.size(1)
+            hidden_states_vert = torch.zeros(batch_size, 2, num_traces, self.model_dim, 
+                                           device=hidden_states_seq.device, dtype=hidden_states_seq.dtype)
 
         # Process direction embedding
         hidden_states_dir = self.dir_projection(direction) # (B, P, M)
@@ -258,16 +274,23 @@ class EyeWidthRegressor(nn.Module):
         if not self.use_rope and self.signal_projection is not None:
             signal_embeds = self.signal_projection[:num_signals].unsqueeze(0) # (B, L, M)
             hidden_states_seq = hidden_states_seq + signal_embeds
-            hidden_states_vert = hidden_states_vert + signal_embeds.unsqueeze(0)
-        
-        hidden_states_vert = rearrange(hidden_states_vert, "b d p e -> b (d p) e") # concat tx and rx snp states
+            if not self.ignore_snp:
+                hidden_states_vert = hidden_states_vert + signal_embeds.unsqueeze(0)
         
         # Concatenate all hidden states
-        hidden_states = torch.cat((
-            hidden_states_seq,
-            hidden_states_vert,
-            hidden_states_fix + self.fix_token
-        ), dim=1)
+        if not self.ignore_snp:
+            hidden_states_vert = rearrange(hidden_states_vert, "b d p e -> b (d p) e") # concat tx and rx snp states
+            hidden_states = torch.cat((
+                hidden_states_seq,
+                hidden_states_vert,
+                hidden_states_fix + self.fix_token
+            ), dim=1)
+        else:
+            # Skip SNP states when ignoring SNPs
+            hidden_states = torch.cat((
+                hidden_states_seq,
+                hidden_states_fix + self.fix_token
+            ), dim=1)
 
         # Final norm before signal transformer
         hidden_states = self.norm_concat_tokens(hidden_states)
