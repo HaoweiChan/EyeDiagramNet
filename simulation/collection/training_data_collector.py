@@ -518,33 +518,19 @@ def init_worker_process(vertical_cache_info, progress_queue):
     _progress_queue = progress_queue
     
     # Set CPU affinity for better CPU utilization (Linux only)
-    try:
-        if platform.system() == "Linux" and hasattr(os, 'sched_setaffinity'):
-            worker_id = os.getpid()
-            cpu_count = psutil.cpu_count()
-            
-            # Distribute workers across CPU cores
-            # Use process ID to determine which cores this worker should use
-            cores_per_worker = max(1, cpu_count // psutil.cpu_count(logical=False))  # Physical cores
-            
-            # Calculate CPU affinity mask
-            available_cpus = list(range(cpu_count))
-            worker_hash = hash(worker_id) % cpu_count
-            
-            # Assign cores in round-robin fashion
-            worker_cpus = []
-            for i in range(cores_per_worker):
-                cpu_id = (worker_hash + i) % cpu_count
-                worker_cpus.append(cpu_id)
-            
-            # Set affinity if we have multiple CPUs
-            if cpu_count > 1:
-                os.sched_setaffinity(0, worker_cpus)
-                profile_print(f"Worker {worker_id} set to CPUs: {worker_cpus}")
-                
-    except Exception as e:
-        # Don't fail if CPU affinity setting fails
-        profile_print(f"Could not set CPU affinity: {e}")
+    if platform.system() == "Linux" and hasattr(os, 'sched_setaffinity'):
+        worker_id = os.getpid()
+        cpu_count = psutil.cpu_count()
+        
+        # Simple round-robin CPU assignment
+        if cpu_count > 1:
+            assigned_cpu = worker_id % cpu_count
+            try:
+                os.sched_setaffinity(0, [assigned_cpu])
+                profile_print(f"Worker {worker_id} assigned to CPU {assigned_cpu}")
+            except:
+                # Ignore failures (common in containers/restricted environments)
+                pass
 
 def get_snp_from_cache(snp_path, cache_info):
     """Load SNP data directly from disk for optimal performance."""
