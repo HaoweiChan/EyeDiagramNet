@@ -71,10 +71,11 @@ _shutdown_event = threading.Event()
 _executor = None
 _progress_thread = None
 _shutdown_in_progress = False
+_cleanup_done = False
 
 def signal_handler(signum, frame):
-    """Handle SIGINT (Ctrl+C) for graceful shutdown with aggressive timeouts"""
-    global _shutdown_event, _executor, _progress_thread, _shutdown_in_progress
+    """Handle SIGINT (Ctrl+C) for immediate shutdown"""
+    global _shutdown_event, _shutdown_in_progress, _cleanup_done
     
     # Handle double Ctrl+C - force immediate exit
     if _shutdown_in_progress:
@@ -82,53 +83,21 @@ def signal_handler(signum, frame):
         import os
         os._exit(130)  # Immediate exit without any cleanup
     
-    print("\n[SHUTDOWN] Received interrupt signal (Ctrl+C). Initiating graceful shutdown...", flush=True)
+    print("\n[SHUTDOWN] Received interrupt signal (Ctrl+C). Setting shutdown event...", flush=True)
     print("[SHUTDOWN] Press Ctrl+C again to force immediate exit if shutdown hangs.", flush=True)
     _shutdown_in_progress = True
     _shutdown_event.set()
     
-    # Aggressive shutdown with short timeouts
-    shutdown_start = time.time()
+    # Start a timeout thread for hard exit if cleanup takes too long
+    def force_exit_after_timeout():
+        time.sleep(10.0)  # 10 second hard timeout
+        if not _cleanup_done:
+            print("\n[FORCE EXIT] Shutdown timeout exceeded. Forcing immediate exit...", flush=True)
+            import os
+            os._exit(130)
     
-    # Stop progress monitoring first with short timeout
-    if _progress_thread and _progress_thread.is_alive():
-        print("[SHUTDOWN] Stopping progress monitor...", flush=True)
-        try:
-            if _progress_queue:
-                _progress_queue.put(('stop', None), timeout=0.5)
-        except:
-            pass
-        _progress_thread.join(timeout=1.0)  # Reduced from 3 to 1 second
-        if _progress_thread.is_alive():
-            print("[SHUTDOWN] Warning: Progress monitor thread still alive, continuing...", flush=True)
-        else:
-            print("[SHUTDOWN] Progress monitor stopped.", flush=True)
-    
-    # Shutdown executor with immediate cancellation
-    if _executor:
-        print("[SHUTDOWN] Shutting down ProcessPoolExecutor...", flush=True)
-        _executor.shutdown(wait=False, cancel_futures=True)
-        print("[SHUTDOWN] ProcessPoolExecutor shutdown initiated.", flush=True)
-    
-    # Stop background monitoring with aggressive timeouts
-    stop_background_monitoring()
-    
-    # Clean up resources quickly
-    cleanup_shared_memory()
-    
-    elapsed = time.time() - shutdown_start
-    print(f"[SHUTDOWN] Cleanup completed in {elapsed:.1f}s. Exiting...", flush=True)
-    
-    # Force exit immediately - don't wait for anything else
-    import sys
-    import os
-    
-    # If shutdown took too long, force exit more aggressively
-    if elapsed > 2.0:
-        print("[SHUTDOWN] Shutdown took too long, forcing immediate exit...", flush=True)
-        os._exit(130)  # Immediate exit without cleanup
-    else:
-        sys.exit(130)  # Standard exit code for SIGINT
+    timeout_thread = threading.Thread(target=force_exit_after_timeout, daemon=True)
+    timeout_thread.start()
 
 def register_signal_handlers():
     """Register signal handlers for graceful shutdown"""
@@ -401,8 +370,12 @@ class BufferedPickleWriter:
             self.flush()
     
     def flush(self):
-        """Write buffered results to disk"""
+        """Write buffered results to disk with timeout protection"""
         if not self.buffer or self._closed:
+            return
+        
+        # Skip flush if shutdown is in progress to avoid hanging
+        if _shutdown_event.is_set():
             return
         
         try:
@@ -422,31 +395,35 @@ class BufferedPickleWriter:
                 self.data['meta']['n_ports'] = first_result.get('n_ports', 0)
                 self.data['meta']['param_types'] = first_result.get('param_types', [])
             
-            # Write to disk
-            self.pickle_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.pickle_file, 'wb') as f:
-                pickle.dump(self.data, f)
+            # Write to disk with timeout protection using thread
+            def write_with_timeout():
+                self.pickle_file.parent.mkdir(parents=True, exist_ok=True)
+                with open(self.pickle_file, 'wb') as f:
+                    pickle.dump(self.data, f)
+            
+            write_thread = threading.Thread(target=write_with_timeout, daemon=True)
+            write_thread.start()
+            write_thread.join(timeout=5.0)  # 5 second timeout for I/O
+            
+            if write_thread.is_alive():
+                # Write is taking too long, abandon it
+                print(f"[WARNING] Pickle write timeout for {self.pickle_file.name}, abandoning...", flush=True)
+                return
             
             self.buffer.clear()
             self._last_flush_time = time.time()
             
         except Exception as e:
-            # If normal write fails during shutdown, try emergency save
-            if _shutdown_event.is_set():
-                try:
-                    emergency_file = self.pickle_file.with_suffix('.emergency.pkl')
-                    with open(emergency_file, 'wb') as f:
-                        pickle.dump({'buffer': self.buffer, 'existing_data': self.data}, f)
-                    print(f"[EMERGENCY] Saved buffered data to {emergency_file}", flush=True)
-                except:
-                    print(f"[ERROR] Failed to save data during shutdown: {e}", flush=True)
-            else:
-                raise
+            # If normal write fails, just log and continue
+            print(f"[WARNING] Failed to flush pickle data: {e}", flush=True)
+            self.buffer.clear()  # Clear buffer to avoid memory issues
     
     def close(self):
         """Flush remaining data and close"""
         if not self._closed:
-            self.flush()
+            # Only flush if not shutting down to avoid hanging
+            if not _shutdown_event.is_set():
+                self.flush()
             self._closed = True
     
     def _emergency_cleanup(self):
@@ -611,8 +588,8 @@ def collect_trace_simulation_data(trace_snp_file, vertical_pairs_with_counts, co
         rx_ntwk = get_snp_from_cache(snp_rx_path, _vertical_cache_info)
         
         for sample_idx in range(sample_count):
-            # Check for shutdown between samples
-            if _shutdown_event.is_set():
+            # Check for shutdown more frequently - every 10 samples or immediately
+            if sample_idx % 10 == 0 and _shutdown_event.is_set():
                 profile_print(f"Shutdown detected, stopping {trace_snp_path.name} early")
                 break
             # Sample parameters
@@ -879,27 +856,43 @@ def run_with_executor(trace_tasks, combined_params, trace_specific_output_dir, p
         traceback.print_exc()
     finally:
         # Clean shutdown of executor and progress monitor
-        try:
-            print("[CLEANUP] Shutting down executor...")
-            executor.shutdown(wait=False, cancel_futures=True)
-            
-            # Stop progress monitor with aggressive timeout
+        global _cleanup_done
+        if not _cleanup_done:
             try:
-                progress_queue.put(('stop', None), timeout=0.5)
-            except:
-                pass
-            
-            if progress_thread.is_alive():
-                progress_thread.join(timeout=1.0)
-                if progress_thread.is_alive():
-                    print("[CLEANUP] Warning: Progress thread still alive, continuing...")
+                print("[CLEANUP] Shutting down executor...")
                 
-            print("[CLEANUP] Executor cleanup completed.")
-        except Exception as cleanup_error:
-            print(f"[CLEANUP] Error during cleanup: {cleanup_error}")
-        finally:
-            _executor = None
-            _progress_thread = None
+                # Force terminate all worker processes immediately
+                if hasattr(executor, '_processes') and executor._processes:
+                    for p in executor._processes.values():
+                        if p.is_alive():
+                            p.terminate()
+                    
+                    # Give processes 1 second to terminate gracefully
+                    time.sleep(1.0)
+                    
+                    # Force kill any remaining processes
+                    for p in executor._processes.values():
+                        if p.is_alive():
+                            p.kill()
+                
+                executor.shutdown(wait=False, cancel_futures=True)
+                
+                # Stop progress monitor aggressively
+                try:
+                    progress_queue.put(('stop', None), timeout=0.1)
+                except:
+                    pass
+                
+                if progress_thread.is_alive():
+                    progress_thread.join(timeout=0.5)
+                    # Don't wait longer - thread will be daemon
+                    
+                print("[CLEANUP] Executor cleanup completed.")
+            except Exception as cleanup_error:
+                print(f"[CLEANUP] Error during cleanup: {cleanup_error}")
+            finally:
+                _executor = None
+                _progress_thread = None
 
 def validate_resource_usage():
     """Validate that current resource allocation is within platform-appropriate bounds"""
@@ -1208,40 +1201,27 @@ def main():
         _shutdown_event.set()
     finally:
         # Comprehensive cleanup
-        print("\n[CLEANUP] Starting final cleanup...")
-        
-        # Stop background monitoring
-        stop_background_monitoring()
-        
-        # Clean up shared memory
-        if vertical_cache:
-            vertical_cache.cleanup()
-        cleanup_shared_memory()
-        
-        # Ensure executor and progress thread are cleaned up
-        global _executor, _progress_thread
-        if _executor:
-            try:
-                _executor.shutdown(wait=False, cancel_futures=True)
-            except:
-                pass
-            _executor = None
+        global _cleanup_done, _executor, _progress_thread
+        if not _cleanup_done:
+            print("\n[CLEANUP] Starting final cleanup...")
             
-        if _progress_thread and _progress_thread.is_alive():
-            try:
-                _progress_thread.join(timeout=1.0)  # Reduced from 2 to 1 second
-                if _progress_thread.is_alive():
-                    print("[CLEANUP] Warning: Progress thread still alive, abandoning...")
-            except:
-                pass
-            _progress_thread = None
-        
-        if _shutdown_event.is_set():
-            print("[CLEANUP] Final cleanup completed after interrupt.")
-            import sys
-            sys.exit(130)  # Standard exit code for SIGINT
-        else:
-            print("[CLEANUP] Final cleanup completed successfully.")
+            # Stop background monitoring
+            stop_background_monitoring()
+            
+            # Clean up shared memory
+            if vertical_cache:
+                vertical_cache.cleanup()
+            cleanup_shared_memory()
+            
+            # Mark cleanup as done
+            _cleanup_done = True
+            
+            if _shutdown_event.is_set():
+                print("[CLEANUP] Final cleanup completed after interrupt.")
+                import sys
+                sys.exit(130)  # Standard exit code for SIGINT
+            else:
+                print("[CLEANUP] Final cleanup completed successfully.")
 
 if __name__ == "__main__":
     main()
