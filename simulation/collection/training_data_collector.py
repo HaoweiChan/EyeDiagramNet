@@ -13,7 +13,14 @@ def get_platform_blas_default():
     """Get platform-appropriate BLAS thread default"""
     system = platform.system()
     if system == "Linux":
-        return "1"  # Aggressive: Maximize process parallelism
+        # Use 2-4 BLAS threads for better CPU utilization on servers
+        cpu_count = psutil.cpu_count() if 'psutil' in globals() else os.cpu_count()
+        if cpu_count >= 32:
+            return "4"  # High-core servers: 4 BLAS threads per worker
+        elif cpu_count >= 16:
+            return "3"  # Mid-range servers: 3 BLAS threads per worker
+        else:
+            return "2"  # Smaller servers: 2 BLAS threads per worker
     elif system == "Darwin":  # macOS
         return "2"  # Balanced: Share threads between BLAS and processes
     else:
@@ -40,7 +47,6 @@ import numpy as np
 import multiprocessing
 import concurrent.futures
 import multiprocessing.shared_memory as shm
-from queue import Empty
 from pathlib import Path
 from datetime import datetime
 
@@ -64,42 +70,65 @@ _shared_memory_blocks = []
 _shutdown_event = threading.Event()
 _executor = None
 _progress_thread = None
+_shutdown_in_progress = False
 
 def signal_handler(signum, frame):
-    """Handle SIGINT (Ctrl+C) for graceful shutdown"""
-    global _shutdown_event, _executor, _progress_thread
+    """Handle SIGINT (Ctrl+C) for graceful shutdown with aggressive timeouts"""
+    global _shutdown_event, _executor, _progress_thread, _shutdown_in_progress
+    
+    # Handle double Ctrl+C - force immediate exit
+    if _shutdown_in_progress:
+        print("\n[FORCE EXIT] Second interrupt signal received. Forcing immediate exit...", flush=True)
+        import os
+        os._exit(130)  # Immediate exit without any cleanup
     
     print("\n[SHUTDOWN] Received interrupt signal (Ctrl+C). Initiating graceful shutdown...", flush=True)
+    print("[SHUTDOWN] Press Ctrl+C again to force immediate exit if shutdown hangs.", flush=True)
+    _shutdown_in_progress = True
     _shutdown_event.set()
     
-    # Stop progress monitoring first
+    # Aggressive shutdown with short timeouts
+    shutdown_start = time.time()
+    
+    # Stop progress monitoring first with short timeout
     if _progress_thread and _progress_thread.is_alive():
         print("[SHUTDOWN] Stopping progress monitor...", flush=True)
         try:
             if _progress_queue:
-                _progress_queue.put(('stop', None), timeout=1.0)
+                _progress_queue.put(('stop', None), timeout=0.5)
         except:
             pass
-        _progress_thread.join(timeout=3)
-        print("[SHUTDOWN] Progress monitor stopped.", flush=True)
+        _progress_thread.join(timeout=1.0)  # Reduced from 3 to 1 second
+        if _progress_thread.is_alive():
+            print("[SHUTDOWN] Warning: Progress monitor thread still alive, continuing...", flush=True)
+        else:
+            print("[SHUTDOWN] Progress monitor stopped.", flush=True)
     
-    # Shutdown executor
+    # Shutdown executor with immediate cancellation
     if _executor:
         print("[SHUTDOWN] Shutting down ProcessPoolExecutor...", flush=True)
         _executor.shutdown(wait=False, cancel_futures=True)
         print("[SHUTDOWN] ProcessPoolExecutor shutdown initiated.", flush=True)
     
-    # Stop background monitoring
+    # Stop background monitoring with aggressive timeouts
     stop_background_monitoring()
     
-    # Clean up resources
+    # Clean up resources quickly
     cleanup_shared_memory()
     
-    print("[SHUTDOWN] Cleanup completed. Exiting...", flush=True)
+    elapsed = time.time() - shutdown_start
+    print(f"[SHUTDOWN] Cleanup completed in {elapsed:.1f}s. Exiting...", flush=True)
     
-    # Force exit if needed
+    # Force exit immediately - don't wait for anything else
     import sys
-    sys.exit(130)  # Standard exit code for SIGINT
+    import os
+    
+    # If shutdown took too long, force exit more aggressively
+    if elapsed > 2.0:
+        print("[SHUTDOWN] Shutdown took too long, forcing immediate exit...", flush=True)
+        os._exit(130)  # Immediate exit without cleanup
+    else:
+        sys.exit(130)  # Standard exit code for SIGINT
 
 def register_signal_handlers():
     """Register signal handlers for graceful shutdown"""
@@ -150,8 +179,19 @@ def time_block(description):
     return TimeBlock(description)
 
 def monitor_system_resources(interval=10):
-    """Background monitoring of system resources in a separate process."""
+    """Background monitoring of system resources in a separate process with responsive shutdown."""
     print(f"[MONITOR] Starting system resource monitoring (interval: {interval}s)", flush=True)
+    
+    # Set up signal handler for this process to exit gracefully
+    import signal
+    
+    def monitor_signal_handler(signum, frame):
+        print(f"[MONITOR] Received signal {signum}, shutting down monitoring...", flush=True)
+        import sys
+        sys.exit(0)
+    
+    signal.signal(signal.SIGTERM, monitor_signal_handler)
+    signal.signal(signal.SIGINT, monitor_signal_handler)
     
     while True:
         try:
@@ -171,7 +211,8 @@ def monitor_system_resources(interval=10):
                 load_avg = psutil.getloadavg()
                 load_str = f" | Load: {load_avg[0]:.2f}, {load_avg[1]:.2f}, {load_avg[2]:.2f}"
             
-            # Format CPU cores string
+            # Format CPU cores string with better utilization info
+            active_cores = sum(1 for p in cpu_percent_per_core if p > 5.0)
             if len(cpu_percent_per_core) > 8:
                 cores_str = ", ".join([f"{p:.1f}%" for p in cpu_percent_per_core[:4]])
                 cores_str += f" ... " + ", ".join([f"{p:.1f}%" for p in cpu_percent_per_core[-4:]])
@@ -179,17 +220,32 @@ def monitor_system_resources(interval=10):
                 cores_str = ", ".join([f"{p:.1f}%" for p in cpu_percent_per_core])
 
             timestamp = datetime.now().strftime("%H:%M:%S")
-            message = (f"[MONITOR {timestamp}] "
-                       f"CPU: {cpu_overall:.1f}% | "
+            message = (f"\n[MONITOR {timestamp}] "
+                       f"CPU: {cpu_overall:.1f}% ({active_cores}/{len(cpu_percent_per_core)} cores active) | "
                        f"RAM: {memory_used_gb:.1f}/{memory_total_gb:.1f}GB ({memory_percent:.1f}%)"
                        f"{load_str} | Cores: [{cores_str}]")
             print(message, flush=True)
             
-            time.sleep(interval - 1)
+            # Sleep in smaller chunks to be more responsive to termination
+            remaining_sleep = interval - 1
+            while remaining_sleep > 0:
+                sleep_chunk = min(remaining_sleep, 2.0)  # Sleep max 2 seconds at a time
+                time.sleep(sleep_chunk)
+                remaining_sleep -= sleep_chunk
             
+        except KeyboardInterrupt:
+            print(f"[MONITOR] Keyboard interrupt, shutting down monitoring...", flush=True)
+            break
         except Exception as e:
             print(f"[MONITOR] Error: {e}", flush=True)
-            time.sleep(interval)
+            # Sleep in chunks even during error recovery
+            remaining_sleep = interval
+            while remaining_sleep > 0:
+                sleep_chunk = min(remaining_sleep, 2.0)
+                time.sleep(sleep_chunk)
+                remaining_sleep -= sleep_chunk
+    
+    print(f"[MONITOR] System resource monitoring stopped.", flush=True)
 
 def start_background_monitoring(interval=10):
     """Start background system monitoring in a separate process."""
@@ -204,19 +260,23 @@ def start_background_monitoring(interval=10):
         _monitor_proc.start()
 
 def stop_background_monitoring():
-    """Stop background system monitoring process with graceful shutdown."""
+    """Stop background system monitoring process with aggressive shutdown."""
     global _monitor_proc
     if _monitor_proc is not None:
         print("[MONITOR] Stopping system resource monitoring...", flush=True)
         try:
             _monitor_proc.terminate()
-            _monitor_proc.join(timeout=5)  # Give more time for graceful shutdown
+            _monitor_proc.join(timeout=1.0)  # Reduced from 5 to 1 second
             
             # Force kill if still alive
             if _monitor_proc.is_alive():
                 print("[MONITOR] Force killing monitoring process...", flush=True)
                 _monitor_proc.kill()
-                _monitor_proc.join(timeout=2)
+                _monitor_proc.join(timeout=0.5)  # Reduced from 2 to 0.5 seconds
+                
+                # If still alive after kill, just abandon it
+                if _monitor_proc.is_alive():
+                    print("[MONITOR] Warning: Could not kill monitoring process, abandoning...", flush=True)
                 
         except Exception as e:
             print(f"[MONITOR] Error stopping monitoring process: {e}", flush=True)
@@ -253,19 +313,24 @@ def get_optimal_workers(config_blas_threads=2):
         print("Using Linux resource allocation (aggressive)")
         # Aggressive settings to maximize server utilization
         # Target: 90-95% CPU usage, use most available RAM
-        memory_per_worker = 1.0  # More efficient memory usage per worker
+        memory_per_worker = 0.5  # Reduced memory estimate for better scaling
         cpu_utilization_target = 0.95  # Use 95% of cores
         
-        # Reserve some memory for system (10% or 2GB, whichever is larger)
-        reserved_memory = max(memory_gb * 0.1, 2.0)
+        # Reserve some memory for system (5% or 2GB, whichever is larger)
+        reserved_memory = max(memory_gb * 0.05, 2.0)
         available_memory = memory_gb - reserved_memory
         
         # Calculate workers based on memory and CPU
         memory_based_workers = max(1, int(available_memory / memory_per_worker))
-        cpu_based_workers = max(1, int(cpu_count * cpu_utilization_target // max(1, config_blas_threads)))
         
-        # Use minimum but prefer higher worker count for Linux
-        optimal_workers = min(memory_based_workers, cpu_based_workers)
+        # For CPU calculation, use a more aggressive approach
+        # Each worker can efficiently use 1-2 cores with BLAS threads
+        cores_per_worker = max(1, config_blas_threads // 2) if config_blas_threads > 2 else 1
+        cpu_based_workers = max(1, int(cpu_count * cpu_utilization_target / cores_per_worker))
+        
+        # Use minimum but cap at reasonable maximum
+        max_reasonable_workers = min(cpu_count, 64)  # Cap at 64 workers max
+        optimal_workers = min(memory_based_workers, cpu_based_workers, max_reasonable_workers)
         
     else:  # Unknown platform - Use conservative defaults
         print(f"Unknown platform {system}, using conservative defaults")
@@ -277,9 +342,12 @@ def get_optimal_workers(config_blas_threads=2):
         optimal_workers = min(memory_based_workers, cpu_based_workers)
     
     print(f"Resource calculation:")
-    print(f"  Memory-based workers: {memory_based_workers} ({memory_per_worker}GB per worker)")
-    print(f"  CPU-based workers: {cpu_based_workers} (target {cpu_utilization_target*100:.0f}% CPU, {config_blas_threads} BLAS threads)")
-    print(f"  Selected workers: {optimal_workers}")
+    print(f"  Memory-based workers: {memory_based_workers} ({memory_per_worker}GB per worker, {available_memory:.1f}GB available)")
+    if system == "Linux":
+        print(f"  CPU-based workers: {cpu_based_workers} (target {cpu_utilization_target*100:.0f}% CPU, {cores_per_worker} cores per worker, {config_blas_threads} BLAS threads)")
+    else:
+        print(f"  CPU-based workers: {cpu_based_workers} (target {cpu_utilization_target*100:.0f}% CPU, {config_blas_threads} BLAS threads)")
+    print(f"  Selected workers: {optimal_workers} (constraining factor: {'memory' if optimal_workers == memory_based_workers else 'CPU' if optimal_workers == cpu_based_workers else 'max_limit'})")
     
     return optimal_workers
 
@@ -292,6 +360,8 @@ class BufferedPickleWriter:
         self.buffer = []
         self.data = self._load_existing_data()
         self._closed = False
+        self._last_flush_time = time.time()
+        self._flush_interval = 30.0  # Force flush every 30 seconds
         
         # Register atexit handler to ensure cleanup
         import atexit
@@ -323,7 +393,11 @@ class BufferedPickleWriter:
             return
             
         self.buffer.append(result)
-        if len(self.buffer) >= self.batch_size:
+        current_time = time.time()
+        
+        # Flush if buffer is full or enough time has passed
+        if (len(self.buffer) >= self.batch_size or 
+            current_time - self._last_flush_time > self._flush_interval):
             self.flush()
     
     def flush(self):
@@ -354,6 +428,7 @@ class BufferedPickleWriter:
                 pickle.dump(self.data, f)
             
             self.buffer.clear()
+            self._last_flush_time = time.time()
             
         except Exception as e:
             # If normal write fails during shutdown, try emergency save
@@ -441,6 +516,35 @@ def init_worker_process(vertical_cache_info, progress_queue):
     global _vertical_cache_info, _progress_queue
     _vertical_cache_info = vertical_cache_info
     _progress_queue = progress_queue
+    
+    # Set CPU affinity for better CPU utilization (Linux only)
+    try:
+        if platform.system() == "Linux" and hasattr(os, 'sched_setaffinity'):
+            worker_id = os.getpid()
+            cpu_count = psutil.cpu_count()
+            
+            # Distribute workers across CPU cores
+            # Use process ID to determine which cores this worker should use
+            cores_per_worker = max(1, cpu_count // psutil.cpu_count(logical=False))  # Physical cores
+            
+            # Calculate CPU affinity mask
+            available_cpus = list(range(cpu_count))
+            worker_hash = hash(worker_id) % cpu_count
+            
+            # Assign cores in round-robin fashion
+            worker_cpus = []
+            for i in range(cores_per_worker):
+                cpu_id = (worker_hash + i) % cpu_count
+                worker_cpus.append(cpu_id)
+            
+            # Set affinity if we have multiple CPUs
+            if cpu_count > 1:
+                os.sched_setaffinity(0, worker_cpus)
+                profile_print(f"Worker {worker_id} set to CPUs: {worker_cpus}")
+                
+    except Exception as e:
+        # Don't fail if CPU affinity setting fails
+        profile_print(f"Could not set CPU affinity: {e}")
 
 def get_snp_from_cache(snp_path, cache_info):
     """Load SNP data directly from disk for optimal performance."""
@@ -607,7 +711,7 @@ def collect_trace_simulation_data(trace_snp_file, vertical_pairs_with_counts, co
     
     # Final progress report is not needed since we report after each simulation
     
-    profile_print(f"Completed {trace_snp_path.name}: {total_completed} simulations")
+    # profile_print(f"Completed {trace_snp_path.name}: {total_completed} simulations")
     
     if debug:
         print(f"Completed {total_completed} simulations for {trace_snp_path.name}")
@@ -695,7 +799,6 @@ def run_with_executor(trace_tasks, combined_params, trace_specific_output_dir, p
     )
     progress_thread.start()
     _progress_thread = progress_thread
-    print(f"Started progress monitor for {total_expected} simulations")
     
     executor_start_time = time.time()
     
@@ -767,14 +870,16 @@ def run_with_executor(trace_tasks, combined_params, trace_specific_output_dir, p
             print("[CLEANUP] Shutting down executor...")
             executor.shutdown(wait=False, cancel_futures=True)
             
-            # Stop progress monitor
+            # Stop progress monitor with aggressive timeout
             try:
-                progress_queue.put(('stop', None), timeout=1.0)
+                progress_queue.put(('stop', None), timeout=0.5)
             except:
                 pass
             
             if progress_thread.is_alive():
-                progress_thread.join(timeout=5)
+                progress_thread.join(timeout=1.0)  # Reduced from 5 to 1 second
+                if progress_thread.is_alive():
+                    print("[CLEANUP] Warning: Progress thread still alive, continuing...")
                 
             print("[CLEANUP] Executor cleanup completed.")
         except Exception as cleanup_error:
@@ -894,8 +999,16 @@ def main():
     
     debug = args.debug if args.debug else config.get('debug', False)
     
-    # Get batch size from config
-    batch_size = runner_config.get('batch_size', 10)
+    # Get batch size from config with platform-aware defaults
+    system = platform.system()
+    if system == "Linux":
+        # Use larger batch sizes on servers for better I/O performance
+        default_batch_size = min(50, max(20, max_workers * 2))
+    else:
+        # Conservative batch size for other platforms
+        default_batch_size = 10
+    
+    batch_size = runner_config.get('batch_size', default_batch_size)
     
     # Determine number of workers: Command-line -> Environment -> Config file -> Optimal calculation
     env_workers = os.environ.get('MAX_WORKERS')
@@ -975,8 +1088,12 @@ def main():
         except Exception as e:
             print(f"Warning: Could not save config file: {e}")
     
-    # Build task structure - each task processes all samples for one trace file
+    # Build task structure with optimal granularity for better load balancing
     trace_tasks = []  # [(trace_snp_file, [(vertical_pair, samples_needed)])]
+    
+    # Calculate optimal chunk size based on number of workers and total work
+    min_chunk_size = max(1, max_samples // (max_workers * 4))  # 4 chunks per worker minimum
+    max_chunk_size = max(min_chunk_size, max_samples // 2)    # Don't make chunks too large
     
     for trace_snp, vertical_pair in zip(trace_snps, vertical_pairs):
         pickle_file = trace_specific_output_dir / f"{Path(trace_snp).stem}.pkl"
@@ -992,7 +1109,18 @@ def main():
         
         if current_samples < max_samples:
             samples_needed = max_samples - current_samples
-            trace_tasks.append((trace_snp, [(vertical_pair, samples_needed)]))
+            
+            # Split large tasks into chunks for better load balancing
+            if samples_needed > max_chunk_size:
+                # Create multiple chunks for this trace file
+                remaining_samples = samples_needed
+                while remaining_samples > 0:
+                    chunk_size = min(remaining_samples, max_chunk_size)
+                    trace_tasks.append((trace_snp, [(vertical_pair, chunk_size)]))
+                    remaining_samples -= chunk_size
+            else:
+                # Small task, keep as single chunk
+                trace_tasks.append((trace_snp, [(vertical_pair, samples_needed)]))
     
     total_simulations = sum(
         sum(count for _, count in vertical_pairs_with_counts)
@@ -1001,6 +1129,7 @@ def main():
     
     print(f"Created {len(trace_tasks)} tasks for {total_simulations} total simulations")
     print(f"Task distribution: {len(trace_tasks)} tasks, ~{total_simulations/len(trace_tasks) if trace_tasks else 0:.1f} simulations/task")
+    print(f"Chunking strategy: min_chunk={min_chunk_size}, max_chunk={max_chunk_size} (based on {max_workers} workers)")
     
     if len(trace_tasks) == 0:
         print("All files already have sufficient samples")
@@ -1044,11 +1173,11 @@ def main():
             
             # Signal progress monitor to stop
             try:
-                progress_queue.put(('stop', None), timeout=1.0)
+                progress_queue.put(('stop', None), timeout=0.5)
             except:
                 pass
             
-            progress_thread.join(timeout=2)
+            progress_thread.join(timeout=1.0)  # Reduced from 2 to 1 second
         
         print(f"Data collection completed. Results saved to: {trace_specific_output_dir}")
         
@@ -1087,7 +1216,9 @@ def main():
             
         if _progress_thread and _progress_thread.is_alive():
             try:
-                _progress_thread.join(timeout=2)
+                _progress_thread.join(timeout=1.0)  # Reduced from 2 to 1 second
+                if _progress_thread.is_alive():
+                    print("[CLEANUP] Warning: Progress thread still alive, abandoning...")
             except:
                 pass
             _progress_thread = None
