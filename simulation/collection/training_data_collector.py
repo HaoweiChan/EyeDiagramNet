@@ -1026,17 +1026,6 @@ def main():
     
     debug = args.debug if args.debug else config.get('debug', False)
     
-    # Get batch size from config with platform-aware defaults
-    system = platform.system()
-    if system == "Linux":
-        # Use larger batch sizes on servers for better I/O performance
-        default_batch_size = min(50, max(20, max_workers * 2))
-    else:
-        # Conservative batch size for other platforms
-        default_batch_size = 10
-    
-    batch_size = runner_config.get('batch_size', default_batch_size)
-    
     # Determine number of workers: Command-line -> Environment -> Config file -> Optimal calculation
     env_workers = os.environ.get('MAX_WORKERS')
     config_workers = runner_config.get('max_workers')
@@ -1053,6 +1042,17 @@ def main():
     else:
         print("max_workers not specified, calculating optimal number...")
         max_workers = get_optimal_workers(blas_threads)
+    
+    # Get batch size from config with platform-aware defaults (after max_workers is determined)
+    system = platform.system()
+    if system == "Linux":
+        # Use larger batch sizes on servers for better I/O performance
+        default_batch_size = min(50, max(20, max_workers * 2))
+    else:
+        # Conservative batch size for other platforms
+        default_batch_size = 10
+    
+    batch_size = runner_config.get('batch_size', default_batch_size)
     
     print(f"Using configuration:")
     print(f"  Trace pattern: {trace_pattern_key} -> {trace_pattern}")
