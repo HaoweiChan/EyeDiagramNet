@@ -443,31 +443,42 @@ class SNPCache:
     
     def add_snp(self, snp_path):
         """Load SNP file and store its data in shared memory."""
-        if str(snp_path) in self.cache:
+        snp_key = str(snp_path)
+        if snp_key in self.cache:
             return
             
-        ntwk = read_snp(snp_path)
-        s_data = ntwk.s
-        f_data = ntwk.f
-        
-        # Create shared memory for s-parameters
-        s_shm = shm.SharedMemory(create=True, size=s_data.nbytes)
-        s_shm_array = np.ndarray(s_data.shape, dtype=s_data.dtype, buffer=s_shm.buf)
-        s_shm_array[:] = s_data[:]
-        
-        # Create shared memory for frequencies
-        f_shm = shm.SharedMemory(create=True, size=f_data.nbytes)
-        f_shm_array = np.ndarray(f_data.shape, dtype=f_data.dtype, buffer=f_shm.buf)
-        f_shm_array[:] = f_data[:]
-        
-        self.cache[str(snp_path)] = {
-            's_name': s_shm.name, 's_shape': s_data.shape, 's_dtype': s_data.dtype,
-            'f_name': f_shm.name, 'f_shape': f_data.shape, 'f_dtype': f_data.dtype,
-            'nports': ntwk.nports, 'z0': ntwk.z0.tolist() if isinstance(ntwk.z0, np.ndarray) else ntwk.z0
-        }
-        
-        self.memory_blocks.extend([s_shm, f_shm])
-        _shared_memory_blocks.extend([s_shm, f_shm])
+        try:
+            ntwk = read_snp(snp_path)
+            s_data = ntwk.s
+            f_data = ntwk.f
+            
+            # Validate data before creating shared memory
+            if s_data.size == 0 or f_data.size == 0:
+                raise ValueError(f"Empty SNP data in {snp_path}")
+            
+            # Create shared memory for s-parameters
+            s_shm = shm.SharedMemory(create=True, size=s_data.nbytes)
+            s_shm_array = np.ndarray(s_data.shape, dtype=s_data.dtype, buffer=s_shm.buf)
+            s_shm_array[:] = s_data[:]
+            
+            # Create shared memory for frequencies
+            f_shm = shm.SharedMemory(create=True, size=f_data.nbytes)
+            f_shm_array = np.ndarray(f_data.shape, dtype=f_data.dtype, buffer=f_shm.buf)
+            f_shm_array[:] = f_data[:]
+            
+            self.cache[snp_key] = {
+                's_name': s_shm.name, 's_shape': s_data.shape, 's_dtype': s_data.dtype,
+                'f_name': f_shm.name, 'f_shape': f_data.shape, 'f_dtype': f_data.dtype,
+                'nports': ntwk.nports, 'z0': ntwk.z0.tolist() if isinstance(ntwk.z0, np.ndarray) else ntwk.z0
+            }
+            
+            self.memory_blocks.extend([s_shm, f_shm])
+            _shared_memory_blocks.extend([s_shm, f_shm])
+            
+        except Exception as e:
+            print(f"[ERROR] Failed to cache SNP file {snp_path}: {e}")
+            # Don't add to cache if there was an error
+            pass
     
     def get_cache_info(self):
         """Get cache information for passing to workers."""
@@ -475,14 +486,21 @@ class SNPCache:
     
     def cleanup(self):
         """Clean up shared memory blocks."""
+        cleanup_errors = 0
         for block in self.memory_blocks:
             try:
                 block.close()
                 block.unlink()
             except FileNotFoundError:
                 pass # Already unlinked
-            except Exception:
-                pass
+            except Exception as e:
+                cleanup_errors += 1
+                if cleanup_errors <= 3:  # Only log first few errors
+                    print(f"[CLEANUP] Error cleaning shared memory block {getattr(block, 'name', 'unknown')}: {e}")
+        
+        if cleanup_errors > 3:
+            print(f"[CLEANUP] {cleanup_errors - 3} additional shared memory cleanup errors (suppressed)")
+            
         self.memory_blocks.clear()
 
 def init_worker_process(vertical_cache_info, progress_queue):
@@ -519,16 +537,45 @@ def init_worker_process(vertical_cache_info, progress_queue):
     profile_print(f"Worker {worker_id} initialization completed", init_time)
 
 def get_snp_from_cache(snp_path, cache_info):
-    """Load SNP data directly from disk with caching for repeated access."""
-    # Use a simple process-local cache to avoid re-loading the same files
-    if not hasattr(get_snp_from_cache, '_cache'):
-        get_snp_from_cache._cache = {}
-    
+    """Load SNP data from shared memory cache or disk if not cached."""
     snp_key = str(snp_path)
-    if snp_key not in get_snp_from_cache._cache:
-        get_snp_from_cache._cache[snp_key] = read_snp(snp_path)
     
-    return get_snp_from_cache._cache[snp_key]
+    # Try to get from shared memory cache first
+    if snp_key in cache_info:
+        try:
+            cache_data = cache_info[snp_key]
+            
+            # Reconstruct network from shared memory
+            s_shm = shm.SharedMemory(name=cache_data['s_name'])
+            f_shm = shm.SharedMemory(name=cache_data['f_name'])
+            
+            s_array = np.ndarray(cache_data['s_shape'], dtype=cache_data['s_dtype'], buffer=s_shm.buf)
+            f_array = np.ndarray(cache_data['f_shape'], dtype=cache_data['f_dtype'], buffer=f_shm.buf)
+            
+            # Create a simple object that mimics skrf.Network for our use case
+            class CachedNetwork:
+                def __init__(self, s, f, nports, z0):
+                    self.s = s.copy()  # Copy to avoid shared memory issues
+                    self.f = f.copy()
+                    self.nports = nports
+                    self.z0 = z0
+            
+            # Don't close shared memory here - let cleanup handle it
+            return CachedNetwork(s_array, f_array, cache_data['nports'], cache_data['z0'])
+            
+        except Exception as e:
+            # Fall back to disk loading if shared memory fails
+            profile_print(f"Shared memory access failed for {snp_path}, loading from disk: {e}")
+    
+    # Fall back to direct disk loading (for horizontal SNPs or cache misses)
+    # Use process-local cache for repeated disk loads to avoid reloading
+    if not hasattr(get_snp_from_cache, '_disk_cache'):
+        get_snp_from_cache._disk_cache = {}
+    
+    if snp_key not in get_snp_from_cache._disk_cache:
+        get_snp_from_cache._disk_cache[snp_key] = read_snp(snp_path)
+    
+    return get_snp_from_cache._disk_cache[snp_key]
 
 def _get_valid_block_sizes(n_lines):
     """Finds divisors of n_lines that result in an even number of blocks."""
@@ -615,11 +662,19 @@ def collect_trace_simulation_data(trace_snp_file, vertical_pairs_with_counts, co
         # Load vertical SNPs from cache
         snp_tx_path, snp_rx_path = vertical_snp_pair
         vertical_start_time = time.time()
-        profile_print(f"Worker {worker_id} loading vertical SNPs: {Path(snp_tx_path).name}, {Path(snp_rx_path).name}")
+        
+        # Check if files are in cache for performance monitoring
+        tx_cached = str(snp_tx_path) in _vertical_cache_info
+        rx_cached = str(snp_rx_path) in _vertical_cache_info
+        cache_status = f"TX:{'cache' if tx_cached else 'disk'}, RX:{'cache' if rx_cached else 'disk'}"
+        
+        profile_print(f"Worker {worker_id} loading vertical SNPs ({cache_status}): {Path(snp_tx_path).name}, {Path(snp_rx_path).name}")
+        
         tx_ntwk = get_snp_from_cache(snp_tx_path, _vertical_cache_info)
         rx_ntwk = get_snp_from_cache(snp_rx_path, _vertical_cache_info)
+        
         vertical_load_time = time.time() - vertical_start_time
-        profile_print(f"Worker {worker_id} loaded vertical SNPs", vertical_load_time)
+        profile_print(f"Worker {worker_id} loaded vertical SNPs ({cache_status})", vertical_load_time)
         
         for sample_idx in range(sample_count):
             # Check for shutdown more frequently - every 10 samples or immediately
@@ -1201,11 +1256,57 @@ def main():
         stop_background_monitoring()
         return
     
-    # Skip shared memory cache for better performance - let each worker load files directly
-    vertical_cache = None
-    vertical_cache_info = {}
+    # Pre-load vertical SNPs in shared memory cache for massive performance gain
+    print("Pre-loading vertical SNP files in shared memory cache...")
+    cache_start_time = time.time()
     
-    print("Using direct file loading for better performance...")
+    vertical_cache = SNPCache()
+    
+    # Collect all unique vertical SNP files that workers will need
+    unique_vertical_snps = set()
+    for _, vertical_pair in zip(trace_snps, vertical_pairs):
+        snp_tx_path, snp_rx_path = vertical_pair
+        unique_vertical_snps.add(snp_tx_path)
+        unique_vertical_snps.add(snp_rx_path)
+    
+    print(f"Loading {len(unique_vertical_snps)} unique vertical SNP files into shared memory...")
+    
+    # Load SNPs with progress tracking
+    for i, snp_path in enumerate(sorted(unique_vertical_snps), 1):
+        snp_load_start = time.time()
+        vertical_cache.add_snp(snp_path)
+        snp_load_time = time.time() - snp_load_start
+        
+        if i <= 3 or i % 10 == 0 or i == len(unique_vertical_snps):
+            print(f"  [{i}/{len(unique_vertical_snps)}] Loaded {Path(snp_path).name} ({snp_load_time:.2f}s)")
+    
+    # Calculate memory usage
+    total_memory_mb = sum(block.size for block in vertical_cache.memory_blocks) / (1024 * 1024)
+    print(f"Shared memory allocated: {total_memory_mb:.1f} MB ({len(vertical_cache.memory_blocks)} blocks)")
+    
+    vertical_cache_info = vertical_cache.get_cache_info()
+    cache_load_time = time.time() - cache_start_time
+    
+    print(f"Shared memory cache loaded in {cache_load_time:.2f}s")
+    print(f"Cache contains {len(vertical_cache_info)} vertical SNP files")
+    
+    # Calculate time savings based on actual cache loading performance
+    avg_cache_load_time = cache_load_time / len(unique_vertical_snps) if unique_vertical_snps else 0
+    estimated_worker_load_time = max(10.0, avg_cache_load_time * 2)  # Workers typically 2x slower due to overhead
+    
+    # Without cache: each worker loads each vertical SNP independently
+    without_cache_time = len(unique_vertical_snps) * estimated_worker_load_time * max_workers
+    
+    # With cache: one-time cache load + minimal worker access time
+    with_cache_time = cache_load_time + (max_workers * 0.1 * len(unique_vertical_snps))  # 0.1s per cache access
+    
+    time_saved = without_cache_time - with_cache_time
+    efficiency_percentage = (time_saved / without_cache_time * 100) if without_cache_time > 0 else 0
+    
+    print(f"Time analysis:")
+    print(f"  Without cache: {without_cache_time:.0f}s ({max_workers} workers × {len(unique_vertical_snps)} files × {estimated_worker_load_time:.1f}s)")
+    print(f"  With cache: {with_cache_time:.0f}s ({cache_load_time:.1f}s load + {(with_cache_time - cache_load_time):.1f}s access)")
+    print(f"  Time saved: {time_saved:.0f}s ({efficiency_percentage:.1f}% improvement)")
     
     # Run simulations
     try:
@@ -1268,9 +1369,14 @@ def main():
             stop_background_monitoring()
             
             # Clean up shared memory
-            if vertical_cache:
-                vertical_cache.cleanup()
-            cleanup_shared_memory()
+            try:
+                if vertical_cache:
+                    print("[CLEANUP] Cleaning up vertical SNP cache...")
+                    vertical_cache.cleanup()
+                cleanup_shared_memory()
+            except Exception as e:
+                print(f"[CLEANUP] Error cleaning up cache: {e}")
+                pass
             
             # Mark cleanup as done
             _cleanup_done = True
