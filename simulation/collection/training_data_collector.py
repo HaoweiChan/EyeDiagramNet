@@ -27,8 +27,6 @@ os.environ.setdefault("OPENBLAS_NUM_THREADS", default_blas_threads)
 os.environ.setdefault("VECLIB_MAXIMUM_THREADS", default_blas_threads)
 os.environ.setdefault("NUMEXPR_NUM_THREADS", default_blas_threads)
 
-print(f"Platform: {platform.system()}, BLAS threads: {default_blas_threads}")
-
 # After the limits are in place we can safely import heavy numerical libs.
 
 import time
@@ -51,6 +49,7 @@ from simulation.parameters.bound_param import PARAM_SETS_MAP
 from simulation.engine.eye_width_simulator import snp_eyewidth_simulation
 from simulation.io.config_utils import load_config, resolve_trace_pattern, resolve_vertical_dirs, build_argparser
 from simulation.io.snp_utils import parse_snps, generate_vertical_snp_pairs
+from simulation.io.progress_utils import progress_monitor, report_progress
 from simulation.parameters.param_utils import parse_param_types, modify_params_for_inductance
 
 # Global profiling state
@@ -463,14 +462,7 @@ def _get_valid_block_sizes(n_lines):
         divisors.append(1)
     return divisors
 
-def report_progress(completed_samples):
-    """Report progress to main process via queue (non-blocking)"""
-    global _progress_queue
-    if _progress_queue and not _shutdown_event.is_set():
-        try:
-            _progress_queue.put(('progress', completed_samples), timeout=0.1)
-        except:
-            pass  # Queue full or other error, skip
+
 
 def collect_trace_simulation_data(trace_snp_file, vertical_pairs_with_counts, combined_params, 
                                 pickle_dir, param_type_names, enable_direction=True, 
@@ -512,7 +504,7 @@ def collect_trace_simulation_data(trace_snp_file, vertical_pairs_with_counts, co
         print(f"Processing {len(vertical_pairs_with_counts)} vertical pairs for {trace_snp_path.name}")
         print(f"Detected {n_ports} ports ({n_lines} lines)")
     
-    profile_print(f"Starting {trace_snp_path.name}: {total_simulations} simulations")
+    # profile_print(f"Starting {trace_snp_path.name}: {total_simulations} simulations")
     
     total_completed = 0
     
@@ -594,7 +586,7 @@ def collect_trace_simulation_data(trace_snp_file, vertical_pairs_with_counts, co
                 total_completed += 1
                 
                 # Report progress after each simulation
-                report_progress(1)
+                report_progress(1, _progress_queue, _shutdown_event)
                 
                 if debug:
                     print(f"  Completed simulation {sample_idx+1}/{sample_count}: EW={line_ew}")
@@ -647,57 +639,7 @@ def cleanup_shared_memory():
     else:
         print("[CLEANUP] No shared memory blocks to clean up", flush=True)
 
-def progress_monitor(progress_queue, total_expected, interval=5):
-    """Monitor progress from worker processes with graceful shutdown support"""
-    completed = 0
-    last_report = time.time()
-    start_time = time.time()
-    
-    while completed < total_expected and not _shutdown_event.is_set():
-        try:
-            # Use shorter timeout to be more responsive to shutdown
-            timeout = min(interval, 2.0)
-            msg_type, value = progress_queue.get(timeout=timeout)
-            
-            if msg_type == 'progress':
-                completed += value
-                
-                now = time.time()
-                if now - last_report >= interval:
-                    elapsed = now - start_time
-                    avg_time_per_task = elapsed / completed if completed > 0 else 0
-                    eta = (total_expected - completed) * avg_time_per_task
-                    print(f"Progress: {completed}/{total_expected} ({100*completed/total_expected:.1f}%) "
-                          f"Avg: {avg_time_per_task:.2f}s/task ETA: {eta:.0f}s", flush=True)
-                    last_report = now
-            elif msg_type == 'stop':
-                print("[PROGRESS] Received stop signal.", flush=True)
-                break
-                    
-        except Empty:
-            # Check for shutdown during timeout
-            if _shutdown_event.is_set():
-                print("[PROGRESS] Shutdown event detected during timeout.", flush=True)
-                break
-                
-            # Timeout - print current status if we have progress
-            if completed > 0:
-                now = time.time()
-                elapsed = now - start_time
-                avg_time_per_task = elapsed / completed if completed > 0 else 0
-                print(f"Progress: {completed}/{total_expected} ({100*completed/total_expected:.1f}%) "
-                      f"Avg: {avg_time_per_task:.2f}s/task", flush=True)
-    
-    # Final status report
-    final_time = time.time()
-    elapsed = final_time - start_time
-    if completed > 0:
-        avg_time_per_task = elapsed / completed
-        status = "interrupted" if _shutdown_event.is_set() else "completed"
-        print(f"Progress monitor {status}: {completed}/{total_expected} ({100*completed/total_expected:.1f}%) "
-              f"in {elapsed:.1f}s (avg {avg_time_per_task:.2f}s/task)", flush=True)
-    else:
-        print(f"Progress monitor terminated: no tasks completed in {elapsed:.1f}s", flush=True)
+
 
 def get_multiprocessing_start_method():
     """Get appropriate multiprocessing start method for the platform"""
@@ -747,7 +689,7 @@ def run_with_executor(trace_tasks, combined_params, trace_specific_output_dir, p
     progress_queue = multiprocessing.Queue()
     progress_thread = threading.Thread(
         target=progress_monitor,
-        args=(progress_queue, total_expected, 60),
+        args=(progress_queue, total_expected, 60, _shutdown_event),
         daemon=True,
         name="ProgressMonitor"
     )
@@ -984,6 +926,7 @@ def main():
     print(f"  Max workers: {max_workers}")
     print(f"  Batch size: {batch_size}")
     print(f"  BLAS threads: {blas_threads}")
+    print(f"  Platform: {platform.system()}")
     
     # Validate resource allocation before starting
     print("\n--- Resource Validation ---")
@@ -1084,7 +1027,7 @@ def main():
             progress_queue = multiprocessing.Queue()
             progress_thread = threading.Thread(
                 target=progress_monitor,
-                args=(progress_queue, total_simulations, 5),
+                args=(progress_queue, total_simulations, 5, _shutdown_event),
                 daemon=True,
                 name="DebugProgressMonitor"
             )
