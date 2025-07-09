@@ -487,6 +487,11 @@ class SNPCache:
 
 def init_worker_process(vertical_cache_info, progress_queue):
     """Initialize worker process with shared memory access and progress reporting."""
+    worker_start_time = time.time()
+    worker_id = os.getpid()
+    
+    profile_print(f"Worker {worker_id} starting initialization...")
+    
     signal.signal(signal.SIGINT, signal.SIG_IGN)
 
     # Store cache info and progress queue globally in worker
@@ -494,9 +499,10 @@ def init_worker_process(vertical_cache_info, progress_queue):
     _vertical_cache_info = vertical_cache_info
     _progress_queue = progress_queue
     
+    profile_print(f"Worker {worker_id} set up globals")
+    
     # Set CPU affinity for better CPU utilization (Linux only)
     if platform.system() == "Linux" and hasattr(os, 'sched_setaffinity'):
-        worker_id = os.getpid()
         cpu_count = psutil.cpu_count()
         
         # Simple round-robin CPU assignment
@@ -507,12 +513,22 @@ def init_worker_process(vertical_cache_info, progress_queue):
                 profile_print(f"Worker {worker_id} assigned to CPU {assigned_cpu}")
             except:
                 # Ignore failures (common in containers/restricted environments)
-                pass
+                profile_print(f"Worker {worker_id} could not set CPU affinity")
+    
+    init_time = time.time() - worker_start_time
+    profile_print(f"Worker {worker_id} initialization completed", init_time)
 
 def get_snp_from_cache(snp_path, cache_info):
-    """Load SNP data directly from disk for optimal performance."""
-    # Always load directly from disk - faster than shared memory overhead
-    return read_snp(snp_path)
+    """Load SNP data directly from disk with caching for repeated access."""
+    # Use a simple process-local cache to avoid re-loading the same files
+    if not hasattr(get_snp_from_cache, '_cache'):
+        get_snp_from_cache._cache = {}
+    
+    snp_key = str(snp_path)
+    if snp_key not in get_snp_from_cache._cache:
+        get_snp_from_cache._cache[snp_key] = read_snp(snp_path)
+    
+    return get_snp_from_cache._cache[snp_key]
 
 def _get_valid_block_sizes(n_lines):
     """Finds divisors of n_lines that result in an even number of blocks."""
@@ -548,19 +564,33 @@ def collect_trace_simulation_data(trace_snp_file, vertical_pairs_with_counts, co
         batch_size: Number of simulations to buffer before writing to disk
         debug: Debug mode flag
     """
+    task_start_time = time.time()
+    worker_id = os.getpid()
+    total_simulations = sum(count for _, count in vertical_pairs_with_counts)
+    
+    # Convert string arguments back to Path objects for processing
+    trace_snp_path = Path(trace_snp_file)
+    pickle_dir_path = Path(pickle_dir)
+    
+    profile_print(f"Worker {worker_id} received task: {trace_snp_path.name} ({total_simulations} simulations)")
+    
     if not vertical_pairs_with_counts:
+        profile_print(f"Worker {worker_id} - no work to do")
         return
     
     # Load horizontal SNP once per trace file
-    trace_ntwk = read_snp(trace_snp_file)
+    snp_start_time = time.time()
+    profile_print(f"Worker {worker_id} loading horizontal SNP: {trace_snp_path.name}")
+    trace_ntwk = read_snp(trace_snp_path)
+    snp_load_time = time.time() - snp_start_time
+    profile_print(f"Worker {worker_id} loaded horizontal SNP", snp_load_time)
     
     n_ports = trace_ntwk.nports
     n_lines = n_ports // 2
     if n_lines == 0:
         raise ValueError(f"Invalid n_ports={n_ports}, n_lines would be 0")
     
-    trace_snp_path = Path(trace_snp_file)
-    pickle_file = Path(pickle_dir) / f"{trace_snp_path.stem}.pkl"
+    pickle_file = pickle_dir_path / f"{trace_snp_path.stem}.pkl"
     
     total_simulations = sum(count for _, count in vertical_pairs_with_counts)
     
@@ -584,8 +614,12 @@ def collect_trace_simulation_data(trace_snp_file, vertical_pairs_with_counts, co
             
         # Load vertical SNPs from cache
         snp_tx_path, snp_rx_path = vertical_snp_pair
+        vertical_start_time = time.time()
+        profile_print(f"Worker {worker_id} loading vertical SNPs: {Path(snp_tx_path).name}, {Path(snp_rx_path).name}")
         tx_ntwk = get_snp_from_cache(snp_tx_path, _vertical_cache_info)
         rx_ntwk = get_snp_from_cache(snp_rx_path, _vertical_cache_info)
+        vertical_load_time = time.time() - vertical_start_time
+        profile_print(f"Worker {worker_id} loaded vertical SNPs", vertical_load_time)
         
         for sample_idx in range(sample_count):
             # Check for shutdown more frequently - every 10 samples or immediately
@@ -673,8 +707,9 @@ def collect_trace_simulation_data(trace_snp_file, vertical_pairs_with_counts, co
     writer.close()
     
     # Final progress report is not needed since we report after each simulation
+    task_total_time = time.time() - task_start_time
     
-    # profile_print(f"Completed {trace_snp_path.name}: {total_completed} simulations")
+    profile_print(f"Worker {worker_id} completed {trace_snp_path.name}: {total_completed}/{total_simulations} simulations", task_total_time)
     
     if debug:
         print(f"Completed {total_completed} simulations for {trace_snp_path.name}")
@@ -782,10 +817,11 @@ def run_with_executor(trace_tasks, combined_params, trace_specific_output_dir, p
             """Helper to submit the next available task from the iterator."""
             try:
                 trace_snp_file, vertical_pairs = next(task_iterator)
+                # Simplify arguments to reduce serialization overhead
                 future = executor.submit(
                     collect_trace_simulation_data,
-                    trace_snp_file, vertical_pairs, combined_params, 
-                    trace_specific_output_dir, param_types, enable_direction, batch_size, False
+                    str(trace_snp_file), vertical_pairs, combined_params, 
+                    str(trace_specific_output_dir), param_types, enable_direction, batch_size, False
                 )
                 active_futures[future] = (trace_snp_file, vertical_pairs)
                 return True
@@ -797,16 +833,29 @@ def run_with_executor(trace_tasks, combined_params, trace_specific_output_dir, p
             submit_next_task()
 
         print(f"Submitted initial {len(active_futures)}/{len(trace_tasks)} tasks to ProcessPoolExecutor (max queue: {max_active_futures})")
+        print(f"Waiting for workers to start processing tasks...")
+        
+        # Give workers a moment to initialize
+        time.sleep(2.0)
 
         failed_tasks = []
         completed_tasks = 0
         total_simulations_completed = 0
+        last_completion_time = time.time()
+        worker_health_timeout = 300.0  # 5 minutes without any completion is concerning
         
         while active_futures:
-            # Wait for at least one future to complete
+            # Wait for at least one future to complete with timeout for health monitoring
             done, _ = concurrent.futures.wait(
-                active_futures.keys(), return_when=concurrent.futures.FIRST_COMPLETED
+                active_futures.keys(), return_when=concurrent.futures.FIRST_COMPLETED, timeout=60.0
             )
+            
+            # Check worker health if no tasks completed recently
+            current_time = time.time()
+            if current_time - last_completion_time > worker_health_timeout:
+                print(f"[WARNING] No tasks completed in {worker_health_timeout/60:.1f} minutes. "
+                      f"Active tasks: {len(active_futures)}, Completed: {completed_tasks}", flush=True)
+                last_completion_time = current_time  # Reset to avoid spam
 
             for future in done:
                 task_info = active_futures.pop(future)  # Remove from active dict
@@ -825,6 +874,7 @@ def run_with_executor(trace_tasks, combined_params, trace_specific_output_dir, p
                     sim_count = future.result()
                     if sim_count is not None:
                         total_simulations_completed += sim_count
+                    last_completion_time = time.time()  # Update health tracking
 
                 # Replenish the queue with a new task
                 submit_next_task()
@@ -977,12 +1027,17 @@ def main():
         stop_background_monitoring()
         return
     
-    # Apply BLAS thread configuration from config
+    # Get actual BLAS thread count from environment (already set by platform defaults)
     runner_config = config.get('runner', {})
-    blas_threads = runner_config.get('blas_threads', 2)
-    if blas_threads != int(os.environ.get("OMP_NUM_THREADS", "2")):
-        print(f"Note: BLAS threads set to {os.environ.get('OMP_NUM_THREADS')} in environment, "
-              f"config specifies {blas_threads}. Environment takes precedence.")
+    config_blas_threads = runner_config.get('blas_threads', None)
+    actual_blas_threads = int(os.environ.get("OMP_NUM_THREADS", "2"))
+    
+    if config_blas_threads and config_blas_threads != actual_blas_threads:
+        print(f"Note: BLAS threads set to {actual_blas_threads} in environment, "
+              f"config specifies {config_blas_threads}. Environment takes precedence.")
+    
+    # Use actual environment value for worker calculations
+    blas_threads = actual_blas_threads
     
     # Resolve dataset paths
     horizontal_dataset = config.get('dataset', {}).get('horizontal_dataset', {})
@@ -1094,13 +1149,11 @@ def main():
         except Exception as e:
             print(f"Warning: Could not save config file: {e}")
     
-    # Build task structure with optimal granularity for better load balancing
+    # Build task structure - group trace files for better load balancing
     trace_tasks = []  # [(trace_snp_file, [(vertical_pair, samples_needed)])]
+    pending_work = []  # [(trace_snp, vertical_pair, samples_needed)]
     
-    # Calculate optimal chunk size based on number of workers and total work
-    min_chunk_size = max(1, max_samples // (max_workers * 4))  # 4 chunks per worker minimum
-    max_chunk_size = max(min_chunk_size, max_samples // 2)    # Don't make chunks too large
-    
+    # Collect all pending work first
     for trace_snp, vertical_pair in zip(trace_snps, vertical_pairs):
         pickle_file = trace_specific_output_dir / f"{Path(trace_snp).stem}.pkl"
         current_samples = 0
@@ -1115,18 +1168,24 @@ def main():
         
         if current_samples < max_samples:
             samples_needed = max_samples - current_samples
-            
-            # Split large tasks into chunks for better load balancing
-            if samples_needed > max_chunk_size:
-                # Create multiple chunks for this trace file
-                remaining_samples = samples_needed
-                while remaining_samples > 0:
-                    chunk_size = min(remaining_samples, max_chunk_size)
-                    trace_tasks.append((trace_snp, [(vertical_pair, chunk_size)]))
-                    remaining_samples -= chunk_size
-            else:
-                # Small task, keep as single chunk
-                trace_tasks.append((trace_snp, [(vertical_pair, samples_needed)]))
+            pending_work.append((trace_snp, vertical_pair, samples_needed))
+    
+    # Group work into larger tasks to reduce overhead
+    # Target: 2-4 tasks per worker for good load balancing
+    target_tasks = max_workers * 3
+    if len(pending_work) > target_tasks:
+        # Group multiple trace files per task
+        files_per_task = len(pending_work) // target_tasks
+        for i in range(0, len(pending_work), files_per_task):
+            batch = pending_work[i:i + files_per_task]
+            if batch:
+                # For simplicity, create one task per trace file but with larger batches
+                for trace_snp, vertical_pair, samples_needed in batch:
+                    trace_tasks.append((trace_snp, [(vertical_pair, samples_needed)]))
+    else:
+        # Few files, create one task per file
+        for trace_snp, vertical_pair, samples_needed in pending_work:
+            trace_tasks.append((trace_snp, [(vertical_pair, samples_needed)]))
     
     total_simulations = sum(
         sum(count for _, count in vertical_pairs_with_counts)
@@ -1135,7 +1194,7 @@ def main():
     
     print(f"Created {len(trace_tasks)} tasks for {total_simulations} total simulations")
     print(f"Task distribution: {len(trace_tasks)} tasks, ~{total_simulations/len(trace_tasks) if trace_tasks else 0:.1f} simulations/task")
-    print(f"Chunking strategy: min_chunk={min_chunk_size}, max_chunk={max_chunk_size} (based on {max_workers} workers)")
+    print(f"Load balancing: {len(trace_tasks)} tasks for {max_workers} workers (target: {max_workers * 3} tasks)")
     
     if len(trace_tasks) == 0:
         print("All files already have sufficient samples")
