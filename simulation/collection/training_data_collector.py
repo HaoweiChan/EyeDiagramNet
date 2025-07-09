@@ -758,7 +758,8 @@ def get_multiprocessing_start_method():
 def run_with_executor(trace_tasks, combined_params, trace_specific_output_dir, param_types, 
                      enable_direction, num_workers, batch_size, vertical_cache_info=None):
     """
-    Run simulations using ProcessPoolExecutor with optimized task distribution and graceful shutdown
+    Run simulations using ProcessPoolExecutor with optimized task distribution and graceful shutdown.
+    This version uses a bounded queue to avoid overwhelming the executor with too many initial tasks.
     
     Args:
         trace_tasks: List of (trace_snp_file, vertical_pairs_with_counts) tuples
@@ -810,40 +811,66 @@ def run_with_executor(trace_tasks, combined_params, trace_specific_output_dir, p
     _executor = executor
     
     try:
-        futures = [
-            executor.submit(
-                collect_trace_simulation_data,
-                trace_snp_file, vertical_pairs_with_counts, combined_params, 
-                trace_specific_output_dir, param_types, enable_direction, batch_size, False
-            )
-            for trace_snp_file, vertical_pairs_with_counts in trace_tasks
-        ]
-        
-        print(f"Submitted {len(futures)} trace files to ProcessPoolExecutor")
-        
-        # Process results
+        task_iterator = iter(trace_tasks)
+        active_futures = {}  # {future: (trace_snp_file, vertical_pairs)}
+        max_active_futures = num_workers * 4  # Keep the queue size proportional to workers
+
+        def submit_next_task():
+            """Helper to submit the next available task from the iterator."""
+            try:
+                trace_snp_file, vertical_pairs = next(task_iterator)
+                future = executor.submit(
+                    collect_trace_simulation_data,
+                    trace_snp_file, vertical_pairs, combined_params, 
+                    trace_specific_output_dir, param_types, enable_direction, batch_size, False
+                )
+                active_futures[future] = (trace_snp_file, vertical_pairs)
+                return True
+            except StopIteration:
+                return False
+
+        # Submit the initial batch of tasks to fill the queue
+        for _ in range(min(len(trace_tasks), max_active_futures)):
+            submit_next_task()
+
+        print(f"Submitted initial {len(active_futures)}/{len(trace_tasks)} tasks to ProcessPoolExecutor (max queue: {max_active_futures})")
+
         failed_tasks = []
         completed_tasks = 0
         total_simulations_completed = 0
+        
+        while active_futures:
+            # Wait for at least one future to complete
+            done, _ = concurrent.futures.wait(
+                active_futures.keys(), return_when=concurrent.futures.FIRST_COMPLETED
+            )
 
-        for future in concurrent.futures.as_completed(futures):
-            # Check for shutdown during result processing
+            for future in done:
+                task_info = active_futures.pop(future)  # Remove from active dict
+
+                if _shutdown_event.is_set():
+                    continue
+
+                # Process the result
+                exc = future.exception()
+                if exc is not None:
+                    print(f"\n--- Task FAILED for {task_info[0]} ---")
+                    traceback.print_exception(type(exc), exc, exc.__traceback__)
+                    failed_tasks.append((task_info, exc))
+                else:
+                    completed_tasks += 1
+                    sim_count = future.result()
+                    if sim_count is not None:
+                        total_simulations_completed += sim_count
+
+                # Replenish the queue with a new task
+                submit_next_task()
+            
             if _shutdown_event.is_set():
                 print("[EXECUTOR] Shutdown detected, cancelling remaining futures...")
-                for f in futures:
+                for f in active_futures.keys():
                     f.cancel()
                 break
-                
-            exc = future.exception()
-            if exc is not None:
-                print("\n--- Task FAILED ------------------------------------")
-                print("Exception:")
-                traceback.print_exception(type(exc), exc, exc.__traceback__)
-                failed_tasks.append(exc)
-            else:
-                completed_tasks += 1
-                sim_count = future.result()
-                total_simulations_completed += sim_count
 
         total_time = time.time() - executor_start_time
         
@@ -852,7 +879,7 @@ def run_with_executor(trace_tasks, combined_params, trace_specific_output_dir, p
         else:
             print(f"ProcessPoolExecutor completed in {total_time:.2f}s")
             
-        print(f"Completed {completed_tasks}/{len(futures)} trace files")
+        print(f"Completed {completed_tasks}/{len(trace_tasks)} tasks")
         print(f"Total simulations completed: {total_simulations_completed}/{total_expected}")
 
         if failed_tasks:
@@ -877,7 +904,7 @@ def run_with_executor(trace_tasks, combined_params, trace_specific_output_dir, p
                 pass
             
             if progress_thread.is_alive():
-                progress_thread.join(timeout=1.0)  # Reduced from 5 to 1 second
+                progress_thread.join(timeout=1.0)
                 if progress_thread.is_alive():
                     print("[CLEANUP] Warning: Progress thread still alive, continuing...")
                 
