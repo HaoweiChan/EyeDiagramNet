@@ -347,10 +347,24 @@ def get_optimal_workers(config_blas_threads=2):
         print(f"  CPU-based workers: {cpu_based_workers} (target {cpu_utilization_target*100:.0f}% CPU, {config_blas_threads} BLAS threads)")
     print(f"  Selected workers: {optimal_workers} (constraining factor: {'memory' if optimal_workers == memory_based_workers else 'CPU' if optimal_workers == cpu_based_workers else 'max_limit'})")
     
-    # Calculate predicted BLAS thread allocation
-    optimal_blas_threads = max(1, min(4, cpu_count // optimal_workers))
-    total_blas_threads = optimal_workers * optimal_blas_threads
-    print(f"  Predicted BLAS allocation: {optimal_workers} workers × {optimal_blas_threads} BLAS threads = {total_blas_threads} total threads ({total_blas_threads/cpu_count*100:.1f}% of {cpu_count} cores)")
+    # Calculate predicted BLAS thread allocation using the adaptive strategy
+    if optimal_workers <= 8:
+        predicted_blas_threads = max(2, min(4, cpu_count // max(1, optimal_workers // 2)))
+    elif optimal_workers <= 16:
+        predicted_blas_threads = max(2, cpu_count // optimal_workers)
+    else:
+        predicted_blas_threads = max(1, cpu_count // optimal_workers)
+    
+    predicted_blas_threads = min(predicted_blas_threads, 4)
+    total_blas_threads = optimal_workers * predicted_blas_threads
+    
+    # Apply safety margin check
+    if total_blas_threads > cpu_count * 1.2:
+        predicted_blas_threads = max(1, int(cpu_count * 1.2 // optimal_workers))
+        total_blas_threads = optimal_workers * predicted_blas_threads
+    
+    print(f"  Predicted BLAS allocation: {optimal_workers} workers × {predicted_blas_threads} BLAS threads = {total_blas_threads} total threads ({total_blas_threads/cpu_count*100:.1f}% of {cpu_count} cores)")
+    print(f"  Numba optimization: {'High' if predicted_blas_threads >= 2 else 'Limited'} (per-worker BLAS threads: {predicted_blas_threads})")
     
     return optimal_workers
 
@@ -553,13 +567,28 @@ def init_worker_process(vertical_cache_info, progress_queue, num_workers):
     
     profile_print(f"Worker {worker_id} set up globals")
     
-    # CRITICAL FIX: Adjust BLAS threads per worker to prevent CPU thrashing
-    # Total BLAS threads should approximately equal CPU cores
+    # ADVANCED FIX: Adaptive BLAS thread management for optimal Numba performance
+    # Balance between per-worker performance and CPU thrashing prevention
     cpu_count = psutil.cpu_count()
-    optimal_blas_threads = max(1, cpu_count // num_workers)
+    
+    # Calculate optimal BLAS threads with Numba considerations
+    if num_workers <= 8:
+        # Low worker count: Give more threads per worker for better Numba performance
+        optimal_blas_threads = max(2, min(4, cpu_count // max(1, num_workers // 2)))
+    elif num_workers <= 16:
+        # Medium worker count: Balance between Numba performance and threading
+        optimal_blas_threads = max(2, cpu_count // num_workers)
+    else:
+        # High worker count: Prioritize preventing CPU thrashing
+        optimal_blas_threads = max(1, cpu_count // num_workers)
     
     # Cap at 4 threads per worker (diminishing returns beyond this)
     optimal_blas_threads = min(optimal_blas_threads, 4)
+    
+    # Ensure we don't exceed total CPU cores with a safety margin
+    total_blas_threads = num_workers * optimal_blas_threads
+    if total_blas_threads > cpu_count * 1.2:  # 20% oversubscription max
+        optimal_blas_threads = max(1, int(cpu_count * 1.2 // num_workers))
     
     # Set BLAS thread limits for this worker process
     os.environ["OMP_NUM_THREADS"] = str(optimal_blas_threads)
@@ -568,7 +597,11 @@ def init_worker_process(vertical_cache_info, progress_queue, num_workers):
     os.environ["VECLIB_MAXIMUM_THREADS"] = str(optimal_blas_threads)
     os.environ["NUMEXPR_NUM_THREADS"] = str(optimal_blas_threads)
     
-    profile_print(f"Worker {worker_id} set BLAS threads to {optimal_blas_threads} ({num_workers} workers × {optimal_blas_threads} threads = {num_workers * optimal_blas_threads} total for {cpu_count} cores)")
+    # Also set Numba threading controls for better performance
+    os.environ["NUMBA_NUM_THREADS"] = str(optimal_blas_threads)
+    
+    total_threads_final = num_workers * optimal_blas_threads
+    profile_print(f"Worker {worker_id} set BLAS threads to {optimal_blas_threads} ({num_workers} workers × {optimal_blas_threads} threads = {total_threads_final} total for {cpu_count} cores, {total_threads_final/cpu_count*100:.1f}% utilization)")
     
     # Set CPU affinity for better CPU utilization (Linux only)
     if platform.system() == "Linux" and hasattr(os, 'sched_setaffinity'):
@@ -872,10 +905,16 @@ def collect_trace_simulation_data(trace_snp_file, vertical_pairs_with_counts, co
                 # Report progress after each simulation
                 report_progress(1, _progress_queue, _shutdown_event)
                 
-                # Performance monitoring
+                # Performance monitoring with BLAS/Numba analysis
                 sim_time = time.time() - sim_start_time
                 if sim_time > 5.0:  # Log slow simulations
-                    profile_print(f"Worker {worker_id} slow simulation: {sim_time:.1f}s for {trace_snp_path.name} sample {sample_idx+1}")
+                    blas_threads = os.environ.get("OMP_NUM_THREADS", "unknown")
+                    profile_print(f"Worker {worker_id} slow simulation: {sim_time:.1f}s for {trace_snp_path.name} sample {sample_idx+1} (BLAS threads: {blas_threads})")
+                
+                # Track performance statistics for optimization
+                if not hasattr(collect_trace_simulation_data, '_perf_stats'):
+                    collect_trace_simulation_data._perf_stats = []
+                collect_trace_simulation_data._perf_stats.append(sim_time)
                 
                 if debug:
                     print(f"  Completed simulation {sample_idx+1}/{sample_count}: EW={line_ew} ({sim_time:.1f}s)")
@@ -897,7 +936,21 @@ def collect_trace_simulation_data(trace_snp_file, vertical_pairs_with_counts, co
     # Final progress report is not needed since we report after each simulation
     task_total_time = time.time() - task_start_time
     
-    profile_print(f"Worker {worker_id} completed {trace_snp_path.name}: {total_completed}/{total_simulations} simulations", task_total_time)
+    # Performance analysis for optimization
+    if hasattr(collect_trace_simulation_data, '_perf_stats') and collect_trace_simulation_data._perf_stats:
+        perf_stats = collect_trace_simulation_data._perf_stats
+        avg_sim_time = np.mean(perf_stats)
+        max_sim_time = np.max(perf_stats)
+        min_sim_time = np.min(perf_stats)
+        
+        blas_threads = os.environ.get("OMP_NUM_THREADS", "unknown")
+        profile_print(f"Worker {worker_id} completed {trace_snp_path.name}: {total_completed}/{total_simulations} simulations", task_total_time)
+        profile_print(f"Worker {worker_id} performance: avg={avg_sim_time:.1f}s, min={min_sim_time:.1f}s, max={max_sim_time:.1f}s per simulation (BLAS threads: {blas_threads})")
+        
+        # Reset stats for next task
+        collect_trace_simulation_data._perf_stats = []
+    else:
+        profile_print(f"Worker {worker_id} completed {trace_snp_path.name}: {total_completed}/{total_simulations} simulations", task_total_time)
     
     if debug:
         print(f"Completed {total_completed} simulations for {trace_snp_path.name}")
