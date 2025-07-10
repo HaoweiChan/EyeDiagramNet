@@ -384,24 +384,41 @@ class EyeWidthSimulator:
     def add_ctle(self, ntwk: rf.Network, DC_gain: float, AC_gain: float, fp1: float, fp2: float, eps: float = 0) -> rf.Network:
         """Add Continuous-Time Linear Equalization (CTLE) to network.
         
+        Uses the numerically stable Z-P-K (Zeros-Poles-Gain) form to avoid 
+        BadCoefficients warnings that occur with large frequency values.
+        
         Args:
             ntwk: Network to modify
             DC_gain: DC gain of the CTLE
             AC_gain: AC gain of the CTLE
-            fp1: First pole frequency
-            fp2: Second pole frequency
+            fp1: First pole frequency (Hz)
+            fp2: Second pole frequency (Hz)
             eps: Small value for numerical stability
             
         Returns:
             Network with CTLE applied
         """
-        # Define CTLE transfer function
-        num = [AC_gain * fp2, DC_gain * fp1 * fp2]
-        den = [1, fp1 + fp2, fp1 * fp2]
-        system = scipy.signal.TransferFunction(num, den)
+        # Define CTLE transfer function using Z-P-K form for numerical stability
+        # Original: H(s) = (AC_gain * fp2 * s + DC_gain * fp1 * fp2) / (s^2 + (fp1 + fp2) * s + fp1 * fp2)
+        # Factor: H(s) = (AC_gain * fp2 * s + DC_gain * fp1 * fp2) / ((s + fp1) * (s + fp2))
+        
+        if AC_gain == 0:
+            # Pure constant case: H(s) = DC_gain * fp1 * fp2 / ((s + fp1) * (s + fp2))
+            zeros = []
+            poles = [-fp1, -fp2]
+            gain = DC_gain * fp1 * fp2
+        else:
+            # General case: numerator = AC_gain * fp2 * (s + DC_gain * fp1 / AC_gain)
+            zeros = [-DC_gain * fp1 / AC_gain]
+            poles = [-fp1, -fp2]
+            gain = AC_gain * fp2
+        
+        system = scipy.signal.ZerosPolesGain(zeros, poles, gain)
 
-        # Calculate frequency response
-        _, TF = scipy.signal.freqs(system.num, system.den, worN=ntwk.f)
+        # Calculate frequency response to match original behavior exactly
+        # Note: The original code incorrectly passes Hz to freqs (which expects rad/s)
+        # We maintain this behavior for backward compatibility
+        _, TF = scipy.signal.freqresp(system, ntwk.f)
         TF = TF[:, None]
 
         # Create port index arrays
@@ -964,9 +981,9 @@ def snp_eyewidth_simulation(config, snp_files=None, directions=None):
 
 def main():
     try:
-        from bound_param import SampleResult
+        from simulation.parameters.bound_param import SampleResult
     except ImportError:
-        print("Error: Could not import SampleResult from bound_param")
+        print("Error: Could not import SampleResult from simulation.parameters.bound_param")
         raise
     
     script_dir = os.path.dirname(os.path.abspath(__file__))
