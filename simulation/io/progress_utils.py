@@ -67,8 +67,8 @@ def progress_monitor(progress_queue, total_expected, interval=5, shutdown_event=
     
     while completed < total_expected and (shutdown_event is None or not shutdown_event.is_set()):
         try:
-            # Use shorter timeout to be more responsive to shutdown
-            timeout = min(interval, 2.0)
+            # Use very short timeout to be highly responsive to shutdown
+            timeout = 0.5  # Much shorter timeout for faster shutdown response
             msg_type, value = progress_queue.get(timeout=timeout)
             
             if msg_type == 'progress':

@@ -6,27 +6,53 @@ from pathlib import Path, PosixPath
 from itertools import combinations
 
 def read_snp(snp_file: PosixPath):
-    if snp_file.suffix != '.npz':
-        return rf.Network(str(snp_file))
+    """Read SNP file with robust error handling for file I/O issues."""
+    # Convert to Path object to ensure we have proper path handling
+    snp_path = Path(snp_file) if not isinstance(snp_file, Path) else snp_file
+    
+    # Validate file existence and readability
+    if not snp_path.exists():
+        raise FileNotFoundError(f"SNP file not found: {snp_path}")
+    
+    if not snp_path.is_file():
+        raise ValueError(f"Path is not a file: {snp_path}")
+    
+    try:
+        if snp_path.suffix != '.npz':
+            # Use more robust file reading with explicit error handling
+            # Convert to absolute path to avoid any relative path issues
+            abs_path = snp_path.resolve()
+            return rf.Network(str(abs_path))
+        
+        # Handle .npz files
+        data = np.load(snp_path)
+        compress_arr = data['compress_arr']
+        diag = data['diag']
 
-    data = np.load(snp_file)
-    compress_arr = data['compress_arr']
-    diag = data['diag']
+        decompress_arr = np.repeat(compress_arr, 2, axis=0)
+        if diag.shape[0] != compress_arr.shape[0]:
+            decompress_arr = np.delete(decompress_arr, -1, axis=0)
+        decompress_arr[:,:2] = np.triu(decompress_arr[:,:2]) + np.transpose(np.triu(decompress_arr[:,:2], 1), (0, 2, 1))
+        decompress_arr[1::2] = np.tril(decompress_arr[1::2], -1) + np.transpose(np.tril(decompress_arr[1::2], -1), (0, 2, 1))
+        decompress_arr[1::2, np.arange(diag.shape[1]), np.arange(diag.shape[1])] = diag
 
-    decompress_arr = np.repeat(compress_arr, 2, axis=0)
-    if diag.shape[0] != compress_arr.shape[0]:
-        decompress_arr = np.delete(decompress_arr, -1, axis=0)
-    decompress_arr[:,:2] = np.triu(decompress_arr[:,:2]) + np.transpose(np.triu(decompress_arr[:,:2], 1), (0, 2, 1))
-    decompress_arr[1::2] = np.tril(decompress_arr[1::2], -1) + np.transpose(np.tril(decompress_arr[1::2], -1), (0, 2, 1))
-    decompress_arr[1::2, np.arange(diag.shape[1]), np.arange(diag.shape[1])] = diag
+        ntwk = rf.Network()
+        ntwk.s = decompress_arr
+        if ntwk.s is not None and ntwk.s.ndim > 0:
+            npoints = ntwk.s.shape[0]
+            ntwk.frequency = rf.Frequency(1, npoints, npoints, unit='GHz')
 
-    ntwk = rf.Network()
-    ntwk.s = decompress_arr
-    if ntwk.s is not None and ntwk.s.ndim > 0:
-        npoints = ntwk.s.shape[0]
-        ntwk.frequency = rf.Frequency(1, npoints, npoints, unit='GHz')
-
-    return ntwk
+        return ntwk
+    
+    except Exception as e:
+        # Provide more detailed error information for debugging
+        error_msg = f"Error reading SNP file {snp_path}: {str(e)}"
+        print(f"[ERROR] {error_msg}")
+        print(f"[ERROR] File size: {snp_path.stat().st_size if snp_path.exists() else 'N/A'} bytes")
+        print(f"[ERROR] File suffix: {snp_path.suffix}")
+        
+        # Re-raise with more context
+        raise RuntimeError(error_msg) from e
 
 def parse_snps(snp_dir, indices):
     suffix = '*.s*p'
