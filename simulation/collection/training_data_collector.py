@@ -590,6 +590,7 @@ def get_snp_from_cache(snp_path, cache_info):
                     
                     # Add compatibility attributes for skrf.Network
                     self.number_of_ports = nports
+                    self.name = f"cached_network_{nports}port"  # Add name attribute
                     
                     # Create a minimal frequency object with the required attributes
                     class MinimalFrequency:
@@ -615,6 +616,17 @@ def get_snp_from_cache(snp_path, cache_info):
                     # Reorder impedance if it's an array
                     if hasattr(self.z0, '__len__') and len(self.z0) > 1:
                         self.z0 = self.z0[port_order]
+                
+                def subnetwork(self, port_index_list):
+                    """Create a subnetwork with specified port ordering"""
+                    if len(port_index_list) != self.nports:
+                        raise ValueError(f"port_index_list must have length {self.nports}")
+                    
+                    # Create new CachedNetwork with reordered ports
+                    new_s = self.s[:, port_index_list, :][:, :, port_index_list]
+                    new_z0 = self.z0[port_index_list] if hasattr(self.z0, '__len__') and len(self.z0) > 1 else self.z0
+                    
+                    return CachedNetwork(new_s, self.f, self.nports, new_z0)
             
             # Don't close shared memory here - let cleanup handle it
             return CachedNetwork(s_array, f_array, cache_data['nports'], cache_data['z0'])
