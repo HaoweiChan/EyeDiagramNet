@@ -577,59 +577,80 @@ def get_snp_from_cache(snp_path, cache_info):
             s_shm = shm.SharedMemory(name=cache_data['s_name'])
             f_shm = shm.SharedMemory(name=cache_data['f_name'])
             
-            s_array = np.ndarray(cache_data['s_shape'], dtype=cache_data['s_dtype'], buffer=s_shm.buf)
-            f_array = np.ndarray(cache_data['f_shape'], dtype=cache_data['f_dtype'], buffer=f_shm.buf)
-            
-            # Create a simple object that mimics skrf.Network for our use case
-            class CachedNetwork:
-                def __init__(self, s, f, nports, z0):
-                    self.s = s.copy()  # Copy to avoid shared memory issues
-                    self.f = f.copy()
-                    self.nports = nports
-                    self.z0 = np.array(z0)
-                    
-                    # Add compatibility attributes for skrf.Network
-                    self.number_of_ports = nports
-                    self.name = f"cached_network_{nports}port"  # Add name attribute
-                    
-                    # Create a minimal frequency object with the required attributes
-                    class MinimalFrequency:
-                        def __init__(self, f_array):
-                            self.f = f_array
-                    
-                    self.frequency = MinimalFrequency(f.copy())
+            try:
+                s_array = np.ndarray(cache_data['s_shape'], dtype=cache_data['s_dtype'], buffer=s_shm.buf)
+                f_array = np.ndarray(cache_data['f_shape'], dtype=cache_data['f_dtype'], buffer=f_shm.buf)
                 
-                def flip(self):
-                    """Flip the network ports for RX networks (in-place operation)"""
-                    n = self.nports
-                    if n % 2 != 0:
-                        raise ValueError("Cannot flip network with odd number of ports")
+                # Create a simple object that mimics skrf.Network for our use case
+                class CachedNetwork:
+                    def __init__(self, s, f, nports, z0):
+                        self.s = s.copy()  # Copy to avoid shared memory issues
+                        self.f = f.copy()
+                        self.nports = nports
+                        self.z0 = np.array(z0)
+                        
+                        # Add compatibility attributes for skrf.Network
+                        self.number_of_ports = nports
+                        self.name = f"cached_network_{nports}port"  # Add name attribute
+                        
+                        # Create a minimal frequency object with the required attributes
+                        class MinimalFrequency:
+                            def __init__(self, f_array):
+                                self.f = f_array
+                        
+                        self.frequency = MinimalFrequency(f.copy())
                     
-                    # Create port reordering: flip each pair of ports
-                    port_order = []
-                    for i in range(n // 2):
-                        port_order.extend([i + n // 2, i])
+                    def flip(self):
+                        """Flip the network ports for RX networks (in-place operation)"""
+                        n = self.nports
+                        if n % 2 != 0:
+                            raise ValueError("Cannot flip network with odd number of ports")
+                        
+                        # Create port reordering: flip each pair of ports
+                        port_order = []
+                        for i in range(n // 2):
+                            port_order.extend([i + n // 2, i])
+                        
+                        # Reorder S-parameters
+                        self.s = self.s[:, port_order, :][:, :, port_order]
+                        
+                        # Reorder impedance if it's an array
+                        if hasattr(self.z0, '__len__') and len(self.z0) > 1:
+                            self.z0 = self.z0[port_order]
                     
-                    # Reorder S-parameters
-                    self.s = self.s[:, port_order, :][:, :, port_order]
+                    def subnetwork(self, port_index_list):
+                        """Create a subnetwork with specified port ordering"""
+                        if len(port_index_list) != self.nports:
+                            raise ValueError(f"port_index_list must have length {self.nports}")
+                        
+                        # Create new CachedNetwork with reordered ports
+                        new_s = self.s[:, port_index_list, :][:, :, port_index_list]
+                        new_z0 = self.z0[port_index_list] if hasattr(self.z0, '__len__') and len(self.z0) > 1 else self.z0
+                        
+                        return CachedNetwork(new_s, self.f, self.nports, new_z0)
                     
-                    # Reorder impedance if it's an array
-                    if hasattr(self.z0, '__len__') and len(self.z0) > 1:
-                        self.z0 = self.z0[port_order]
+                    def close(self):
+                        """Close method for compatibility (no-op for CachedNetwork)"""
+                        pass
                 
-                def subnetwork(self, port_index_list):
-                    """Create a subnetwork with specified port ordering"""
-                    if len(port_index_list) != self.nports:
-                        raise ValueError(f"port_index_list must have length {self.nports}")
-                    
-                    # Create new CachedNetwork with reordered ports
-                    new_s = self.s[:, port_index_list, :][:, :, port_index_list]
-                    new_z0 = self.z0[port_index_list] if hasattr(self.z0, '__len__') and len(self.z0) > 1 else self.z0
-                    
-                    return CachedNetwork(new_s, self.f, self.nports, new_z0)
-            
-            # Don't close shared memory here - let cleanup handle it
-            return CachedNetwork(s_array, f_array, cache_data['nports'], cache_data['z0'])
+                # Copy the data from shared memory (this is the key fix)
+                cached_network = CachedNetwork(s_array, f_array, cache_data['nports'], cache_data['z0'])
+                
+                # CRITICAL: Close the SharedMemory objects after copying data
+                # This prevents resource leaks and the ".close()" error
+                s_shm.close()
+                f_shm.close()
+                
+                return cached_network
+                
+            except Exception as inner_e:
+                # Ensure shared memory is closed even if there's an error
+                try:
+                    s_shm.close()
+                    f_shm.close()
+                except:
+                    pass
+                raise inner_e
             
         except Exception as e:
             # Fall back to disk loading if shared memory fails
