@@ -306,12 +306,12 @@ def get_optimal_workers(config_blas_threads=2):
         # Use minimum to ensure we don't exceed any constraint
         optimal_workers = min(memory_based_workers, cpu_based_workers)
         
-    elif system == "Linux":  # Linux - Aggressive for production
-        print("Using Linux resource allocation (aggressive)")
-        # Aggressive settings to maximize server utilization
-        # Target: 90-95% CPU usage, use most available RAM
+    elif system == "Linux":  # Linux - Balanced for production
+        print("Using Linux resource allocation (balanced)")
+        # Balanced settings to maximize throughput without CPU thrashing
+        # Target: 75-85% CPU usage to avoid over-subscription
         memory_per_worker = 0.5  # Reduced memory estimate for better scaling
-        cpu_utilization_target = 0.95  # Use 95% of cores
+        cpu_utilization_target = 0.75  # Use 75% of cores to avoid thrashing
         
         # Reserve some memory for system (5% or 2GB, whichever is larger)
         reserved_memory = max(memory_gb * 0.05, 2.0)
@@ -320,13 +320,14 @@ def get_optimal_workers(config_blas_threads=2):
         # Calculate workers based on memory and CPU
         memory_based_workers = max(1, int(available_memory / memory_per_worker))
         
-        # For CPU calculation, use a more aggressive approach
-        # Each worker can efficiently use 1-2 cores with BLAS threads
-        cores_per_worker = max(1, config_blas_threads // 2) if config_blas_threads > 2 else 1
-        cpu_based_workers = max(1, int(cpu_count * cpu_utilization_target / cores_per_worker))
+        # For CPU calculation, be more conservative to avoid thrashing
+        # Each worker should have at least 1 core, preferably 1-2 cores
+        # This accounts for the fact that we'll dynamically adjust BLAS threads
+        cpu_based_workers = max(1, int(cpu_count * cpu_utilization_target))
         
         # Use minimum but cap at reasonable maximum
-        max_reasonable_workers = min(cpu_count, 64)  # Cap at 64 workers max
+        # Cap at 75% of cores to prevent over-subscription
+        max_reasonable_workers = min(int(cpu_count * 0.75), 48)  # Cap at 48 workers max
         optimal_workers = min(memory_based_workers, cpu_based_workers, max_reasonable_workers)
         
     else:  # Unknown platform - Use conservative defaults
@@ -341,10 +342,15 @@ def get_optimal_workers(config_blas_threads=2):
     print(f"Resource calculation:")
     print(f"  Memory-based workers: {memory_based_workers} ({memory_per_worker}GB per worker, {available_memory:.1f}GB available)")
     if system == "Linux":
-        print(f"  CPU-based workers: {cpu_based_workers} (target {cpu_utilization_target*100:.0f}% CPU, {cores_per_worker} cores per worker, {config_blas_threads} BLAS threads)")
+        print(f"  CPU-based workers: {cpu_based_workers} (target {cpu_utilization_target*100:.0f}% CPU)")
     else:
         print(f"  CPU-based workers: {cpu_based_workers} (target {cpu_utilization_target*100:.0f}% CPU, {config_blas_threads} BLAS threads)")
     print(f"  Selected workers: {optimal_workers} (constraining factor: {'memory' if optimal_workers == memory_based_workers else 'CPU' if optimal_workers == cpu_based_workers else 'max_limit'})")
+    
+    # Calculate predicted BLAS thread allocation
+    optimal_blas_threads = max(1, min(4, cpu_count // optimal_workers))
+    total_blas_threads = optimal_workers * optimal_blas_threads
+    print(f"  Predicted BLAS allocation: {optimal_workers} workers × {optimal_blas_threads} BLAS threads = {total_blas_threads} total threads ({total_blas_threads/cpu_count*100:.1f}% of {cpu_count} cores)")
     
     return optimal_workers
 
@@ -531,7 +537,7 @@ class SNPCache:
             
         self.memory_blocks.clear()
 
-def init_worker_process(vertical_cache_info, progress_queue):
+def init_worker_process(vertical_cache_info, progress_queue, num_workers):
     """Initialize worker process with shared memory access and progress reporting."""
     worker_start_time = time.time()
     worker_id = os.getpid()
@@ -546,6 +552,23 @@ def init_worker_process(vertical_cache_info, progress_queue):
     _progress_queue = progress_queue
     
     profile_print(f"Worker {worker_id} set up globals")
+    
+    # CRITICAL FIX: Adjust BLAS threads per worker to prevent CPU thrashing
+    # Total BLAS threads should approximately equal CPU cores
+    cpu_count = psutil.cpu_count()
+    optimal_blas_threads = max(1, cpu_count // num_workers)
+    
+    # Cap at 4 threads per worker (diminishing returns beyond this)
+    optimal_blas_threads = min(optimal_blas_threads, 4)
+    
+    # Set BLAS thread limits for this worker process
+    os.environ["OMP_NUM_THREADS"] = str(optimal_blas_threads)
+    os.environ["MKL_NUM_THREADS"] = str(optimal_blas_threads)
+    os.environ["OPENBLAS_NUM_THREADS"] = str(optimal_blas_threads)
+    os.environ["VECLIB_MAXIMUM_THREADS"] = str(optimal_blas_threads)
+    os.environ["NUMEXPR_NUM_THREADS"] = str(optimal_blas_threads)
+    
+    profile_print(f"Worker {worker_id} set BLAS threads to {optimal_blas_threads} ({num_workers} workers × {optimal_blas_threads} threads = {num_workers * optimal_blas_threads} total for {cpu_count} cores)")
     
     # Set CPU affinity for better CPU utilization (Linux only)
     if platform.system() == "Linux" and hasattr(os, 'sched_setaffinity'):
@@ -774,6 +797,9 @@ def collect_trace_simulation_data(trace_snp_file, vertical_pairs_with_counts, co
             # Sample parameters
             combined_config = combined_params.sample()
             
+            # Performance monitoring for simulation
+            sim_start_time = time.time()
+            
             try:
                 # Set directions
                 if enable_direction:
@@ -846,8 +872,13 @@ def collect_trace_simulation_data(trace_snp_file, vertical_pairs_with_counts, co
                 # Report progress after each simulation
                 report_progress(1, _progress_queue, _shutdown_event)
                 
+                # Performance monitoring
+                sim_time = time.time() - sim_start_time
+                if sim_time > 5.0:  # Log slow simulations
+                    profile_print(f"Worker {worker_id} slow simulation: {sim_time:.1f}s for {trace_snp_path.name} sample {sample_idx+1}")
+                
                 if debug:
-                    print(f"  Completed simulation {sample_idx+1}/{sample_count}: EW={line_ew}")
+                    print(f"  Completed simulation {sample_idx+1}/{sample_count}: EW={line_ew} ({sim_time:.1f}s)")
                     
             except Exception as e:
                 print(f"Error in simulation for {trace_snp_path.name}: {e}")
@@ -961,7 +992,7 @@ def run_with_executor(trace_tasks, combined_params, trace_specific_output_dir, p
     executor = concurrent.futures.ProcessPoolExecutor(
         max_workers=num_workers, 
         initializer=init_worker_process,
-        initargs=(vertical_cache_info or {}, progress_queue)
+        initargs=(vertical_cache_info or {}, progress_queue, num_workers)
     )
     _executor = executor
     
@@ -1434,6 +1465,11 @@ def main():
             progress_thread.start()
             _progress_queue = progress_queue
             print(f"Started debug progress monitor for {total_simulations} simulations")
+            
+            # In debug mode, we're using sequential processing, so BLAS threads should be higher
+            actual_blas_threads = int(os.environ.get("OMP_NUM_THREADS", "2"))
+            print(f"Debug mode BLAS threads: {actual_blas_threads} (sequential processing)")
+            print(f"This should be much faster than parallel mode was (~150s vs ~2000s per task)")
 
             for i, (trace_snp_file, vertical_pairs_with_counts) in enumerate(trace_tasks):
                 print(f"\n--- Debug Task {i+1}/{len(trace_tasks)} ---")
