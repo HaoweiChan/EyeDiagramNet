@@ -50,6 +50,34 @@ import multiprocessing.shared_memory as shm
 from pathlib import Path
 from datetime import datetime
 
+try:
+    from tqdm import tqdm
+    TQDM_AVAILABLE = True
+except ImportError:
+    TQDM_AVAILABLE = False
+    # Fallback tqdm implementation
+    class tqdm:
+        def __init__(self, iterable=None, total=None, desc=None, **kwargs):
+            self.iterable = iterable
+            self.total = total or (len(iterable) if iterable else 0)
+            self.desc = desc
+            self.current = 0
+            if desc:
+                print(f"{desc}: 0/{self.total}")
+        
+        def __iter__(self):
+            for item in self.iterable:
+                yield item
+                self.update(1)
+        
+        def update(self, n=1):
+            self.current += n
+            if self.current % max(1, self.total // 10) == 0 or self.current == self.total:
+                print(f"{self.desc}: {self.current}/{self.total}")
+        
+        def close(self):
+            pass
+
 from common.signal_utils import read_snp
 from simulation.parameters.bound_param import PARAM_SETS_MAP
 from simulation.engine.eye_width_simulator import snp_eyewidth_simulation
@@ -558,7 +586,35 @@ def get_snp_from_cache(snp_path, cache_info):
                     self.s = s.copy()  # Copy to avoid shared memory issues
                     self.f = f.copy()
                     self.nports = nports
-                    self.z0 = z0
+                    self.z0 = np.array(z0)
+                    
+                    # Add compatibility attributes for skrf.Network
+                    self.number_of_ports = nports
+                    
+                    # Create a minimal frequency object with the required attributes
+                    class MinimalFrequency:
+                        def __init__(self, f_array):
+                            self.f = f_array
+                    
+                    self.frequency = MinimalFrequency(f.copy())
+                
+                def flip(self):
+                    """Flip the network ports for RX networks (in-place operation)"""
+                    n = self.nports
+                    if n % 2 != 0:
+                        raise ValueError("Cannot flip network with odd number of ports")
+                    
+                    # Create port reordering: flip each pair of ports
+                    port_order = []
+                    for i in range(n // 2):
+                        port_order.extend([i + n // 2, i])
+                    
+                    # Reorder S-parameters
+                    self.s = self.s[:, port_order, :][:, :, port_order]
+                    
+                    # Reorder impedance if it's an array
+                    if hasattr(self.z0, '__len__') and len(self.z0) > 1:
+                        self.z0 = self.z0[port_order]
             
             # Don't close shared memory here - let cleanup handle it
             return CachedNetwork(s_array, f_array, cache_data['nports'], cache_data['z0'])
@@ -1271,14 +1327,17 @@ def main():
     
     print(f"Loading {len(unique_vertical_snps)} unique vertical SNP files into shared memory...")
     
-    # Load SNPs with progress tracking
-    for i, snp_path in enumerate(sorted(unique_vertical_snps), 1):
-        snp_load_start = time.time()
-        vertical_cache.add_snp(snp_path)
-        snp_load_time = time.time() - snp_load_start
-        
-        if i <= 3 or i % 10 == 0 or i == len(unique_vertical_snps):
-            print(f"  [{i}/{len(unique_vertical_snps)}] Loaded {Path(snp_path).name} ({snp_load_time:.2f}s)")
+    # Load SNPs with tqdm progress bar
+    sorted_snps = sorted(unique_vertical_snps)
+    with tqdm(sorted_snps, desc="Loading SNPs to cache", unit="file", 
+              bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]") as pbar:
+        for snp_path in pbar:
+            snp_load_start = time.time()
+            vertical_cache.add_snp(snp_path)
+            snp_load_time = time.time() - snp_load_start
+            
+            # Update tqdm description with current file and timing
+            pbar.set_postfix_str(f"{Path(snp_path).name} ({snp_load_time:.2f}s)")
     
     # Calculate memory usage
     total_memory_mb = sum(block.size for block in vertical_cache.memory_blocks) / (1024 * 1024)
