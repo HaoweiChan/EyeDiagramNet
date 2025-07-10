@@ -583,7 +583,7 @@ def get_snp_from_cache(snp_path, cache_info):
                 
                 # Create a simple object that mimics skrf.Network for our use case
                 class CachedNetwork:
-                    def __init__(self, s, f, nports, z0):
+                    def __init__(self, s, f, nports, z0, original_path=None):
                         self.s = s.copy()  # Copy to avoid shared memory issues
                         self.f = f.copy()
                         self.nports = nports
@@ -592,6 +592,7 @@ def get_snp_from_cache(snp_path, cache_info):
                         # Add compatibility attributes for skrf.Network
                         self.number_of_ports = nports
                         self.name = f"cached_network_{nports}port"  # Add name attribute
+                        self._original_path = original_path  # Store original path for fallback
                         
                         # Create a minimal frequency object with the required attributes
                         class MinimalFrequency:
@@ -634,7 +635,7 @@ def get_snp_from_cache(snp_path, cache_info):
                         pass
                 
                 # Copy the data from shared memory (this is the key fix)
-                cached_network = CachedNetwork(s_array, f_array, cache_data['nports'], cache_data['z0'])
+                cached_network = CachedNetwork(s_array, f_array, cache_data['nports'], cache_data['z0'], str(snp_path))
                 
                 # CRITICAL: Close the SharedMemory objects after copying data
                 # This prevents resource leaks and the ".close()" error
@@ -796,12 +797,24 @@ def collect_trace_simulation_data(trace_snp_file, vertical_pairs_with_counts, co
                 else:
                     sim_directions = np.ones(n_lines, dtype=int)
                 
-                # Run simulation
-                line_ew = snp_eyewidth_simulation(
-                    config=combined_config,
-                    snp_files=(trace_ntwk, tx_ntwk, rx_ntwk),
-                    directions=sim_directions
-                )
+                # Run simulation with robust error handling
+                try:
+                    line_ew = snp_eyewidth_simulation(
+                        config=combined_config,
+                        snp_files=(trace_ntwk, tx_ntwk, rx_ntwk),
+                        directions=sim_directions
+                    )
+                except Exception as sim_error:
+                    # Handle simulation errors gracefully
+                    error_msg = str(sim_error)
+                    if "fid" in error_msg.lower():
+                        print(f"[WARNING] SKRf library error (likely corrupted/invalid SNP data): {error_msg}")
+                        print(f"[WARNING] Skipping simulation for {trace_snp_path.name}, sample {sample_idx+1}")
+                        continue
+                    else:
+                        # Re-raise non-fid errors as they might be more serious
+                        print(f"[ERROR] Simulation error for {trace_snp_path.name}: {error_msg}")
+                        raise sim_error
                 
                 # Handle tuple return
                 if isinstance(line_ew, tuple):

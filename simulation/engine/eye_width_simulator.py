@@ -867,26 +867,60 @@ class EyeWidthSimulator:
         Load S-parameter files and cascade them.
         Handles both file paths and pre-loaded skrf.Network objects.
         """
-        # Load networks, checking if they are already network objects
-        ntwk_horiz = self.params.snp_horiz if isinstance(self.params.snp_horiz, rf.Network) else rf.Network(self.params.snp_horiz)
+        def ensure_rf_network(obj):
+            """Convert CachedNetwork to proper rf.Network for skrf operations."""
+            if isinstance(obj, rf.Network):
+                return obj
+            elif hasattr(obj, 's') and hasattr(obj, 'f') and hasattr(obj, 'z0'):
+                # Convert CachedNetwork to proper rf.Network
+                try:
+                    # Create frequency object
+                    freq_obj = rf.Frequency(obj.f[0], obj.f[-1], len(obj.f), unit='Hz')
+                    # Create proper rf.Network
+                    return rf.Network(frequency=freq_obj, s=obj.s, z0=obj.z0)
+                except Exception as e:
+                    print(f"[WARNING] Failed to convert cached network to rf.Network: {e}")
+                    # Fallback: try to create from string if obj has a name attribute that looks like a path
+                    if hasattr(obj, 'name') and hasattr(obj, '_original_path'):
+                        return rf.Network(obj._original_path)
+                    else:
+                        raise RuntimeError(f"Cannot convert network object to rf.Network: {e}")
+            else:
+                # Assume it's a file path
+                return rf.Network(str(obj))
         
-        if self.params.snp_tx and self.params.snp_rx:
-            ntwk_tx = self.params.snp_tx if isinstance(self.params.snp_tx, rf.Network) else rf.Network(self.params.snp_tx)
-            ntwk_rx = self.params.snp_rx if isinstance(self.params.snp_rx, rf.Network) else rf.Network(self.params.snp_rx)
+        try:
+            # Load networks, ensuring they are proper rf.Network objects
+            ntwk_horiz = ensure_rf_network(self.params.snp_horiz)
             
-            # Apply inductance before cascading
-            ntwk_horiz = self.add_inductance(ntwk_horiz, self.params.L_tx, self.params.L_rx)
+            if self.params.snp_tx and self.params.snp_rx:
+                ntwk_tx = ensure_rf_network(self.params.snp_tx)
+                ntwk_rx = ensure_rf_network(self.params.snp_rx)
+                
+                # Apply inductance before cascading
+                ntwk_horiz = self.add_inductance(ntwk_horiz, self.params.L_tx, self.params.L_rx)
+                
+                # Flip RX network for cascading
+                ntwk_rx.flip()
+                
+                # Cascade the networks
+                ntwk = ntwk_tx ** ntwk_horiz ** ntwk_rx
+            else:
+                # Apply inductance directly if no vertical networks
+                ntwk = self.add_inductance(ntwk_horiz, self.params.L_tx, self.params.L_rx)
+                
+            return ntwk
             
-            # Flip RX network for cascading
-            ntwk_rx.flip()
-            
-            # Cascade the networks
-            ntwk = ntwk_tx ** ntwk_horiz ** ntwk_rx
-        else:
-            # Apply inductance directly if no vertical networks
-            ntwk = self.add_inductance(ntwk_horiz, self.params.L_tx, self.params.L_rx)
-            
-        return ntwk
+        except Exception as e:
+            error_msg = f"Error in _load_and_cascade_networks: {e}"
+            print(f"[ERROR] {error_msg}")
+            # Print more details for debugging
+            print(f"[ERROR] snp_horiz type: {type(self.params.snp_horiz)}")
+            if self.params.snp_tx:
+                print(f"[ERROR] snp_tx type: {type(self.params.snp_tx)}")
+            if self.params.snp_rx:
+                print(f"[ERROR] snp_rx type: {type(self.params.snp_rx)}")
+            raise RuntimeError(error_msg) from e
 
 # ===============================================
 # MODULE-LEVEL FUNCTIONS (PUBLIC INTERFACE)
@@ -904,8 +938,28 @@ def snp_eyewidth_simulation(config, snp_files=None, directions=None):
     Returns:
         Tuple of (eye_widths, directions)
     """
-    simulator = EyeWidthSimulator(config, snp_files, directions)
-    return simulator.calculate_eyewidth()
+    try:
+        simulator = EyeWidthSimulator(config, snp_files, directions)
+        return simulator.calculate_eyewidth()
+    except Exception as e:
+        # Provide more context for debugging
+        error_msg = f"Eye width simulation failed: {str(e)}"
+        
+        # Add context about the input files if available
+        if snp_files:
+            if isinstance(snp_files, (tuple, list)) and len(snp_files) >= 3:
+                horiz_name = getattr(snp_files[0], 'name', str(snp_files[0]))
+                tx_name = getattr(snp_files[1], 'name', str(snp_files[1]))
+                rx_name = getattr(snp_files[2], 'name', str(snp_files[2]))
+                error_msg += f" (Files: horiz={horiz_name}, tx={tx_name}, rx={rx_name})"
+            else:
+                error_msg += f" (File: {snp_files})"
+        
+        # Print detailed error for debugging
+        print(f"[ERROR] {error_msg}")
+        
+        # Re-raise with enhanced context
+        raise RuntimeError(error_msg) from e
 
 
 def main():
