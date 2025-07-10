@@ -1,5 +1,10 @@
 import scipy
 import numpy as np
+import os
+import time
+import threading
+from collections import defaultdict, deque
+from functools import wraps
 
 try:
     from numba import jit, njit
@@ -17,9 +22,111 @@ except ImportError:
         return decorator
 
 # ===============================================
+# PERFORMANCE MONITORING SYSTEM
+# ===============================================
+
+# Global performance monitoring state
+_PERFORMANCE_ENABLED = os.environ.get('ENABLE_NETWORK_PROFILING', '0').lower() in ('1', 'true', 'yes')
+_performance_data = defaultdict(lambda: {'times': deque(maxlen=1000), 'count': 0})
+_performance_lock = threading.Lock()
+
+def get_blas_info():
+    """Get current BLAS threading configuration."""
+    blas_threads = os.environ.get('OMP_NUM_THREADS', 
+                  os.environ.get('MKL_NUM_THREADS',
+                  os.environ.get('OPENBLAS_NUM_THREADS', 'unknown')))
+    return blas_threads
+
+def get_execution_context():
+    """Detect if running in debug or parallel mode."""
+    import multiprocessing
+    current_process = multiprocessing.current_process()
+    
+    if current_process.name == 'MainProcess':
+        return 'debug'
+    else:
+        return 'parallel'
+
+def performance_monitor(func):
+    """Decorator to monitor function performance without modifying original code."""
+    if not _PERFORMANCE_ENABLED:
+        return func
+    
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        start_time = time.perf_counter()
+        try:
+            result = func(*args, **kwargs)
+            return result
+        finally:
+            end_time = time.perf_counter()
+            runtime = end_time - start_time
+            
+            # Store performance data thread-safely
+            with _performance_lock:
+                func_name = func.__name__
+                _performance_data[func_name]['times'].append(runtime)
+                _performance_data[func_name]['count'] += 1
+    
+    return wrapper
+
+def get_performance_summary():
+    """Get performance summary for all monitored functions."""
+    if not _PERFORMANCE_ENABLED:
+        return {}
+    
+    summary = {}
+    blas_threads = get_blas_info()
+    exec_context = get_execution_context()
+    
+    with _performance_lock:
+        for func_name, data in _performance_data.items():
+            if data['count'] > 0:
+                times = list(data['times'])
+                avg_time = sum(times) / len(times)
+                summary[func_name] = {
+                    'avg_runtime': avg_time,
+                    'call_count': data['count'],
+                    'blas_threads': blas_threads,
+                    'mode': exec_context
+                }
+    
+    return summary
+
+def print_performance_summary(worker_id=None):
+    """Print performance summary to console."""
+    if not _PERFORMANCE_ENABLED:
+        return
+    
+    summary = get_performance_summary()
+    if not summary:
+        return
+    
+    context_prefix = f"[Worker {worker_id}]" if worker_id else "[Main]"
+    blas_info = get_blas_info()
+    mode = get_execution_context()
+    
+    print(f"\n{context_prefix} Network Utils Performance Summary ({mode} mode, BLAS threads: {blas_info}):")
+    print("-" * 80)
+    
+    for func_name, stats in sorted(summary.items()):
+        avg_ms = stats['avg_runtime'] * 1000  # Convert to milliseconds
+        count = stats['call_count']
+        print(f"  {func_name:12s}: {avg_ms:6.2f}ms avg, {count:4d} calls")
+    
+    print("-" * 80)
+
+def reset_performance_data():
+    """Reset performance monitoring data."""
+    if _PERFORMANCE_ENABLED:
+        with _performance_lock:
+            _performance_data.clear()
+
+# ===============================================
 # LINEAR ALGEBRA UTILITIES
 # ===============================================
 
+@performance_monitor
 @jit(nopython=True) if NUMBA_AVAILABLE else lambda x: x
 def rsolve(A: np.ndarray, B: np.ndarray) -> np.ndarray:
     """Solve x @ A = B using NumPy with vectorized operations.
@@ -92,6 +199,7 @@ def nudge_eig(mat: np.ndarray, cond: float = 1e-9, min_eig: float = 1e-12) -> np
         np.fill_diagonal(e[i], eigw[i])
     return rsolve(eigv, eigv @ e)
 
+@performance_monitor
 def nudge_svd(mat: np.ndarray, cond: float = 1e-9, min_svd: float = 1e-12) -> np.ndarray:
     """Nudge singular values to avoid singularities.
     
@@ -128,6 +236,7 @@ def nudge_svd(mat: np.ndarray, cond: float = 1e-9, min_svd: float = 1e-12) -> np
 # NETWORK PARAMETER CONVERSION FUNCTIONS
 # ===============================================
 
+@performance_monitor
 def s2z(s: np.ndarray, z0: np.ndarray) -> np.ndarray:
     """Convert scattering parameters to impedance parameters.
     
@@ -163,6 +272,7 @@ def s2z(s: np.ndarray, z0: np.ndarray) -> np.ndarray:
     
     return z
 
+@performance_monitor
 def z2s(z: np.ndarray, z0: np.ndarray) -> np.ndarray:
     """Convert impedance parameters to scattering parameters.
     
@@ -190,6 +300,7 @@ def z2s(z: np.ndarray, z0: np.ndarray) -> np.ndarray:
     s = rsolve(F @ (z + G), F @ (z - G.conj()))
     return s
 
+@performance_monitor
 def s2y(s: np.ndarray, z0: np.ndarray) -> np.ndarray:
     """Convert scattering parameters to admittance parameters.
     
@@ -216,6 +327,7 @@ def s2y(s: np.ndarray, z0: np.ndarray) -> np.ndarray:
     y = rsolve((s @ G + G.conj()) @ F, (Id - s) @ F)
     return y
 
+@performance_monitor
 def y2s(y: np.ndarray, z0: np.ndarray, epsilon: float = 1e-4) -> np.ndarray:
     """Convert admittance parameters to scattering parameters.
     

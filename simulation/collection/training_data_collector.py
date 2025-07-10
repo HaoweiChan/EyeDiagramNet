@@ -23,8 +23,6 @@ def get_platform_blas_default():
             return "2"  # Smaller servers: 2 BLAS threads per worker
     elif system == "Darwin":  # macOS
         return "2"  # Balanced: Share threads between BLAS and processes
-    else:
-        return "2"  # Safe default for unknown platforms
 
 # Allow config to override BLAS thread count, with platform-aware defaults
 default_blas_threads = os.environ.get("BLAS_THREADS", get_platform_blas_default())
@@ -85,6 +83,15 @@ from simulation.io.config_utils import load_config, resolve_trace_pattern, resol
 from simulation.io.snp_utils import parse_snps, generate_vertical_snp_pairs
 from simulation.io.progress_utils import progress_monitor, report_progress
 from simulation.parameters.param_utils import parse_param_types, modify_params_for_inductance
+
+# Import performance monitoring functions
+try:
+    from simulation.engine.network_utils import print_performance_summary, reset_performance_data
+    NETWORK_PROFILING_AVAILABLE = True
+except ImportError:
+    NETWORK_PROFILING_AVAILABLE = False
+    def print_performance_summary(worker_id=None): pass
+    def reset_performance_data(): pass
 
 # Global profiling state
 _profiling_data = threading.local()
@@ -347,24 +354,37 @@ def get_optimal_workers(config_blas_threads=2):
         print(f"  CPU-based workers: {cpu_based_workers} (target {cpu_utilization_target*100:.0f}% CPU, {config_blas_threads} BLAS threads)")
     print(f"  Selected workers: {optimal_workers} (constraining factor: {'memory' if optimal_workers == memory_based_workers else 'CPU' if optimal_workers == cpu_based_workers else 'max_limit'})")
     
-    # Calculate predicted BLAS thread allocation using the adaptive strategy
+    # Calculate predicted BLAS thread allocation using the new aggressive strategy
     if optimal_workers <= 8:
-        predicted_blas_threads = max(2, min(4, cpu_count // max(1, optimal_workers // 2)))
+        predicted_blas_threads = min(4, max(2, cpu_count // 4))
     elif optimal_workers <= 16:
-        predicted_blas_threads = max(2, cpu_count // optimal_workers)
+        predicted_blas_threads = max(2, min(3, cpu_count // 8))
     else:
-        predicted_blas_threads = max(1, cpu_count // optimal_workers)
+        # High worker count: Use strategic oversubscription for Numba benefits
+        target_total_threads = int(cpu_count * 1.75)  # 175% oversubscription target
+        predicted_blas_threads = max(2, min(3, target_total_threads // optimal_workers))
     
+    # Ensure minimum 2 threads per worker for meaningful Numba speedup
+    predicted_blas_threads = max(2, predicted_blas_threads)
     predicted_blas_threads = min(predicted_blas_threads, 4)
     total_blas_threads = optimal_workers * predicted_blas_threads
     
-    # Apply safety margin check
-    if total_blas_threads > cpu_count * 1.2:
-        predicted_blas_threads = max(1, int(cpu_count * 1.2 // optimal_workers))
+    # Apply intelligent oversubscription limit
+    max_allowed_threads = int(cpu_count * 2.0)
+    if total_blas_threads > max_allowed_threads:
+        predicted_blas_threads = max(2, max_allowed_threads // optimal_workers)
         total_blas_threads = optimal_workers * predicted_blas_threads
     
-    print(f"  Predicted BLAS allocation: {optimal_workers} workers × {predicted_blas_threads} BLAS threads = {total_blas_threads} total threads ({total_blas_threads/cpu_count*100:.1f}% of {cpu_count} cores)")
-    print(f"  Numba optimization: {'High' if predicted_blas_threads >= 2 else 'Limited'} (per-worker BLAS threads: {predicted_blas_threads})")
+    oversubscription_pct = total_blas_threads/cpu_count*100
+    print(f"  Predicted BLAS allocation: {optimal_workers} workers × {predicted_blas_threads} BLAS threads = {total_blas_threads} total threads ({oversubscription_pct:.1f}% of {cpu_count} cores)")
+    
+    # Explain the oversubscription strategy
+    if oversubscription_pct > 100:
+        print(f"  Oversubscription rationale: Simulation workloads have I/O waiting, cache misses, and memory access delays")
+        print(f"  Expected benefit: {oversubscription_pct/100:.1f}x thread utilization enables {predicted_blas_threads}x Numba speedup per worker")
+    
+    numba_status = "High" if predicted_blas_threads >= 3 else "Good" if predicted_blas_threads >= 2 else "Limited"
+    print(f"  Numba optimization: {numba_status} (per-worker BLAS threads: {predicted_blas_threads})")
     
     return optimal_workers
 
@@ -571,24 +591,33 @@ def init_worker_process(vertical_cache_info, progress_queue, num_workers):
     # Balance between per-worker performance and CPU thrashing prevention
     cpu_count = psutil.cpu_count()
     
-    # Calculate optimal BLAS threads with Numba considerations
+    # Calculate optimal BLAS threads with Numba considerations and realistic oversubscription
+    # Simulation workloads are NOT pure CPU-bound - they have I/O, memory access, cache misses
+    # We can afford some oversubscription for much better Numba performance
+    
     if num_workers <= 8:
-        # Low worker count: Give more threads per worker for better Numba performance
-        optimal_blas_threads = max(2, min(4, cpu_count // max(1, num_workers // 2)))
+        # Low worker count: Give maximum threads per worker for best Numba performance
+        optimal_blas_threads = min(4, max(2, cpu_count // 4))  # At least 2, preferably 4
     elif num_workers <= 16:
-        # Medium worker count: Balance between Numba performance and threading
-        optimal_blas_threads = max(2, cpu_count // num_workers)
+        # Medium worker count: Still prioritize Numba performance with moderate oversubscription
+        optimal_blas_threads = max(2, min(3, cpu_count // 8))  # At least 2 threads per worker
     else:
-        # High worker count: Prioritize preventing CPU thrashing
-        optimal_blas_threads = max(1, cpu_count // num_workers)
+        # High worker count: Use strategic oversubscription for Numba benefits
+        # Target 150-200% CPU threads since simulations have I/O wait time
+        target_total_threads = int(cpu_count * 1.75)  # 175% oversubscription target
+        optimal_blas_threads = max(2, min(3, target_total_threads // num_workers))
+    
+    # Ensure minimum 2 threads per worker for meaningful Numba speedup
+    optimal_blas_threads = max(2, optimal_blas_threads)
     
     # Cap at 4 threads per worker (diminishing returns beyond this)
     optimal_blas_threads = min(optimal_blas_threads, 4)
     
-    # Ensure we don't exceed total CPU cores with a safety margin
+    # Apply intelligent oversubscription limit for simulation workloads
     total_blas_threads = num_workers * optimal_blas_threads
-    if total_blas_threads > cpu_count * 1.2:  # 20% oversubscription max
-        optimal_blas_threads = max(1, int(cpu_count * 1.2 // num_workers))
+    max_allowed_threads = int(cpu_count * 2.0)  # Allow up to 200% oversubscription
+    if total_blas_threads > max_allowed_threads:
+        optimal_blas_threads = max(2, max_allowed_threads // num_workers)
     
     # Set BLAS thread limits for this worker process
     os.environ["OMP_NUM_THREADS"] = str(optimal_blas_threads)
@@ -601,7 +630,11 @@ def init_worker_process(vertical_cache_info, progress_queue, num_workers):
     os.environ["NUMBA_NUM_THREADS"] = str(optimal_blas_threads)
     
     total_threads_final = num_workers * optimal_blas_threads
-    profile_print(f"Worker {worker_id} set BLAS threads to {optimal_blas_threads} ({num_workers} workers × {optimal_blas_threads} threads = {total_threads_final} total for {cpu_count} cores, {total_threads_final/cpu_count*100:.1f}% utilization)")
+    utilization_pct = total_threads_final/cpu_count*100
+    profile_print(f"Worker {worker_id} set BLAS threads to {optimal_blas_threads} ({num_workers} workers × {optimal_blas_threads} threads = {total_threads_final} total for {cpu_count} cores, {utilization_pct:.1f}% utilization)")
+    
+    if utilization_pct > 100:
+        profile_print(f"Worker {worker_id} using {utilization_pct:.0f}% oversubscription for Numba performance (simulation workloads have I/O wait time)")
     
     # Set CPU affinity for better CPU utilization (Linux only)
     if platform.system() == "Linux" and hasattr(os, 'sched_setaffinity'):
@@ -738,8 +771,6 @@ def _get_valid_block_sizes(n_lines):
         divisors.append(1)
     return divisors
 
-
-
 def collect_trace_simulation_data(trace_snp_file, vertical_pairs_with_counts, combined_params, 
                                 pickle_dir, param_type_names, enable_direction=True, 
                                 batch_size=10, debug=False):
@@ -766,6 +797,9 @@ def collect_trace_simulation_data(trace_snp_file, vertical_pairs_with_counts, co
     pickle_dir_path = Path(pickle_dir)
     
     profile_print(f"Worker {worker_id} received task: {trace_snp_path.name} ({total_simulations} simulations)")
+    
+    # Reset performance monitoring for this task
+    reset_performance_data()
     
     if not vertical_pairs_with_counts:
         profile_print(f"Worker {worker_id} - no work to do")
@@ -951,6 +985,9 @@ def collect_trace_simulation_data(trace_snp_file, vertical_pairs_with_counts, co
         collect_trace_simulation_data._perf_stats = []
     else:
         profile_print(f"Worker {worker_id} completed {trace_snp_path.name}: {total_completed}/{total_simulations} simulations", task_total_time)
+    
+    # Print network performance summary for this task
+    print_performance_summary(worker_id)
     
     if debug:
         print(f"Completed {total_completed} simulations for {trace_snp_path.name}")
@@ -1530,6 +1567,10 @@ def main():
                     trace_snp_file, vertical_pairs_with_counts, combined_params, 
                     trace_specific_output_dir, param_types, enable_direction, batch_size, True
                 )
+            
+            # Print overall debug mode performance summary
+            print(f"\n--- Debug Mode Overall Performance Summary ---")
+            print_performance_summary()
             
             # Signal progress monitor to stop
             try:
