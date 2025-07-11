@@ -14,6 +14,7 @@ import argparse
 import warnings
 import traceback
 import json
+import random
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -399,8 +400,13 @@ def main():
         print("\n\n6. VALIDATION: COMPARE PICKLE DATA WITH SIMULATED DATA")
         print("="*40)
         
-        validation_files = pickle_files[:min(args.max_files, len(pickle_files))]
-        print(f"Validating {len(validation_files)} files...")
+        # Select random files for validation instead of first few files
+        num_files_to_validate = min(args.max_files, len(pickle_files))
+        validation_files = random.sample(pickle_files, num_files_to_validate)
+        print(f"Validating {len(validation_files)} randomly selected files...")
+        print("Selected files:")
+        for i, vfile in enumerate(validation_files):
+            print(f"  {i+1}. {vfile.name}")
         
         comparison_data = {
             'pickle_ews': [],
