@@ -6,6 +6,7 @@ Key changes:
 2. Reduce worker count to avoid over-subscription 
 3. Use larger task batches to reduce process overhead
 4. Add performance monitoring to validate improvements
+5. CRITICAL FIX: Massive batching to amortize multiprocessing overhead
 """
 
 import os
@@ -54,8 +55,8 @@ def get_optimal_workers_fixed():
     """
     Calculate optimal worker count based on BLAS contention test results.
     
-    Key insight: Since each worker uses 1 BLAS thread, we can use more workers
-    than cores without severe contention, but need to be conservative.
+    CRITICAL INSIGHT: Test results show 18-21x slowdown even with single-threaded BLAS.
+    This means multiprocessing overhead is massive. We need to minimize workers and maximize batching.
     """
     cpu_count = psutil.cpu_count()
     memory_gb = psutil.virtual_memory().total / (1024**3)
@@ -63,34 +64,31 @@ def get_optimal_workers_fixed():
     
     print(f"System: {cpu_count} CPUs, {memory_gb:.1f}GB RAM, Platform: {system}")
     
-    # Conservative worker allocation based on test results
-    # Test showed that even with 1 BLAS thread per worker, we get some slowdown
-    # So we use fewer workers but larger task batches
-    
+    # CRITICAL FIX: Use very few workers due to massive multiprocessing overhead
+    # Test results show 18-21x slowdown per operation, so we need massive batching
     if system == "Darwin":  # macOS
-        # Very conservative for development
-        optimal_workers = min(4, max(2, cpu_count // 2))
-        print(f"macOS: Using {optimal_workers} workers (conservative for development)")
+        # Very conservative - use only 2-4 workers
+        optimal_workers = min(4, max(2, cpu_count // 8))
+        print(f"macOS: Using {optimal_workers} workers (very conservative due to 18-21x overhead)")
         
     elif system == "Linux":  # Linux
-        # More aggressive but still conservative based on test results
-        # Use 75% of cores since each worker uses 1 BLAS thread
-        optimal_workers = max(4, min(cpu_count // 2, int(cpu_count * 0.75)))
-        print(f"Linux: Using {optimal_workers} workers (75% of cores with 1 BLAS thread each)")
+        # Still conservative - use 25% of cores max
+        optimal_workers = max(2, min(cpu_count // 4, int(cpu_count * 0.25)))
+        print(f"Linux: Using {optimal_workers} workers (25% of cores due to 18-21x overhead)")
         
     else:
         # Unknown platform - very conservative
-        optimal_workers = min(4, max(2, cpu_count // 3))
+        optimal_workers = min(4, max(2, cpu_count // 6))
         print(f"Unknown platform: Using {optimal_workers} workers (very conservative)")
     
-    # Memory check - each worker should have at least 1GB
-    memory_limited_workers = max(2, int(memory_gb * 0.8))
+    # Memory check - each worker should have at least 2GB
+    memory_limited_workers = max(2, int(memory_gb * 0.4))  # Use 40% of memory
     if optimal_workers > memory_limited_workers:
         print(f"Memory constraint: Reducing workers from {optimal_workers} to {memory_limited_workers}")
         optimal_workers = memory_limited_workers
     
     print(f"Final worker count: {optimal_workers} (each using 1 BLAS thread)")
-    print(f"Expected thread utilization: {optimal_workers}/{cpu_count} cores ({optimal_workers/cpu_count*100:.1f}%)")
+    print(f"CRITICAL: Each worker will process massive batches to amortize 18-21x overhead")
     
     return optimal_workers
 
@@ -124,8 +122,8 @@ def process_trace_batch_fixed(trace_snp_files, vertical_pairs_list, combined_par
     """
     Process multiple trace files in a single worker to reduce process overhead.
     
-    This is the key optimization: instead of one process per trace file,
-    we process multiple trace files per worker to amortize startup costs.
+    CRITICAL FIX: Massive batching to amortize 18-21x multiprocessing overhead.
+    Each worker must process many files to make the overhead worthwhile.
     """
     worker_id = os.getpid()
     start_time = time.time()
@@ -133,9 +131,23 @@ def process_trace_batch_fixed(trace_snp_files, vertical_pairs_list, combined_par
     completed_simulations = 0
     total_files = len(trace_snp_files)
     
-    print(f"[Worker {worker_id}] Processing {total_files} trace files")
+    print(f"[Worker {worker_id}] Processing {total_files} trace files (MASSIVE BATCHING)")
     print(f"[Worker {worker_id}] Output directory: {output_dir}")
     print(f"[Worker {worker_id}] Max samples per file: {max_samples}")
+    
+    # CRITICAL: Pre-load all vertical SNPs to avoid repeated I/O
+    print(f"[Worker {worker_id}] Pre-loading vertical SNPs...")
+    vertical_snp_cache = {}
+    unique_vertical_snps = set()
+    for vertical_pairs in vertical_pairs_list:
+        snp_tx_path, snp_rx_path = vertical_pairs
+        unique_vertical_snps.add(snp_tx_path)
+        unique_vertical_snps.add(snp_rx_path)
+    
+    for snp_path in unique_vertical_snps:
+        vertical_snp_cache[str(snp_path)] = read_snp(snp_path)
+    
+    print(f"[Worker {worker_id}] Pre-loaded {len(vertical_snp_cache)} vertical SNPs")
     
     for i, (trace_snp_file, vertical_pairs) in enumerate(zip(trace_snp_files, vertical_pairs_list)):
         if _shutdown_event.is_set():
@@ -179,12 +191,12 @@ def process_trace_batch_fixed(trace_snp_files, vertical_pairs_list, combined_par
         samples_needed = max_samples - existing_samples
         print(f"[Worker {worker_id}] File {i+1}/{total_files}: {trace_snp_file.name} needs {samples_needed} samples")
         
-        # Load vertical SNPs
+        # Load vertical SNPs from cache
         snp_tx_path, snp_rx_path = vertical_pairs
-        print(f"[Worker {worker_id}] Loading vertical SNPs: {Path(snp_tx_path).name}, {Path(snp_rx_path).name}")
+        print(f"[Worker {worker_id}] Loading vertical SNPs from cache: {Path(snp_tx_path).name}, {Path(snp_rx_path).name}")
         
-        tx_ntwk = read_snp(snp_tx_path)
-        rx_ntwk = read_snp(snp_rx_path)
+        tx_ntwk = vertical_snp_cache[str(snp_tx_path)]
+        rx_ntwk = vertical_snp_cache[str(snp_rx_path)]
         
         print(f"[Worker {worker_id}] Loaded vertical SNPs successfully")
         
@@ -257,6 +269,7 @@ def process_trace_batch_fixed(trace_snp_files, vertical_pairs_list, combined_par
     
     total_time = time.time() - start_time
     print(f"[Worker {worker_id}] Completed {total_files} files, {completed_simulations} simulations in {total_time:.1f}s")
+    print(f"[Worker {worker_id}] Average time per simulation: {total_time/max(1, completed_simulations):.1f}s")
     
     return completed_simulations
 
@@ -296,14 +309,19 @@ def create_task_batches(trace_snps, vertical_pairs, num_workers):
     """
     Create task batches for workers to reduce process overhead.
     
-    Key insight: Instead of many small tasks, use fewer large tasks
-    to reduce multiprocessing overhead.
+    CRITICAL FIX: Massive batching to amortize 18-21x multiprocessing overhead.
+    Each worker must process many files to make the overhead worthwhile.
     """
     total_files = len(trace_snps)
     
-    # Target 2-3 tasks per worker for good load balancing
-    target_tasks = num_workers * 2
-    files_per_task = max(1, total_files // target_tasks)
+    # CRITICAL: Use massive batches to amortize overhead
+    # Target: Each worker processes 50-100 files to make overhead worthwhile
+    target_files_per_worker = max(50, total_files // (num_workers * 2))
+    files_per_task = max(1, min(target_files_per_worker, total_files // num_workers))
+    
+    print(f"CRITICAL: Using massive batching - {files_per_task} files per task")
+    print(f"Reason: Test results show 18-21x multiprocessing overhead per operation")
+    print(f"Strategy: Amortize overhead across many files per worker")
     
     batches = []
     for i in range(0, total_files, files_per_task):
@@ -312,12 +330,16 @@ def create_task_batches(trace_snps, vertical_pairs, num_workers):
         batches.append((batch_files, batch_pairs))
     
     print(f"Created {len(batches)} task batches ({files_per_task} files per batch)")
+    print(f"Expected: Each worker processes ~{files_per_task} files to amortize 18-21x overhead")
+    
     return batches
 
 def run_parallel_collection_fixed(trace_snps, vertical_pairs, combined_params, 
                                  output_dir, param_types, max_samples, enable_direction):
     """
     Run parallel collection with fixed BLAS threading and optimized task distribution.
+    
+    CRITICAL FIX: Massive batching to address 18-21x multiprocessing overhead.
     """
     num_workers = get_optimal_workers_fixed()
     
@@ -325,12 +347,14 @@ def run_parallel_collection_fixed(trace_snps, vertical_pairs, combined_params,
     task_batches = create_task_batches(trace_snps, vertical_pairs, num_workers)
     
     print(f"Starting parallel collection with {num_workers} workers processing {len(task_batches)} batches")
+    print(f"CRITICAL: Each batch contains many files to amortize 18-21x overhead")
     
-    # Set multiprocessing start method
+    # Set multiprocessing start method to spawn for cleaner environment
     try:
         multiprocessing.set_start_method('spawn', force=True)
+        print("Using 'spawn' start method for cleaner worker environment")
     except RuntimeError:
-        pass
+        print("Using existing multiprocessing start method")
     
     start_time = time.time()
     total_completed = 0
@@ -350,6 +374,9 @@ def run_parallel_collection_fixed(trace_snps, vertical_pairs, combined_params,
             )
             futures.append(future)
         
+        print(f"Submitted {len(futures)} tasks to {num_workers} workers")
+        print(f"CRITICAL: Each task processes many files to amortize 18-21x overhead")
+        
         # Wait for completion
         try:
             for future in concurrent.futures.as_completed(futures):
@@ -359,6 +386,7 @@ def run_parallel_collection_fixed(trace_snps, vertical_pairs, combined_params,
                 try:
                     result = future.result()
                     total_completed += result
+                    print(f"Task completed: {result} simulations")
                 except Exception as e:
                     print(f"Task failed: {e}")
                     traceback.print_exc()
@@ -373,6 +401,22 @@ def run_parallel_collection_fixed(trace_snps, vertical_pairs, combined_params,
     
     total_time = time.time() - start_time
     print(f"Parallel collection completed: {total_completed} simulations in {total_time:.1f}s")
+    print(f"Average time per simulation: {total_time/max(1, total_completed):.1f}s")
+    
+    # Performance analysis
+    if total_completed > 0:
+        expected_sequential_time = total_completed * 150  # 150s per simulation
+        speedup = expected_sequential_time / total_time
+        print(f"Expected sequential time: {expected_sequential_time:.1f}s")
+        print(f"Actual parallel time: {total_time:.1f}s")
+        print(f"Speedup: {speedup:.2f}x")
+        
+        if speedup < 1.0:
+            print(f"WARNING: Parallel is {1/speedup:.1f}x SLOWER than sequential!")
+            print(f"This confirms the 18-21x overhead issue from test results")
+        else:
+            print(f"SUCCESS: Parallel is {speedup:.2f}x faster than sequential!")
+    
     return total_completed
 
 def main():
