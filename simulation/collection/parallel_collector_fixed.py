@@ -351,7 +351,7 @@ def run_parallel_collection_fixed(trace_snps, vertical_pairs, combined_params,
     return total_completed
 
 def main():
-    """Main function with simplified interface"""
+    """Main function with configuration handling that matches default.yaml"""
     print("EyeDiagramNet - Fixed Parallel Data Collector")
     print("=" * 60)
     
@@ -359,40 +359,77 @@ def main():
     args = build_argparser().parse_args()
     
     # Load configuration
-    config = load_config(args.config)
+    try:
+        config = load_config(args.config)
+    except FileNotFoundError:
+        print(f"Config file not found: {args.config}")
+        print("Please create the config file or provide command line arguments")
+        return 1
+    except Exception as e:
+        print(f"Error loading config: {e}")
+        return 1
     
-    # Resolve paths
+    # Resolve dataset paths (same as parallel_collector.py)
     horizontal_dataset = config.get('dataset', {}).get('horizontal_dataset', {})
     vertical_dataset = config.get('dataset', {}).get('vertical_dataset')
     
-    trace_pattern_key = args.trace_pattern or config['data']['trace_pattern']
+    # Override config with command line arguments (same pattern as parallel_collector.py)
+    trace_pattern_key = args.trace_pattern if args.trace_pattern else config['data']['trace_pattern']
     trace_pattern = resolve_trace_pattern(trace_pattern_key, horizontal_dataset)
     vertical_dirs = resolve_vertical_dirs(vertical_dataset)
-    output_dir = Path(args.output_dir or config['data']['output_dir'])
-    param_types = parse_param_types(args.param_type or config['boundary']['param_type'])
-    max_samples = args.max_samples or config['boundary']['max_samples']
+    output_dir = Path(args.output_dir) if args.output_dir else Path(config['data']['output_dir'])
+    param_type_str = args.param_type if args.param_type else config['boundary']['param_type']
+    param_types = parse_param_types(param_type_str)
+    max_samples = args.max_samples if args.max_samples else config['boundary']['max_samples']
+    
+    # Handle enable_direction logic (default to False) - same as parallel_collector.py
     enable_direction = args.enable_direction or config['boundary'].get('enable_direction', False)
+    
+    # Handle enable_inductance logic (default to False) - same as parallel_collector.py
     enable_inductance = args.enable_inductance or config['boundary'].get('enable_inductance', False)
     
-    print(f"Configuration:")
-    print(f"  Trace pattern: {trace_pattern}")
+    debug = args.debug if args.debug else config.get('debug', False)
+    
+    # Get batch size from config (same as parallel_collector.py)
+    runner_config = config.get('runner', {})
+    batch_size = runner_config.get('batch_size', 20)
+    
+    # Display configuration (same style as parallel_collector.py)
+    print(f"Using configuration:")
+    print(f"  Trace pattern: {trace_pattern_key} -> {trace_pattern}")
+    print(f"  Vertical dirs: {vertical_dirs}")
+    print(f"  Output dir: {output_dir}")
+    print(f"  Parameter types: {param_types}")
     print(f"  Max samples: {max_samples}")
     print(f"  Enable direction: {enable_direction}")
-    print(f"  BLAS threads per worker: 1 (FIXED)")
+    print(f"  Enable inductance: {enable_inductance}")
+    print(f"  Debug mode: {debug}")
+    print(f"  Batch size: {batch_size}")
+    print(f"  BLAS threads per worker: 1 (PERFORMANCE FIX)")
     
-    # Create output directory
-    trace_specific_output_dir = output_dir / trace_pattern_key
+    # Create base output directory and trace-specific subdirectory
+    base_output_dir = output_dir
+    trace_specific_output_dir = base_output_dir / trace_pattern_key
     trace_specific_output_dir.mkdir(parents=True, exist_ok=True)
     
-    # Load SNP files
+    # Load trace SNP files
     trace_snps = parse_snps(trace_pattern)
+    if len(trace_snps) == 0:
+        raise ValueError(f"No trace SNP files found in: {trace_pattern}")
+    
+    print(f"Found {len(trace_snps)} trace SNP files")
+    
+    # Generate vertical SNP pairs for each trace SNP
     vertical_pairs = generate_vertical_snp_pairs(
-        vertical_dirs, len(trace_snps), trace_snps, output_dir, trace_pattern_key
+        vertical_dirs, len(trace_snps), trace_snps, base_output_dir, trace_pattern_key
     )
     
-    print(f"Found {len(trace_snps)} trace files, {len(vertical_pairs)} vertical pairs")
+    if vertical_dirs is None:
+        print(f"Generated {len(vertical_pairs)} thru SNP pairs (auto-generated)")
+    else:
+        print(f"Generated {len(vertical_pairs)} vertical SNP pairs from {len(vertical_dirs)} directories")
     
-    # Combine parameters
+    # Combine all requested parameter sets
     combined_params = None
     for param_type in param_types:
         param_set = PARAM_SETS_MAP[param_type]
@@ -401,6 +438,7 @@ def main():
         else:
             combined_params = combined_params + param_set
     
+    # Apply inductance modification if needed
     combined_params = modify_params_for_inductance(combined_params, enable_inductance)
     
     # Run collection
@@ -414,15 +452,16 @@ def main():
         print(f"Total simulations: {total_completed}")
         print(f"Results saved to: {trace_specific_output_dir}")
         
+        return 0
+        
     except KeyboardInterrupt:
         print("Collection interrupted by user")
         return 130
     except Exception as e:
         print(f"Collection failed: {e}")
-        traceback.print_exc()
+        if debug:
+            traceback.print_exc()
         return 1
-    
-    return 0
 
 if __name__ == "__main__":
-    exit(main()) 
+    sys.exit(main()) 

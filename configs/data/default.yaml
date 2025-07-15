@@ -1,5 +1,5 @@
 # Default Data Collection Configuration for EyeDiagramNet Training Data
-# Used by: simulation.collection.training_data_collector
+# Used by: simulation.collection.parallel_collector and simulation.collection.sequential_collector
 
 debug: false
 
