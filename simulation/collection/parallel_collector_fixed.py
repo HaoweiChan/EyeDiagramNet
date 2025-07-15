@@ -134,6 +134,8 @@ def process_trace_batch_fixed(trace_snp_files, vertical_pairs_list, combined_par
     total_files = len(trace_snp_files)
     
     print(f"[Worker {worker_id}] Processing {total_files} trace files")
+    print(f"[Worker {worker_id}] Output directory: {output_dir}")
+    print(f"[Worker {worker_id}] Max samples per file: {max_samples}")
     
     for i, (trace_snp_file, vertical_pairs) in enumerate(zip(trace_snp_files, vertical_pairs_list)):
         if _shutdown_event.is_set():
@@ -142,24 +144,36 @@ def process_trace_batch_fixed(trace_snp_files, vertical_pairs_list, combined_par
         
         file_start_time = time.time()
         
+        print(f"[Worker {worker_id}] Processing file {i+1}/{total_files}: {trace_snp_file.name}")
+        
         # Load trace SNP
         trace_ntwk = read_snp(trace_snp_file)
         n_ports = trace_ntwk.nports
         n_lines = n_ports // 2
         
+        print(f"[Worker {worker_id}] Loaded trace SNP: {n_ports} ports, {n_lines} lines")
+        
         # Check existing samples
         pickle_file = Path(output_dir) / f"{trace_snp_file.stem}.pkl"
+        print(f"[Worker {worker_id}] Checking pickle file: {pickle_file}")
+        
         existing_samples = 0
         if pickle_file.exists():
             try:
                 with open(pickle_file, 'rb') as f:
                     existing_data = pickle.load(f)
                 existing_samples = len(existing_data.get('configs', []))
-            except:
-                pass
+                print(f"[Worker {worker_id}] Found existing pickle with {existing_samples} samples")
+            except Exception as e:
+                print(f"[Worker {worker_id}] Error reading existing pickle: {e}")
+                existing_samples = 0
+        else:
+            print(f"[Worker {worker_id}] No existing pickle file found")
+        
+        print(f"[Worker {worker_id}] Existing samples: {existing_samples}, Max samples: {max_samples}")
         
         if existing_samples >= max_samples:
-            print(f"[Worker {worker_id}] File {i+1}/{total_files}: {trace_snp_file.name} already complete")
+            print(f"[Worker {worker_id}] File {i+1}/{total_files}: {trace_snp_file.name} already complete ({existing_samples}/{max_samples})")
             continue
         
         samples_needed = max_samples - existing_samples
@@ -167,14 +181,20 @@ def process_trace_batch_fixed(trace_snp_files, vertical_pairs_list, combined_par
         
         # Load vertical SNPs
         snp_tx_path, snp_rx_path = vertical_pairs
+        print(f"[Worker {worker_id}] Loading vertical SNPs: {Path(snp_tx_path).name}, {Path(snp_rx_path).name}")
+        
         tx_ntwk = read_snp(snp_tx_path)
         rx_ntwk = read_snp(snp_rx_path)
+        
+        print(f"[Worker {worker_id}] Loaded vertical SNPs successfully")
         
         # Process samples for this file
         results = []
         for sample_idx in range(samples_needed):
             if _shutdown_event.is_set():
                 break
+            
+            print(f"[Worker {worker_id}] Running simulation {sample_idx+1}/{samples_needed}")
             
             # Sample parameters
             combined_config = combined_params.sample()
@@ -219,13 +239,18 @@ def process_trace_batch_fixed(trace_snp_files, vertical_pairs_list, combined_par
                 results.append(result)
                 completed_simulations += 1
                 
+                print(f"[Worker {worker_id}] Completed simulation {sample_idx+1}: EW={line_ew}")
+                
             except Exception as e:
                 print(f"[Worker {worker_id}] Simulation failed: {e}")
                 continue
         
         # Save results for this file
         if results:
+            print(f"[Worker {worker_id}] Saving {len(results)} results to {pickle_file}")
             save_results_to_pickle(pickle_file, results)
+        else:
+            print(f"[Worker {worker_id}] No results to save for {trace_snp_file.name}")
             
         file_time = time.time() - file_start_time
         print(f"[Worker {worker_id}] Completed {trace_snp_file.name}: {len(results)} simulations in {file_time:.1f}s")
@@ -412,6 +437,8 @@ def main():
     trace_specific_output_dir = base_output_dir / trace_pattern_key
     trace_specific_output_dir.mkdir(parents=True, exist_ok=True)
     
+    print(f"Created output directory: {trace_specific_output_dir}")
+    
     # Load trace SNP files
     trace_snps = parse_snps(trace_pattern)
     if len(trace_snps) == 0:
@@ -428,6 +455,81 @@ def main():
         print(f"Generated {len(vertical_pairs)} thru SNP pairs (auto-generated)")
     else:
         print(f"Generated {len(vertical_pairs)} vertical SNP pairs from {len(vertical_dirs)} directories")
+    
+    # DEBUG: Check existing pickle files to understand the "already completed" issue
+    print(f"\n=== DEBUG: Checking existing pickle files ===")
+    completed_files = 0
+    incomplete_files = 0
+    total_existing_samples = 0
+    
+    for i, trace_snp in enumerate(trace_snps[:5]):  # Check first 5 files
+        pickle_file = trace_specific_output_dir / f"{trace_snp.stem}.pkl"
+        existing_samples = 0
+        
+        if pickle_file.exists():
+            try:
+                with open(pickle_file, 'rb') as f:
+                    existing_data = pickle.load(f)
+                existing_samples = len(existing_data.get('configs', []))
+                total_existing_samples += existing_samples
+                
+                if existing_samples >= max_samples:
+                    completed_files += 1
+                    print(f"  File {i+1}: {trace_snp.name} - COMPLETE ({existing_samples}/{max_samples})")
+                else:
+                    incomplete_files += 1
+                    print(f"  File {i+1}: {trace_snp.name} - INCOMPLETE ({existing_samples}/{max_samples})")
+            except Exception as e:
+                incomplete_files += 1
+                print(f"  File {i+1}: {trace_snp.name} - ERROR reading pickle: {e}")
+        else:
+            incomplete_files += 1
+            print(f"  File {i+1}: {trace_snp.name} - NO PICKLE FILE")
+    
+    if len(trace_snps) > 5:
+        print(f"  ... (showing first 5 of {len(trace_snps)} files)")
+    
+    print(f"Summary: {completed_files} complete, {incomplete_files} incomplete, {total_existing_samples} total existing samples")
+    print(f"Expected total samples if all files complete: {len(trace_snps) * max_samples}")
+    print("=" * 60)
+    
+    # Check if there are any files that need work
+    files_needing_work = []
+    total_samples_needed = 0
+    
+    print(f"\n=== DEBUG: Checking which files need work ===")
+    for i, trace_snp in enumerate(trace_snps):
+        pickle_file = trace_specific_output_dir / f"{trace_snp.stem}.pkl"
+        existing_samples = 0
+        
+        if pickle_file.exists():
+            try:
+                with open(pickle_file, 'rb') as f:
+                    existing_data = pickle.load(f)
+                existing_samples = len(existing_data.get('configs', []))
+            except:
+                existing_samples = 0
+        
+        if existing_samples < max_samples:
+            samples_needed = max_samples - existing_samples
+            files_needing_work.append((trace_snp, samples_needed))
+            total_samples_needed += samples_needed
+            
+            if len(files_needing_work) <= 10:  # Show first 10 files that need work
+                print(f"  File {i+1}: {trace_snp.name} - needs {samples_needed} samples (has {existing_samples})")
+    
+    if len(files_needing_work) > 10:
+        print(f"  ... and {len(files_needing_work) - 10} more files need work")
+    
+    print(f"Files needing work: {len(files_needing_work)}/{len(trace_snps)}")
+    print(f"Total samples needed: {total_samples_needed}")
+    
+    if len(files_needing_work) == 0:
+        print("All files already have sufficient samples. No work to do.")
+        return 0
+    
+    print(f"Proceeding with parallel collection for {len(files_needing_work)} files...")
+    print("=" * 60)
     
     # Combine all requested parameter sets
     combined_params = None
