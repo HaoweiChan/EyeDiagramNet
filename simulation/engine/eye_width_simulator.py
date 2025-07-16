@@ -633,20 +633,24 @@ class EyeWidthSimulator:
         Returns:
             Network with CTLE applied
         """
+        # Convert pole frequencies from Hz to rad/s for s-domain representation
+        wp1 = 2 * np.pi * fp1  # First pole frequency in rad/s
+        wp2 = 2 * np.pi * fp2  # Second pole frequency in rad/s
+        
         # Define CTLE transfer function using Z-P-K form for numerical stability
-        # Original: H(s) = (AC_gain * fp2 * s + DC_gain * fp1 * fp2) / (s^2 + (fp1 + fp2) * s + fp1 * fp2)
-        # Factor: H(s) = (AC_gain * fp2 * s + DC_gain * fp1 * fp2) / ((s + fp1) * (s + fp2))
+        # Original: H(s) = (AC_gain * wp2 * s + DC_gain * wp1 * wp2) / (s^2 + (wp1 + wp2) * s + wp1 * wp2)
+        # Factor: H(s) = (AC_gain * wp2 * s + DC_gain * wp1 * wp2) / ((s + wp1) * (s + wp2))
         
         if AC_gain == 0:
-            # Pure constant case: H(s) = DC_gain * fp1 * fp2 / ((s + fp1) * (s + fp2))
+            # Pure constant case: H(s) = DC_gain * wp1 * wp2 / ((s + wp1) * (s + wp2))
             zeros = []
-            poles = [-fp1, -fp2]
-            gain = DC_gain * fp1 * fp2
+            poles = [-wp1, -wp2]
+            gain = DC_gain * wp1 * wp2
         else:
-            # General case: numerator = AC_gain * fp2 * (s + DC_gain * fp1 / AC_gain)
-            zeros = [-DC_gain * fp1 / AC_gain]
-            poles = [-fp1, -fp2]
-            gain = AC_gain * fp2
+            # General case: numerator = AC_gain * wp2 * (s + DC_gain * wp1 / AC_gain)
+            zeros = [-DC_gain * wp1 / AC_gain]
+            poles = [-wp1, -wp2]
+            gain = AC_gain * wp2
         
         system = scipy.signal.ZerosPolesGain(zeros, poles, gain)
 
@@ -804,13 +808,15 @@ class EyeWidthSimulator:
 
         # add shunt C
         ntwk = self.add_capacitance(ntwk, self.params.C_tx, self.params.C_rx)
-
-        # add ctle
-        if self.params.DC_gain is not None and not np.isnan(self.params.DC_gain):
-            ntwk = self.add_ctle(ntwk, self.params.DC_gain, self.params.AC_gain, self.params.fp1, self.params.fp2)
-
         # renormalize
         ntwk = self.renorm(ntwk, self.params.R_tx, self.params.R_rx)
+        
+        # add CTLE if parameters are valid
+        if (self.params.DC_gain is not None and not np.isnan(self.params.DC_gain) and
+            self.params.AC_gain is not None and not np.isnan(self.params.AC_gain) and
+            self.params.fp1 is not None and not np.isnan(self.params.fp1) and
+            self.params.fp2 is not None and not np.isnan(self.params.fp2)):
+            ntwk = self.add_ctle(ntwk, self.params.DC_gain, self.params.AC_gain, self.params.fp1, self.params.fp2)
 
         # get single bit response of each line
         line_sbrs = self.get_line_sbr(ntwk)
@@ -1140,8 +1146,11 @@ class EyeWidthSimulator:
         # add shunt C
         ntwk = self.add_capacitance(ntwk, self.params.C_tx, self.params.C_rx)
 
-        # add ctle
-        if self.params.DC_gain is not None and not np.isnan(self.params.DC_gain):
+        # add CTLE if parameters are valid
+        if (self.params.DC_gain is not None and not np.isnan(self.params.DC_gain) and
+            self.params.AC_gain is not None and not np.isnan(self.params.AC_gain) and
+            self.params.fp1 is not None and not np.isnan(self.params.fp1) and
+            self.params.fp2 is not None and not np.isnan(self.params.fp2)):
             ntwk = self.add_ctle(ntwk, self.params.DC_gain, self.params.AC_gain, self.params.fp1, self.params.fp2)
 
         # renormalize
