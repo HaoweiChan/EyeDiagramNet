@@ -22,9 +22,9 @@ from pathlib import Path
 
 def build_snp(n_lines: int,
               seed: int,
-              f_start_hz: float = 1e6,
-              f_stop_hz: float = 10e9,
-              n_points: int = 201,
+              f_start_hz: float = 1e3,      # Start from 1kHz 
+              f_stop_hz: float = 50e9,      # Go up to 50GHz (reasonable for eye width simulation)
+              n_points: int = 1001,         # More points for better resolution
               file_name: str | None = None) -> Path:
     """
     Generate and write a single 2N-port ``.sNp`` file with randomised trace
@@ -33,7 +33,10 @@ def build_snp(n_lines: int,
     """
     rng = np.random.default_rng(seed)
     n_ports = 2 * n_lines
+    
+    # Use logarithmic spacing for more realistic S-parameter modeling
     freqs = np.logspace(np.log10(f_start_hz), np.log10(f_stop_hz), n_points)
+    
     S = np.zeros((n_points, n_ports, n_ports), dtype=np.complex128)
 
     # --- physical parameters -----------------------------------------
@@ -59,26 +62,31 @@ def build_snp(n_lines: int,
             phase = -2 * np.pi * f * length / velocity
             s_line = mag * np.exp(1j * phase)
             S[k, rx, tx] = S[k, tx, rx] = s_line
-            S[k, tx, tx] = S[k, rx, rx] = 10 ** (-30 / 20)
+            # More realistic reflection coefficients with some variation
+            reflection_db = -15 + rng.uniform(-3, 3)  # -18dB to -12dB range
+            S[k, tx, tx] = S[k, rx, rx] = 10 ** (reflection_db / 20)
 
         # crosstalk terms
         for i in range(n_lines):
             for j in range(i + 1, n_lines):
                 dist = j - i
+                # Use 1MHz as frequency reference, but handle low frequencies gracefully
+                freq_term = 10 * np.log10(max(f, 1e6) / 1e6)  # Clamp to 1MHz minimum
+                
                 near_db = (
                     xtalk_near_ref_db
                     - xtalk_dist_decay_db * (dist - 1)
-                    - 10 * np.log10(f / f_start_hz)
+                    - freq_term
                 )
                 far_db = (
                     xtalk_far_ref_db
                     - xtalk_dist_decay_db * (dist - 1)
-                    - 10 * np.log10(f / f_start_hz)
+                    - freq_term
                 )
                 cross_db = (
                     xtalk_cross_ref_db
                     - xtalk_dist_decay_db * (dist - 1)
-                    - 10 * np.log10(f / f_start_hz)
+                    - freq_term
                 )
 
                 near = 10 ** (near_db / 20) * np.exp(1j * rng.uniform(0, 2 * np.pi))

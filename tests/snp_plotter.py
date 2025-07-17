@@ -44,13 +44,14 @@ class SNPPlotter:
             return None
         
         try:
-            # Convert to 0-based indexing
+            # Validate port numbers (should be 1-based: 1 to nports)
+            if p1 < 1 or p1 > self.network.nports or p2 < 1 or p2 > self.network.nports:
+                print(f"Invalid port numbers: S{p1}{p2} for {self.network.nports}-port network (valid range: 1-{self.network.nports})")
+                return None
+            
+            # Convert to 0-based indexing for array access
             i, j = p1 - 1, p2 - 1
             print(f"Converting S{p1}{p2} to indices [{i},{j}]")  # Debug
-            
-            if i < 0 or i >= self.network.nports or j < 0 or j >= self.network.nports:
-                print(f"Invalid port indices: [{i},{j}] for {self.network.nports}-port network")
-                return None
             
             # Check if frequency data exists
             if len(self.network.f) == 0:
@@ -313,10 +314,10 @@ def create_server_app(snp_plotter):
         </div>
         
         <div class="controls">
-            <label>Port 1:</label>
+            <label>Port 1 (1-{{ nports }}):</label>
             <input type="number" id="p1" min="1" max="{{ nports }}" value="1">
             
-            <label>Port 2:</label>
+            <label>Port 2 (1-{{ nports }}):</label>
             <input type="number" id="p2" min="1" max="{{ nports }}" value="1">
             
             <label>Show:</label>
