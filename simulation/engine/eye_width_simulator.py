@@ -1162,13 +1162,14 @@ class EyeWidthSimulator:
         return line_sbrs
     
     def calculate_eyewidth_optimized(self):
-        """Optimized eye width calculation using all Phase 1 optimizations."""
+        """Optimized eye width calculation using only waveform optimization."""
         try:
-            line_sbrs = self.sparam_to_pulse_optimized(self.ntwk)
-            half_steady, response_matrices = self.process_pulse_responses_optimized(line_sbrs)
+            # Use original functions for everything except waveform calculation
+            line_sbrs = self.sparam_to_pulse(self.ntwk)
+            half_steady, response_matrices = self.process_pulse_responses(line_sbrs)
             test_patterns = generate_test_pattern(self.num_lines)
             
-            # Calculate waveform and eye width (optimized)
+            # Only use optimized waveform calculation
             wave = self.calculate_waveform_optimized(test_patterns, response_matrices)
             eyewidth_pct = self.calculate_eyewidth_percentage(half_steady, wave)
             
@@ -1243,7 +1244,7 @@ class EyeWidthSimulator:
 # MODULE-LEVEL FUNCTIONS (PUBLIC INTERFACE)
 # ===============================================
 
-def snp_eyewidth_simulation(config, snp_files=None, directions=None):
+def snp_eyewidth_simulation(config, snp_files=None, directions=None, use_optimized=False):
     """
     Main function for eye width simulation that provides backward compatibility.
     
@@ -1251,13 +1252,17 @@ def snp_eyewidth_simulation(config, snp_files=None, directions=None):
         config: Configuration object or dictionary
         snp_files: Optional S-parameter files (for backward compatibility)
         directions: Optional directions array (for backward compatibility)
+        use_optimized: Whether to use optimized Phase 1 functions (default: False)
     
     Returns:
         Tuple of (eye_widths, directions)
     """
     try:
         simulator = EyeWidthSimulator(config, snp_files, directions)
-        return simulator.calculate_eyewidth()
+        if use_optimized:
+            return simulator.calculate_eyewidth_optimized()
+        else:
+            return simulator.calculate_eyewidth()
     except Exception as e:
         # Provide more context for debugging
         error_msg = f"Eye width simulation failed: {str(e)}"

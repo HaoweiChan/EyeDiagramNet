@@ -773,7 +773,7 @@ def _get_valid_block_sizes(n_lines):
 
 def collect_trace_simulation_data(trace_snp_file, vertical_pairs_with_counts, combined_params, 
                                 pickle_dir, param_type_names, enable_direction=True, 
-                                batch_size=10, debug=False):
+                                batch_size=10, debug=False, use_optimized=False):
     """
     Collect eye width simulation data for a single trace SNP with multiple vertical pairs.
     This is the new coarse-grained task that processes all samples for one trace file.
@@ -787,6 +787,7 @@ def collect_trace_simulation_data(trace_snp_file, vertical_pairs_with_counts, co
         enable_direction: Whether to use random directions (True) or all ones (False)
         batch_size: Number of simulations to buffer before writing to disk
         debug: Debug mode flag
+        use_optimized: Whether to use optimized Phase 1 functions (default: False)
     """
     task_start_time = time.time()
     worker_id = os.getpid()
@@ -895,7 +896,8 @@ def collect_trace_simulation_data(trace_snp_file, vertical_pairs_with_counts, co
                     line_ew = snp_eyewidth_simulation(
                         config=combined_config,
                         snp_files=(trace_ntwk, tx_ntwk, rx_ntwk),
-                        directions=sim_directions
+                        directions=sim_directions,
+                        use_optimized=use_optimized
                     )
                 except Exception as sim_error:
                     # Handle simulation errors gracefully
@@ -1032,7 +1034,7 @@ def get_multiprocessing_start_method():
         return "spawn"  # Safe default
 
 def run_with_executor(trace_tasks, combined_params, trace_specific_output_dir, param_types, 
-                     enable_direction, num_workers, batch_size, vertical_cache_info=None):
+                     enable_direction, num_workers, batch_size, vertical_cache_info=None, use_optimized=False):
     """
     Run simulations using ProcessPoolExecutor with optimized task distribution and graceful shutdown.
     This version uses a bounded queue to avoid overwhelming the executor with too many initial tasks.
@@ -1046,6 +1048,7 @@ def run_with_executor(trace_tasks, combined_params, trace_specific_output_dir, p
         num_workers: Number of workers
         batch_size: Batch size for buffered writing
         vertical_cache_info: Shared memory cache info for vertical SNPs
+        use_optimized: Whether to use optimized Phase 1 functions (default: False)
     """
     global _executor, _progress_thread
     
@@ -1099,7 +1102,7 @@ def run_with_executor(trace_tasks, combined_params, trace_specific_output_dir, p
                 future = executor.submit(
                     collect_trace_simulation_data,
                     str(trace_snp_file), vertical_pairs, combined_params, 
-                    str(trace_specific_output_dir), param_types, enable_direction, batch_size, False
+                    str(trace_specific_output_dir), param_types, enable_direction, batch_size, False, use_optimized
                 )
                 active_futures[future] = (trace_snp_file, vertical_pairs)
                 return True
@@ -1336,6 +1339,9 @@ def main():
     # Handle enable_inductance logic (default to False)  
     enable_inductance = args.enable_inductance or config['boundary'].get('enable_inductance', False)
     
+    # Handle use_optimized logic (default to False)
+    use_optimized = config.get('runner', {}).get('use_optimized', False)
+    
     debug = args.debug if args.debug else config.get('debug', False)
     
     # Determine number of workers: Command-line -> Environment -> Config file -> Optimal calculation
@@ -1374,6 +1380,7 @@ def main():
     print(f"  Max samples: {max_samples}")
     print(f"  Enable direction: {enable_direction}")
     print(f"  Enable inductance: {enable_inductance}")
+    print(f"  Use optimized: {use_optimized}")
     print(f"  Debug mode: {debug}")
     print(f"  Max workers: {max_workers}")
     print(f"  Batch size: {batch_size}")
@@ -1538,7 +1545,7 @@ def main():
     try:
         if not debug:
             run_with_executor(trace_tasks, combined_params, trace_specific_output_dir, param_types, 
-                             enable_direction, max_workers, batch_size, vertical_cache_info)
+                             enable_direction, max_workers, batch_size, vertical_cache_info, use_optimized)
         else:
             # Debug mode - run sequentially
             global _vertical_cache_info, _progress_queue
@@ -1565,7 +1572,7 @@ def main():
                 print(f"\n--- Debug Task {i+1}/{len(trace_tasks)} ---")
                 collect_trace_simulation_data(
                     trace_snp_file, vertical_pairs_with_counts, combined_params, 
-                    trace_specific_output_dir, param_types, enable_direction, batch_size, True
+                    trace_specific_output_dir, param_types, enable_direction, batch_size, True, use_optimized
                 )
             
             # Print overall debug mode performance summary
