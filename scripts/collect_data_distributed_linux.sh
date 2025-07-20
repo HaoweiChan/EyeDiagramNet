@@ -48,7 +48,7 @@ set internal_script = "scripts/internal_distributed_linux.sh"
 
 # Generate the internal script
 cat > "$internal_script" << 'EOF_INTERNAL_SCRIPT'
-#!/bin/bash
+#!/bin/tcsh
 # Internal distributed collection script that runs within the allocated bsub machine
 # This script manages multiple sequential collectors for different trace patterns
 
@@ -60,51 +60,51 @@ echo "Running within allocated bsub machine"
 echo "=========================================="
 
 # Get configuration from command line
-CONFIG_FILE="$1"
-if [ -z "$CONFIG_FILE" ]; then
-    CONFIG_FILE="configs/data/default.yaml"
-fi
+set CONFIG_FILE = "$1"
+if ( "$CONFIG_FILE" == "" ) then
+    set CONFIG_FILE = "configs/data/default.yaml"
+endif
 
 # Set Python path
-export PYTHONPATH="${PYTHONPATH}:."
+setenv PYTHONPATH "${PYTHONPATH}:."
 
 # Define all available trace patterns from default.yaml
-TRACE_PATTERNS=(
-    "pattern2_cowos_8mi"
-    "pattern2_cowos_9mi"
-    "pattern2_emib"
-    "pattern2_cowos_8mi_0124"
-    "pattern2_cowos_9mi_0124"
-    "pattern2_emib_9mi_0124"
-    "pattern2_emib_10mi_0124"
+set trace_patterns = ( \
+    "pattern2_cowos_8mi" \
+    "pattern2_cowos_9mi" \
+    "pattern2_emib" \
+    "pattern2_cowos_8mi_0124" \
+    "pattern2_cowos_9mi_0124" \
+    "pattern2_emib_9mi_0124" \
+    "pattern2_emib_10mi_0124" \
 )
 
 # Get system information
-CPU_COUNT=$(nproc)
-MEMORY_GB=$(free -g | awk '/^Mem:/{print $2}')
+set CPU_COUNT = `nproc`
+set MEMORY_GB = `free -g | awk '/^Mem:/{print $2}'`
 echo "Allocated Resources: ${CPU_COUNT} CPUs, ${MEMORY_GB}GB RAM"
 
 # Calculate optimal concurrent jobs for Linux server
 # Use more aggressive settings since we have a dedicated machine
-MAX_CONCURRENT_JOBS=$(echo "scale=0; $CPU_COUNT / 4" | bc -l)  # One job per 4 cores
-if [ "$MAX_CONCURRENT_JOBS" -lt 2 ]; then
-    MAX_CONCURRENT_JOBS=2
-elif [ "$MAX_CONCURRENT_JOBS" -gt 8 ]; then
-    MAX_CONCURRENT_JOBS=8  # Cap at 8 concurrent jobs
-fi
+set MAX_CONCURRENT_JOBS = `echo "scale=0; $CPU_COUNT / 4" | bc -l`  # One job per 4 cores
+if ( "$MAX_CONCURRENT_JOBS" < 2 ) then
+    set MAX_CONCURRENT_JOBS = 2
+else if ( "$MAX_CONCURRENT_JOBS" > 8 ) then
+    set MAX_CONCURRENT_JOBS = 8  # Cap at 8 concurrent jobs
+endif
 
 echo "Running up to $MAX_CONCURRENT_JOBS concurrent sequential collectors"
-echo "Total patterns: ${#TRACE_PATTERNS[@]}"
+echo "Total patterns: $#trace_patterns"
 echo ""
 
 # Create internal logs directory
 mkdir -p logs/internal
-INTERNAL_MAIN_LOG="logs/internal/distributed_internal_$(date +%Y%m%d_%H%M%S).log"
+set INTERNAL_MAIN_LOG = "logs/internal/distributed_internal_`date +%Y%m%d_%H%M%S`.log"
 
 # Function to run sequential collector for a specific pattern
 run_pattern_collector() {
-    local pattern=$1
-    local log_file="logs/internal/pattern_${pattern}_$(date +%Y%m%d_%H%M%S).log"
+    set pattern = "$1"
+    set log_file = "logs/internal/pattern_${pattern}_`date +%Y%m%d_%H%M%S`.log"
     
     echo "Starting collector for pattern: $pattern" | tee -a "$INTERNAL_MAIN_LOG"
     echo "Pattern log: $log_file" | tee -a "$INTERNAL_MAIN_LOG"
@@ -115,134 +115,143 @@ run_pattern_collector() {
         --trace_pattern "$pattern" \
         > "$log_file" 2>&1
     
-    local exit_code=$?
-    local end_time=$(date)
+    set exit_code = $status
+    set end_time = `date`
     
-    if [ $exit_code -eq 0 ]; then
+    if ( $exit_code == 0 ) then
         echo "Pattern $pattern completed successfully at $end_time" | tee -a "$INTERNAL_MAIN_LOG"
     else
         echo "Pattern $pattern failed with exit code $exit_code at $end_time" | tee -a "$INTERNAL_MAIN_LOG"
-    fi
+    endif
     
     return $exit_code
 }
 
-# Track background jobs
-declare -a JOB_PIDS=()
-declare -a JOB_PATTERNS=()
-declare -a JOB_RESULTS=()
+# Track background jobs (tcsh arrays)
+set job_pids = ()
+set job_patterns = ()
+set job_results = ()
 
 # Start initial batch of jobs
-JOB_INDEX=0
-RUNNING_JOBS=0
+set job_index = 0
+set running_jobs = 0
 
 start_next_job() {
-    if [ $JOB_INDEX -lt ${#TRACE_PATTERNS[@]} ]; then
-        local pattern=${TRACE_PATTERNS[$JOB_INDEX]}
-        echo "Starting job $((JOB_INDEX + 1))/${#TRACE_PATTERNS[@]}: $pattern"
+    if ( $job_index < $#trace_patterns ) then
+        set pattern = "$trace_patterns[$job_index]"
+        @ job_num = $job_index + 1
+        echo "Starting job $job_num/$#trace_patterns: $pattern"
         
         # Start background job
         run_pattern_collector "$pattern" &
-        local pid=$!
+        set pid = $!
         
-        JOB_PIDS+=($pid)
-        JOB_PATTERNS+=("$pattern")
-        JOB_RESULTS+=("running")
+        set job_pids = ($job_pids $pid)
+        set job_patterns = ($job_patterns "$pattern")
+        set job_results = ($job_results "running")
         
-        JOB_INDEX=$((JOB_INDEX + 1))
-        RUNNING_JOBS=$((RUNNING_JOBS + 1))
+        @ job_index++
+        @ running_jobs++
         
-        echo "Active jobs: $RUNNING_JOBS/$MAX_CONCURRENT_JOBS"
-    fi
+        echo "Active jobs: $running_jobs/$MAX_CONCURRENT_JOBS"
+    endif
 }
 
 # Start initial jobs
-for ((i=0; i<MAX_CONCURRENT_JOBS && i<${#TRACE_PATTERNS[@]}; i++)); do
+set i = 0
+while ( $i < $MAX_CONCURRENT_JOBS && $i < $#trace_patterns )
     start_next_job
     sleep 5  # Small delay between job starts
-done
+    @ i++
+end
 
 echo ""
 echo "Monitoring internal job progress..."
 echo ""
 
 # Monitor jobs and start new ones as they complete
-while [ $RUNNING_JOBS -gt 0 ]; do
+while ( $running_jobs > 0 )
     # Check each running job
-    for i in "${!JOB_PIDS[@]}"; do
-        local pid=${JOB_PIDS[$i]}
-        local pattern=${JOB_PATTERNS[$i]}
-        local status=${JOB_RESULTS[$i]}
+    set i = 1
+    while ( $i <= $#job_pids )
+        set pid = "$job_pids[$i]"
+        set pattern = "$job_patterns[$i]"
+        set status = "$job_results[$i]"
         
-        if [ "$status" = "running" ]; then
+        if ( "$status" == "running" ) then
             # Check if job is still running
-            if ! kill -0 "$pid" 2>/dev/null; then
+            kill -0 "$pid" >& /dev/null
+            if ( $status != 0 ) then
                 # Job finished, get exit code
                 wait "$pid"
-                local exit_code=$?
+                set exit_code = $status
                 
-                if [ $exit_code -eq 0 ]; then
-                    JOB_RESULTS[$i]="success"
+                if ( $exit_code == 0 ) then
+                    set job_results[$i] = "success"
                     echo "Internal job completed: $pattern"
                 else
-                    JOB_RESULTS[$i]="failed"
+                    set job_results[$i] = "failed"
                     echo "Internal job failed: $pattern (exit code: $exit_code)"
-                fi
+                endif
                 
-                RUNNING_JOBS=$((RUNNING_JOBS - 1))
+                @ running_jobs--
                 
                 # Start next job if available
-                if [ $JOB_INDEX -lt ${#TRACE_PATTERNS[@]} ]; then
+                if ( $job_index < $#trace_patterns ) then
                     echo ""
                     start_next_job
-                fi
-            fi
-        fi
-    done
+                endif
+            endif
+        endif
+        @ i++
+    end
     
     # Sleep briefly before next check
     sleep 10
-done
+end
 
 # Count results
-SUCCESSFUL_JOBS=0
-FAILED_JOBS=0
+set successful_jobs = 0
+set failed_jobs = 0
 
 echo ""
 echo "Internal Job Results:"
-for i in "${!JOB_PATTERNS[@]}"; do
-    local pattern=${JOB_PATTERNS[$i]}
-    local result=${JOB_RESULTS[$i]}
+set i = 1
+while ( $i <= $#job_patterns )
+    set pattern = "$job_patterns[$i]"
+    set result = "$job_results[$i]"
     
-    if [ "$result" = "success" ]; then
+    if ( "$result" == "success" ) then
         echo "  $pattern: SUCCESS"
-        SUCCESSFUL_JOBS=$((SUCCESSFUL_JOBS + 1))
-    elif [ "$result" = "failed" ]; then
+        @ successful_jobs++
+    else if ( "$result" == "failed" ) then
         echo "  $pattern: FAILED"
-        FAILED_JOBS=$((FAILED_JOBS + 1))
+        @ failed_jobs++
     else
         echo "  $pattern: UNKNOWN ($result)"
-        FAILED_JOBS=$((FAILED_JOBS + 1))
-    fi
-done
+        @ failed_jobs++
+    endif
+    @ i++
+end
 
 echo ""
 echo "Internal Summary:"
-echo "  Total Patterns: ${#TRACE_PATTERNS[@]}"
-echo "  Successful: $SUCCESSFUL_JOBS"
-echo "  Failed: $FAILED_JOBS"
-echo "  Success Rate: $((SUCCESSFUL_JOBS * 100 / ${#TRACE_PATTERNS[@]}))%"
+echo "  Total Patterns: $#trace_patterns"
+echo "  Successful: $successful_jobs"
+echo "  Failed: $failed_jobs"
+set success_rate = `expr $successful_jobs \* 100 / $#trace_patterns`
+echo "  Success Rate: $success_rate%"
 
 # Final status
 echo ""
 echo "=========================================="
-if [ $FAILED_JOBS -eq 0 ]; then
+if ( $failed_jobs == 0 ) then
     echo "Internal Distributed Collection: COMPLETE SUCCESS"
     exit 0
 else
     echo "Internal Distributed Collection: PARTIAL SUCCESS"
     exit 1
-fi
+endif
 EOF_INTERNAL_SCRIPT
 
 # Make the internal script executable
@@ -252,7 +261,7 @@ echo "Generated internal distributed script: $internal_script"
 echo ""
 
 # Prepare the bsub command
-set job_cmd = "cd `pwd` && ./$internal_script $cfg_file"
+set job_cmd = "cd `pwd` && tcsh $internal_script $cfg_file"
 
 echo "Submitting distributed collection job to cluster..."
 echo "Job will run: $job_cmd"
