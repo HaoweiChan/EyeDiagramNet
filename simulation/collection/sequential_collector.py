@@ -28,14 +28,35 @@ import numpy as np
 from pathlib import Path
 from typing import Dict, List, Tuple, Any
 
-# Optimize BLAS threads for single-process execution
+# Optimize BLAS threads for single-process execution with platform-aware safety
 def optimize_blas_for_sequential():
-    """Set optimal BLAS thread count for sequential processing"""
+    """Set optimal BLAS thread count for sequential processing with macOS safety"""
     cpu_count = psutil.cpu_count()
+    import platform
     
-    # For sequential processing, we can use more threads per operation
-    # Target 75-85% of available cores for optimal performance
-    optimal_threads = max(4, min(cpu_count - 2, int(cpu_count * 0.8)))
+    # Platform-aware resource allocation to prevent system crashes
+    if platform.system() == "Darwin":  # macOS
+        # VERY CONSERVATIVE for macOS to prevent system crashes
+        # Leave plenty of headroom for system processes and other applications
+        max_safe_threads = max(2, min(4, cpu_count // 2))  # Use at most 50% of cores, cap at 4
+        optimal_threads = max_safe_threads
+        print(f"macOS detected: Using conservative BLAS threads ({optimal_threads}/{cpu_count} cores) to prevent system crashes")
+        
+        # Additional macOS safety: Check available memory
+        memory = psutil.virtual_memory()
+        available_gb = memory.available / (1024**3)
+        if available_gb < 4.0:  # Less than 4GB available
+            optimal_threads = min(optimal_threads, 2)  # Further reduce to 2 threads
+            print(f"Low memory detected ({available_gb:.1f}GB available): Reducing to {optimal_threads} BLAS threads")
+            
+    elif platform.system() == "Linux":  # Linux
+        # More aggressive for Linux servers, but still reasonable
+        optimal_threads = max(4, min(cpu_count - 2, int(cpu_count * 0.75)))  # 75% max
+        print(f"Linux detected: Using production BLAS threads ({optimal_threads}/{cpu_count} cores)")
+        
+    else:  # Other platforms
+        optimal_threads = max(2, min(4, cpu_count // 2))  # Conservative default
+        print(f"Unknown platform: Using conservative BLAS threads ({optimal_threads}/{cpu_count} cores)")
     
     # Set all BLAS library thread counts
     os.environ["OMP_NUM_THREADS"] = str(optimal_threads)
@@ -45,7 +66,12 @@ def optimize_blas_for_sequential():
     os.environ["NUMEXPR_NUM_THREADS"] = str(optimal_threads)
     os.environ["NUMBA_NUM_THREADS"] = str(optimal_threads)
     
-    print(f"Optimized BLAS threads for sequential processing: {optimal_threads}/{cpu_count} cores")
+    # Additional safety environment variables for macOS
+    if platform.system() == "Darwin":
+        os.environ["MKL_DYNAMIC"] = "TRUE"  # Allow MKL to dynamically adjust
+        os.environ["OMP_DYNAMIC"] = "TRUE"  # Allow OpenMP to dynamically adjust
+        os.environ["MKL_DOMAIN_NUM_THREADS"] = f"MKL_BLAS={optimal_threads}"
+    
     return optimal_threads
 
 # Call optimization before importing heavy numerical libraries
@@ -171,8 +197,24 @@ class OptimizedSequentialCollector:
             "end_time": None
         }
         
-        # Performance optimization settings - get batch_size from config
-        self.batch_size = config.get('runner', {}).get('batch_size', 20)
+        # Platform-aware safety settings
+        import platform
+        self.platform = platform.system()
+        self.is_macos = self.platform == "Darwin"
+        
+        # Performance optimization settings - get batch_size from config with platform safety
+        default_batch_size = 5 if self.is_macos else 20  # Smaller batches on macOS
+        self.batch_size = config.get('runner', {}).get('batch_size', default_batch_size)
+        
+        # macOS safety constraints
+        if self.is_macos:
+            memory = psutil.virtual_memory()
+            self.max_memory_gb = min(memory.total * 0.6 / (1024**3), 16.0)  # Use max 60% or 16GB
+            self.memory_check_interval = 10  # Check memory every 10 simulations
+            print(f"macOS safety: Memory limit set to {self.max_memory_gb:.1f}GB, batch size: {self.batch_size}")
+        else:
+            self.max_memory_gb = None  # No limit on Linux
+            self.memory_check_interval = 50
         
         # Register signal handler for graceful shutdown
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -181,6 +223,50 @@ class OptimizedSequentialCollector:
         """Handle interruption signals"""
         print(f"\n[INTERRUPT] Received signal {signum}, shutting down gracefully...")
         _shutdown_event.set()
+    
+    def _check_memory_safety(self) -> bool:
+        """Check if memory usage is within safe limits (macOS only)"""
+        if not self.is_macos or self.max_memory_gb is None:
+            return True
+        
+        try:
+            current_process = psutil.Process()
+            memory_gb = current_process.memory_info().rss / (1024**3)
+            
+            if memory_gb > self.max_memory_gb:
+                print(f"[MEMORY SAFETY] Current usage {memory_gb:.1f}GB exceeds limit {self.max_memory_gb:.1f}GB")
+                return False
+            
+            # Also check system memory
+            system_memory = psutil.virtual_memory()
+            if system_memory.percent > 85:  # System memory above 85%
+                print(f"[MEMORY SAFETY] System memory usage {system_memory.percent:.1f}% too high")
+                return False
+                
+            return True
+            
+        except Exception as e:
+            if self.debug:
+                print(f"[MEMORY SAFETY] Could not check memory: {e}")
+            return True  # Continue if check fails
+    
+    def _log_memory_status(self):
+        """Log current memory status for monitoring"""
+        if not self.is_macos:
+            return
+            
+        try:
+            current_process = psutil.Process()
+            process_memory_gb = current_process.memory_info().rss / (1024**3)
+            system_memory = psutil.virtual_memory()
+            system_used_gb = system_memory.used / (1024**3)
+            system_total_gb = system_memory.total / (1024**3)
+            
+            print(f"[MEMORY] Process: {process_memory_gb:.1f}GB, System: {system_used_gb:.1f}/{system_total_gb:.1f}GB ({system_memory.percent:.1f}%)")
+            
+        except Exception as e:
+            if self.debug:
+                print(f"[MEMORY] Could not log memory status: {e}")
     
     def _get_valid_block_sizes(self, n_lines: int) -> List[int]:
         """Find divisors of n_lines that result in an even number of blocks"""
@@ -196,6 +282,88 @@ class OptimizedSequentialCollector:
         if not divisors:  # Fallback for odd n_lines
             divisors.append(1)
         return divisors
+
+    def _format_error_metadata(self, trace_snp, snp_tx_path, snp_rx_path, combined_config, 
+                              sim_directions, sample_idx, samples_needed, error_msg):
+        """
+        Format comprehensive error metadata for debugging purposes (SEQUENTIAL version).
+        
+        Args:
+            trace_snp: Path to horizontal trace SNP file
+            snp_tx_path: Path to TX vertical SNP file  
+            snp_rx_path: Path to RX vertical SNP file
+            combined_config: Parameter configuration that caused the error
+            sim_directions: Directions array used in simulation
+            sample_idx: Current sample index (0-based)
+            samples_needed: Total number of samples needed
+            error_msg: The actual error message
+        
+        Returns:
+            Formatted error metadata string
+        """
+        try:
+            # Get config values and keys for display
+            config_values, config_keys = combined_config.to_list(return_keys=True)
+            config_dict = dict(zip(config_keys, config_values))
+            
+            # Format the comprehensive error report
+            error_report = f"""
+=== SEQUENTIAL SIMULATION ERROR METADATA ===
+Error Message: {error_msg}
+Trace File: {trace_snp.name} (Full path: {trace_snp})
+Vertical TX: {Path(snp_tx_path).name} (Full path: {snp_tx_path})
+Vertical RX: {Path(snp_rx_path).name} (Full path: {snp_rx_path})
+Sample: {sample_idx + 1}/{samples_needed}
+Directions: {sim_directions.tolist() if hasattr(sim_directions, 'tolist') else sim_directions}
+Number of Lines: {len(sim_directions) if sim_directions is not None else 'Unknown'}
+
+Parameter Configuration:
+"""
+            
+            # Add parameter details in organized groups
+            electrical_params = ['R_tx', 'R_rx', 'C_tx', 'C_rx', 'L_tx', 'L_rx']
+            signal_params = ['pulse_amplitude', 'bits_per_sec', 'vmask']
+            ctle_params = ['DC_gain', 'AC_gain', 'fp1', 'fp2']
+            
+            for group_name, param_list in [('Electrical', electrical_params), 
+                                         ('Signal', signal_params), 
+                                         ('CTLE', ctle_params)]:
+                error_report += f"  {group_name} Parameters:\n"
+                for param in param_list:
+                    if param in config_dict:
+                        value = config_dict[param]
+                        if isinstance(value, float):
+                            error_report += f"    {param}: {value:.6e}\n"
+                        else:
+                            error_report += f"    {param}: {value}\n"
+            
+            # Add any remaining parameters
+            remaining_params = set(config_dict.keys()) - set(electrical_params + signal_params + ctle_params)
+            if remaining_params:
+                error_report += "  Other Parameters:\n"
+                for param in sorted(remaining_params):
+                    value = config_dict[param]
+                    if isinstance(value, float):
+                        error_report += f"    {param}: {value:.6e}\n"
+                    else:
+                        error_report += f"    {param}: {value}\n"
+            
+            error_report += "============================================="
+            
+            return error_report
+            
+        except Exception as meta_error:
+            # Fallback if metadata formatting fails
+            return f"""
+=== SEQUENTIAL SIMULATION ERROR (METADATA FORMATTING FAILED) ===
+Error Message: {error_msg}
+Trace File: {trace_snp}
+Vertical TX: {snp_tx_path}
+Vertical RX: {snp_rx_path}
+Sample: {sample_idx + 1}/{samples_needed}
+Metadata Error: {meta_error}
+================================================================
+"""
     
     def _generate_directions(self, n_lines: int, enable_direction: bool) -> np.ndarray:
         """Generate direction pattern for simulation"""
@@ -338,7 +506,7 @@ class OptimizedSequentialCollector:
                 
             self._process_trace_file(
                 trace_snp, vertical_pair, samples_needed, pickle_file,
-                combined_params, enable_direction, progress, param_types
+                combined_params, enable_direction, progress, param_types, max_samples
             )
         
         self.stats["end_time"] = time.time()
@@ -369,8 +537,30 @@ class OptimizedSequentialCollector:
     
     def _process_trace_file(self, trace_snp: Path, vertical_pair: Tuple[Path, Path], 
                            samples_needed: int, pickle_file: Path, combined_params: Any,
-                           enable_direction: bool, progress: SequentialProgress, param_types: List[str]):
+                           enable_direction: bool, progress: SequentialProgress, param_types: List[str], max_samples: int):
         """Process a single trace file with optimized sequential processing"""
+        
+        # INITIAL RACE CONDITION CHECK: Verify quota not already filled by other parallel jobs
+        try:
+            current_sample_count = 0
+            if pickle_file.exists():
+                with open(pickle_file, 'rb') as f:
+                    check_data = pickle.load(f)
+                current_sample_count = len(check_data.get('configs', []))
+            
+            if current_sample_count >= max_samples:
+                print(f"[RACE PROTECTION] {trace_snp.name} already has {current_sample_count} samples (>= {max_samples}), skipping entire file")
+                return
+            
+            # Update samples_needed based on current state
+            updated_samples_needed = max_samples - current_sample_count
+            if updated_samples_needed != samples_needed:
+                print(f"[RACE PROTECTION] {trace_snp.name} samples needed updated from {samples_needed} to {updated_samples_needed}")
+                samples_needed = updated_samples_needed
+                
+        except Exception as e:
+            if self.debug:
+                print(f"[RACE PROTECTION] Could not perform initial check on {pickle_file}: {e}, proceeding with original plan")
         
         if self.debug:
             print(f"\nProcessing {trace_snp.name}: {samples_needed} samples")
@@ -399,96 +589,228 @@ class OptimizedSequentialCollector:
         for sample_idx in range(samples_needed):
             if _shutdown_event.is_set():
                 break
+            
+            # MEMORY SAFETY CHECK (macOS only): Prevent system crashes from memory exhaustion
+            if sample_idx % self.memory_check_interval == 0:
+                if not self._check_memory_safety():
+                    print(f"[MEMORY SAFETY] Stopping collection for {trace_snp.name} at sample {sample_idx} due to memory constraints")
+                    break
                 
-            try:
-                # Sample parameters
-                combined_config = combined_params.sample()
+                if self.debug and sample_idx > 0:
+                    self._log_memory_status()
+            
+            # RACE CONDITION PROTECTION: Check if other parallel jobs have already filled the quota
+            # This prevents over-collection when multiple bsub jobs run simultaneously
+            if sample_idx > 0 and sample_idx % 5 == 0:  # Check every 5 samples to avoid excessive I/O
+                try:
+                    current_sample_count = 0
+                    if pickle_file.exists():
+                        with open(pickle_file, 'rb') as f:
+                            check_data = pickle.load(f)
+                        current_sample_count = len(check_data.get('configs', []))
+                    
+                    if current_sample_count >= max_samples:
+                        print(f"[RACE PROTECTION] {trace_snp.name} already has {current_sample_count} samples (>= {max_samples}), stopping collection")
+                        break
+                    
+                    # Update remaining samples needed
+                    remaining_needed = max_samples - current_sample_count
+                    if remaining_needed <= 0:
+                        print(f"[RACE PROTECTION] {trace_snp.name} quota already filled by other jobs")
+                        break
+                    
+                    if self.debug and remaining_needed < samples_needed - sample_idx:
+                        print(f"[RACE PROTECTION] {trace_snp.name} samples reduced from {samples_needed - sample_idx} to {remaining_needed} due to other jobs")
+                        
+                except Exception as e:
+                    # If file check fails, continue with original plan
+                    if self.debug:
+                        print(f"[RACE PROTECTION] Could not check {pickle_file}: {e}, continuing...")
+                    pass
+            
+            # Retry logic for failed simulations
+            max_retries = 3
+            retry_count = 0
+            simulation_successful = False
+            
+            while not simulation_successful and retry_count <= max_retries:
+                # Initialize variables for error handling
+                combined_config = None
+                sim_directions = None
                 
-                # Generate directions
-                sim_directions = self._generate_directions(n_lines, enable_direction)
-                
-                # Run simulation
-                sim_start_time = time.time()
-                line_ew = snp_eyewidth_simulation(
-                    config=combined_config,
-                    snp_files=(trace_ntwk, tx_ntwk, rx_ntwk),
-                    directions=sim_directions
-                )
-                sim_time = time.time() - sim_start_time
-                
-                # Handle tuple return
-                if isinstance(line_ew, tuple):
-                    line_ew, actual_directions = line_ew
-                    sim_directions = actual_directions
-                
-                # Process results
-                line_ew = np.array(line_ew)
-                line_ew[line_ew >= 99.9] = -0.1
-                
-                # Create result
-                config_values, config_keys = combined_config.to_list(return_keys=True)
-                result = {
-                    'config_values': config_values,
-                    'config_keys': config_keys,
-                    'line_ews': line_ew.tolist(),
-                    'snp_tx': snp_tx_path.as_posix(),
-                    'snp_rx': snp_rx_path.as_posix(),
-                    'directions': sim_directions.tolist(),
-                    'snp_horiz': str(trace_snp),
-                    'n_ports': n_ports,
-                    'param_types': param_types  # Add param_types for consistency
-                }
-                
-                new_results.append(result)
-                self.stats["completed_simulations"] += 1
-                
-                if self.debug:
-                    print(f"  Sample {sample_idx+1}/{samples_needed}: EW={line_ew} ({sim_time:.2f}s)")
-                
-                # Update progress
-                progress.update(1)
-                
-                # Batch save every N samples
-                if len(new_results) >= self.batch_size:
-                    self._save_results(pickle_file, existing_data, new_results)
-                    new_results = []
-                
-            except Exception as e:
+                try:
+                    # Sample parameters (get new config for retries)
+                    combined_config = combined_params.sample()
+                    
+                    # Generate directions
+                    sim_directions = self._generate_directions(n_lines, enable_direction)
+                    
+                    # Run simulation
+                    sim_start_time = time.time()
+                    try:
+                        line_ew = snp_eyewidth_simulation(
+                            config=combined_config,
+                            snp_files=(trace_ntwk, tx_ntwk, rx_ntwk),
+                            directions=sim_directions
+                        )
+                        simulation_successful = True
+                        
+                    except Exception as sim_error:
+                        # Handle simulation errors with detailed metadata
+                        error_msg = str(sim_error)
+                        retry_count += 1
+                        
+                        # Format comprehensive error metadata
+                        metadata_report = self._format_error_metadata(
+                            trace_snp, snp_tx_path, snp_rx_path, combined_config,
+                            sim_directions, sample_idx, samples_needed, error_msg
+                        )
+                        
+                        if retry_count <= max_retries:
+                            print(f"[ERROR] SEQUENTIAL simulation failed (attempt {retry_count}/{max_retries + 1}), will retry with new config:")
+                            print(metadata_report)
+                            print(f"[RETRY] Retrying SEQUENTIAL simulation for {trace_snp.name}, sample {sample_idx + 1}")
+                            continue
+                        else:
+                            print(f"[ERROR] SEQUENTIAL simulation failed after {max_retries + 1} attempts, giving up:")
+                            print(metadata_report)
+                            print(f"[SKIP] Skipping SEQUENTIAL simulation for {trace_snp.name}, sample {sample_idx + 1}")
+                            break
+                    
+                    if not simulation_successful:
+                        continue  # Retry with new config
+                    
+                except Exception as outer_error:
+                    # Handle errors in directions generation or other setup
+                    error_msg = str(outer_error)
+                    retry_count += 1
+                    
+                    # Format comprehensive error metadata
+                    metadata_report = self._format_error_metadata(
+                        trace_snp, snp_tx_path, snp_rx_path, combined_config,
+                        sim_directions, sample_idx, samples_needed, error_msg
+                    )
+                    
+                    if retry_count <= max_retries:
+                        print(f"[ERROR] SEQUENTIAL setup/preprocessing failed (attempt {retry_count}/{max_retries + 1}), will retry:")
+                        print(metadata_report)
+                        print(f"[RETRY] Retrying SEQUENTIAL setup for {trace_snp.name}, sample {sample_idx + 1}")
+                        continue
+                    else:
+                        print(f"[ERROR] SEQUENTIAL setup/preprocessing failed after {max_retries + 1} attempts:")
+                        print(metadata_report)
+                        print(f"[SKIP] Skipping SEQUENTIAL simulation for {trace_snp.name}, sample {sample_idx + 1}")
+                        break
+            
+            # Always count this sample (successful or failed after retries)
+            # Update progress regardless of success/failure to maintain accurate counts
+            progress.update(1)
+            
+            # If simulation failed after all retries, skip result processing but count the sample
+            if not simulation_successful:
                 self.stats["failed_simulations"] += 1
                 if self.debug:
-                    print(f"  Sample {sample_idx+1} failed: {e}")
+                    print(f"  Sample {sample_idx+1} failed after all retries")
                 continue
+            
+            # Process successful simulation results
+            sim_time = time.time() - sim_start_time
+            
+            # Handle tuple return
+            if isinstance(line_ew, tuple):
+                line_ew, actual_directions = line_ew
+                sim_directions = actual_directions
+            
+            # Process results
+            line_ew = np.array(line_ew)
+            line_ew[line_ew >= 99.9] = -0.1
+            
+            # Create result
+            config_values, config_keys = combined_config.to_list(return_keys=True)
+            result = {
+                'config_values': config_values,
+                'config_keys': config_keys,
+                'line_ews': line_ew.tolist(),
+                'snp_tx': snp_tx_path.as_posix(),
+                'snp_rx': snp_rx_path.as_posix(),
+                'directions': sim_directions.tolist(),
+                'snp_horiz': str(trace_snp),
+                'n_ports': n_ports,
+                'param_types': param_types  # Add param_types for consistency
+            }
+            
+            new_results.append(result)
+            self.stats["completed_simulations"] += 1
+            
+            if self.debug:
+                print(f"  Sample {sample_idx+1}/{samples_needed}: EW={line_ew} ({sim_time:.2f}s)")
+            
+            # Batch save every N samples
+            if len(new_results) >= self.batch_size:
+                self._save_results(pickle_file, existing_data, new_results)
+                new_results = []
         
         # Save remaining results
         if new_results:
             self._save_results(pickle_file, existing_data, new_results)
     
     def _save_results(self, pickle_file: Path, existing_data: Dict[str, Any], new_results: List[Dict[str, Any]]):
-        """Save results to pickle file"""
+        """Save results to pickle file with race condition protection"""
         try:
-            # Add new results to existing data
+            # FINAL RACE CONDITION CHECK: Re-load file to check current state before saving
+            current_data = existing_data
+            if pickle_file.exists():
+                try:
+                    with open(pickle_file, 'rb') as f:
+                        current_data = pickle.load(f)
+                except:
+                    # If reload fails, use our existing data
+                    current_data = existing_data
+            
+            current_count = len(current_data.get('configs', []))
+            
+            # Only add results that won't exceed any reasonable limit
+            # Use a generous limit to handle edge cases while still preventing massive over-collection
+            max_reasonable_samples = 200  # Allow some over-collection but prevent runaway
+            
+            results_to_add = []
             for result in new_results:
-                existing_data['configs'].append(result['config_values'])
-                existing_data['line_ews'].append(result['line_ews'])
-                existing_data['snp_txs'].append(result['snp_tx'])
-                existing_data['snp_rxs'].append(result['snp_rx'])
-                existing_data['directions'].append(result['directions'])
+                if current_count + len(results_to_add) < max_reasonable_samples:
+                    results_to_add.append(result)
+                else:
+                    print(f"[RACE PROTECTION] Stopping save at {current_count + len(results_to_add)} samples to prevent over-collection")
+                    break
+            
+            if not results_to_add:
+                print(f"[RACE PROTECTION] No results to save, file already has {current_count} samples")
+                return
+            
+            # Add filtered results to current data
+            for result in results_to_add:
+                current_data['configs'].append(result['config_values'])
+                current_data['line_ews'].append(result['line_ews'])
+                current_data['snp_txs'].append(result['snp_tx'])
+                current_data['snp_rxs'].append(result['snp_rx'])
+                current_data['directions'].append(result['directions'])
             
             # Update metadata
-            if new_results and not existing_data['meta'].get('config_keys'):
-                first_result = new_results[0]
-                existing_data['meta']['config_keys'] = first_result['config_keys']
-                existing_data['meta']['snp_horiz'] = first_result.get('snp_horiz', '')
-                existing_data['meta']['n_ports'] = first_result.get('n_ports', 0)
-                existing_data['meta']['param_types'] = first_result.get('param_types', [])
+            if results_to_add and not current_data['meta'].get('config_keys'):
+                first_result = results_to_add[0]
+                current_data['meta']['config_keys'] = first_result['config_keys']
+                current_data['meta']['snp_horiz'] = first_result.get('snp_horiz', '')
+                current_data['meta']['n_ports'] = first_result.get('n_ports', 0)
+                current_data['meta']['param_types'] = first_result.get('param_types', [])
             
             # Save to file
             pickle_file.parent.mkdir(parents=True, exist_ok=True)
             with open(pickle_file, 'wb') as f:
-                pickle.dump(existing_data, f)
+                pickle.dump(current_data, f)
+                
+            print(f"[SAVE] Saved {len(results_to_add)} new results to {pickle_file.name} (total: {len(current_data['configs'])})")
                 
         except Exception as e:
             print(f"Error saving results to {pickle_file}: {e}")
+            # Continue without saving - the simulation results are still counted for progress
 
 def main():
     """Main function for optimized sequential data collection"""
