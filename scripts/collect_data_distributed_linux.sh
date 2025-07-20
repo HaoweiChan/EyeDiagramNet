@@ -269,11 +269,15 @@ set job_cmd = "cd `pwd` && ./$internal_script $cfg_file"
 
 echo "🚀 Submitting distributed collection job to cluster..."
 echo "📋 Job will run: $job_cmd"
+echo "🔧 Current directory: `pwd`"
+echo "📂 Internal script: $internal_script"
+echo "⚙️  bsub command details:"
+echo "   Queue: $job_queue | App: $job_app | Project: $job_project | Cores: $job_cores"
 echo ""
 
 # Submit the single bsub job that will handle all patterns
+# Use non-interactive mode for better reliability
 set job_output = `bsub \
-    -Is \
     -J "DistributedCollection" \
     -q "$job_queue" \
     -app "$job_app" \
@@ -289,14 +293,68 @@ set job_id = `echo "$job_output" | grep -o 'Job <[0-9]*>' | grep -o '[0-9]*'`
 if ( "$job_id" != "" ) then
     echo "✅ Submitted distributed collection job: $job_id" | tee -a "$main_log"
     echo "📝 Job log: $main_log" | tee -a "$main_log"
-    echo "📊 Job will handle all $#trace_patterns patterns internally" | tee -a "$main_log"
+    echo "📊 Job will handle all 7 patterns internally" | tee -a "$main_log"
+    echo ""
+    echo "🔄 Monitoring job progress..."
+    echo "💡 Use 'bjobs $job_id' to check job status manually"
+    echo "📊 Use 'bjobs -u `whoami`' to see all your jobs"
 else
     echo "❌ Failed to submit distributed collection job" | tee -a "$main_log"
     echo "🔍 bsub output: $job_output" | tee -a "$main_log"
     exit 1
 endif
 
-# Since we're using -Is (interactive), the job will run and we'll see the output
+# Monitor job status until completion
+set job_completed = 0
+set check_interval = 60  # Check every minute
+
+while ( $job_completed == 0 )
+    # Get job status
+    set job_status = `bjobs -noheader $job_id 2>/dev/null | awk '{print $3}' | head -1`
+    set current_time = `date`
+    
+    if ( "$job_status" == "" ) then
+        # Job not found, likely completed
+        echo "✅ Job $job_id completed (no longer in queue) at $current_time" | tee -a "$main_log"
+        set job_completed = 1
+    else if ( "$job_status" == "PEND" ) then
+        echo "⏳ Job $job_id pending in queue at $current_time" | tee -a "$main_log"
+    else if ( "$job_status" == "RUN" ) then
+        echo "🔄 Job $job_id running at $current_time" | tee -a "$main_log"
+        
+        # When job is running, check for live progress in log file
+        if ( -f "$main_log" ) then
+            set log_lines = `wc -l < "$main_log" 2>/dev/null || echo "0"`
+            echo "📝 Log file has $log_lines lines (job is active)"
+        endif
+    else if ( "$job_status" == "DONE" ) then
+        echo "✅ Job $job_id completed successfully at $current_time" | tee -a "$main_log"
+        set job_completed = 1
+    else if ( "$job_status" == "EXIT" ) then
+        echo "❌ Job $job_id failed at $current_time" | tee -a "$main_log"
+        set job_completed = 1
+    else
+        echo "❓ Job $job_id has unknown status: $job_status at $current_time" | tee -a "$main_log"
+    endif
+    
+    # Wait before next check (unless job is completed)
+    if ( $job_completed == 0 ) then
+        echo "⏰ Next check in $check_interval seconds..."
+        sleep $check_interval
+    endif
+end
+
+echo ""
+echo "🔍 Final job status check..."
+set final_status = `bjobs -noheader $job_id 2>/dev/null | awk '{print $3}' | head -1`
+if ( "$final_status" == "DONE" || "$final_status" == "" ) then
+    echo "✅ Job completed successfully"
+    set job_success = 1
+else
+    echo "❌ Job failed with status: $final_status"
+    set job_success = 0
+endif
+
 # Calculate total time after job completion
 set end_time = `date +%s`
 set total_runtime = `expr $end_time - $start_time`
@@ -306,24 +364,51 @@ set runtime_secs = `expr $total_runtime % 60`
 
 echo ""
 echo "=========================================="
-echo "📊 Distributed Collection Completed"
+if ( $job_success == 1 ) then
+    echo "📊 Distributed Collection COMPLETED SUCCESSFULLY"
+else
+    echo "📊 Distributed Collection FAILED"
+endif
 echo "=========================================="
 echo "⏱️  Total Runtime: ${total_runtime}s (${runtime_hours}h ${runtime_mins}m ${runtime_secs}s)"
 echo "📁 Main Log: $main_log"
 echo "📁 Internal Logs: logs/internal/"
 echo ""
 
-echo "🖥️  Resource Efficiency:"
-echo "  🏭 Single allocated machine with $job_cores cores"
-echo "  ⚡ OS-level parallelization within dedicated machine"
-echo "  💾 Optimized BLAS threads for single-machine performance"
+if ( $job_success == 1 ) then
+    echo "🖥️  Resource Efficiency:"
+    echo "  🏭 Single allocated machine with $job_cores cores"
+    echo "  ⚡ OS-level parallelization within dedicated machine"
+    echo "  💾 Optimized BLAS threads for single-machine performance"
+    
+    echo ""
+    echo "📋 Next Steps:"
+    echo "  1. 📊 Review main log: $main_log"
+    echo "  2. 🔍 Check internal logs in logs/internal/ for pattern details"
+    echo "  3. 📁 Verify output data in configured output directory"
+    echo "  4. 📈 Analyze performance vs parallel_collector.py"
+    
+    echo ""
+    echo "🎉 Distributed collection completed successfully!"
+else
+    echo "❌ Job Issues:"
+    echo "  🔍 Check main log for errors: $main_log"
+    echo "  📊 Check job details: bjobs -l $job_id"
+    echo "  🧪 Try running manually for debugging"
+    
+    echo ""
+    echo "🛠️  Troubleshooting:"
+    echo "  • Check if input files exist and are accessible"
+    echo "  • Verify cluster resources and queue status"
+    echo "  • Review error log: ${main_log}.err"
+    
+    echo ""
+    echo "❌ Distributed collection failed!"
+endif
 
-echo ""
-echo "📋 Next Steps:"
-echo "  1. 📊 Review main log: $main_log"
-echo "  2. 🔍 Check internal logs in logs/internal/ for pattern details"
-echo "  3. 📁 Verify output data in configured output directory"
-echo "  4. 📈 Analyze performance vs parallel_collector.py"
-
-echo ""
-echo "🎉 Distributed collection job completed!" 
+# Exit with appropriate code
+if ( $job_success == 1 ) then
+    exit 0
+else
+    exit 1
+endif 
