@@ -59,7 +59,9 @@ def run_collector_for_pattern(pattern: str, config_file: str, log_dir: Path) -> 
     # In some environments, PYTHONPATH might not be set.
     env["PYTHONPATH"] = f"{project_root}{os.pathsep}{env.get('PYTHONPATH', '')}"
 
-    process = subprocess.Popen(command, stdout=log_file_handle, stderr=subprocess.STDOUT, env=env)
+    # Use PIPE to capture output and then write to both stdout and log file
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, 
+                              env=env, universal_newlines=True, bufsize=1)
     return process, log_file_handle
 
 def main():
@@ -109,9 +111,19 @@ def main():
                 process, log_file_handle = run_collector_for_pattern(pattern, str(config_file), log_dir)
                 processes[process] = (pattern, log_file_handle)
             
-            # Check for completed processes
+            # Check for completed processes and read output from running processes
             completed_processes = []
             for process, (pattern, log_file) in processes.items():
+                # Read any available output from the process
+                if process.stdout:
+                    output = process.stdout.readline()
+                    if output:
+                        # Write to both stdout (with pattern prefix) and log file
+                        output_line = f"[{pattern}] {output.rstrip()}"
+                        print(output_line)
+                        log_file.write(output + "\n")
+                        log_file.flush()  # Ensure output is written immediately
+                
                 if process.poll() is not None:  # Process has terminated
                     completed_processes.append(process)
                     log_file.close() # Close the log file handle
@@ -128,7 +140,7 @@ def main():
             if not patterns_to_run and not processes:
                 break
                 
-            time.sleep(10) # Wait before checking again
+            time.sleep(1) # Shorter sleep for more responsive output
             
     except KeyboardInterrupt:
         print("\n[INTERRUPT] Received Ctrl+C. Terminating child processes...")
@@ -138,12 +150,15 @@ def main():
             log_file.close()
         
         # Wait for processes to terminate
-        for process, _ in processes.items():
+        for process, (pattern, log_file) in processes.items():
             try:
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 print(f"   Forcing kill on process {process.pid}")
                 process.kill()
+            finally:
+                if not log_file.closed:
+                    log_file.close()
 
         print("All child processes terminated.")
         sys.exit(1)
