@@ -42,9 +42,72 @@ echo "  Project: $job_project"
 echo "  Cores: $job_cores"
 echo ""
 
-# Prepare the command that will be executed by bsub
-set python_script_path = "scripts/distributed_collector.py"
-set job_cmd = "python3 $python_script_path --config $cfg_file"
+# ---------------------------------------------------------------------------
+# Generate a small internal launcher that starts one collector per pattern.
+# Each collector runs in the background ( & ) and logs to its own file.
+# ---------------------------------------------------------------------------
+
+# Internal launcher path
+set internal_launcher = "scripts/internal_distributed_launcher.csh"
+
+# Create/overwrite the internal launcher script
+cat > "$internal_launcher" << 'EOF_INT'
+#!/bin/tcsh
+
+# ------------------ Internal Distributed Launcher -------------------------
+# This script runs INSIDE the allocated bsub node. It launches one
+# sequential_collector process per trace pattern, each in the background,
+# and waits for them all to finish.
+# --------------------------------------------------------------------------
+
+set CONFIG_FILE = "$1"
+if ( "$CONFIG_FILE" == "" ) then
+    set CONFIG_FILE = "configs/data/default.yaml"
+endif
+
+# Dynamically obtain trace patterns from the YAML config using Python.
+set patterns = (`python - << PY
+import yaml, sys, pathlib
+cfg = pathlib.Path(sys.argv[1])
+data = yaml.safe_load(cfg.read_text())
+patterns = list(data.get('dataset', {}).get('horizontal_dataset', {}).keys())
+print(' '.join(patterns))
+PY
+$CONFIG_FILE`)
+
+if ( $#patterns == 0 ) then
+    echo "ERROR: No trace patterns found in $CONFIG_FILE"
+    exit 1
+endif
+
+echo "Internal launcher will process $#patterns patterns: $patterns"
+
+# Ensure log directory exists
+mkdir -p logs/parallel
+
+# Launch each collector in the background
+foreach pattern ( $patterns )
+    set log_file = "logs/parallel/pattern_${pattern}_`date +%Y%m%d_%H%M%S`.log"
+    echo "Launching collector for $pattern -> $log_file"
+    python -m simulation.collection.sequential_collector \
+        --config "$CONFIG_FILE" \
+        --trace_pattern "$pattern" \
+        > "$log_file" 2>&1 &
+    # Optional small delay to avoid starting all at once
+    sleep 2
+end
+
+# Wait for all background jobs to complete
+wait
+
+echo "All pattern collectors completed."
+EOF_INT
+
+# Make the launcher executable
+chmod +x "$internal_launcher"
+
+# Command to execute inside bsub
+set job_cmd = "tcsh $internal_launcher $cfg_file"
 
 echo "Submitting distributed collection job to cluster..."
 echo "Command to run: $job_cmd"
