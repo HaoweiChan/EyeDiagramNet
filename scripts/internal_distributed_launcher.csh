@@ -29,10 +29,9 @@ mkdir -p logs/parallel
 foreach pattern ( $patterns )
     set log_file = "logs/parallel/pattern_${pattern}_`date +%Y%m%d_%H%M%S`.log"
     echo "Launching collector for $pattern -> $log_file"
-    python -m simulation.collection.sequential_collector \
+    ( python -m simulation.collection.sequential_collector \
         --config "$CONFIG_FILE" \
-        --trace_pattern "$pattern" \
-        > "$log_file" 2>&1 &
+        --trace_pattern "$pattern" ) >& "$log_file" &
     # Optional small delay to avoid starting all at once
     sleep 2
 end
