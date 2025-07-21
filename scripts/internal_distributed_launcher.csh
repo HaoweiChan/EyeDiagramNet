@@ -12,14 +12,8 @@ if ( "$CONFIG_FILE" == "" ) then
 endif
 
 # Dynamically obtain trace patterns from the YAML config using Python.
-set patterns = (`python - << PY
-import yaml, sys, pathlib
-cfg = pathlib.Path(sys.argv[1])
-data = yaml.safe_load(cfg.read_text())
-patterns = list(data.get('dataset', {}).get('horizontal_dataset', {}).keys())
-print(' '.join(patterns))
-PY
-$CONFIG_FILE`)
+# Use python -c for robustness instead of a multi-line heredoc.
+set patterns = (`python -c "import yaml, sys, pathlib; cfg = pathlib.Path(sys.argv[1]); data = yaml.safe_load(cfg.read_text()); patterns = list(data.get('dataset', {}).get('horizontal_dataset', {}).keys()); print(' '.join(patterns))" $CONFIG_FILE`)
 
 if ( $#patterns == 0 ) then
     echo "ERROR: No trace patterns found in $CONFIG_FILE"
