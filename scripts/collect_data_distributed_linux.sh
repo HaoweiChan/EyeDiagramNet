@@ -29,19 +29,6 @@ echo "Configuration: $cfg_file"
 echo "Strategy: One bsub job running a Python script to manage all collectors."
 echo ""
 
-# Job submission settings
-set job_queue = "ML_CPU"
-set job_app = "ML_CPU" 
-set job_project = "d_09017"
-set job_cores = "32" # Request enough cores for Python to manage subprocesses
-
-echo "Job Configuration:"
-echo "  Queue: $job_queue"
-echo "  App: $job_app"
-echo "  Project: $job_project"
-echo "  Cores: $job_cores"
-echo ""
-
 # ---------------------------------------------------------------------------
 # Generate a small internal launcher that starts one collector per pattern.
 # Each collector runs in the background ( & ) and logs to its own file.
@@ -116,11 +103,10 @@ echo ""
 # Submit the single bsub job. Using -Is for interactive output.
 # If the job waits in the queue, this script will wait with it.
 bsub -Is \
-    -J "PythonDistributed" \
-    -q "$job_queue" \
-    -app "$job_app" \
-    -P "$job_project" \
-    -n "$job_cores" \
+    -J "LongJob" \
+    -q "ML_CPU" \
+    -app "ML_CPU" \
+    -P "d_09017" \
     "$job_cmd"
 
 echo "=========================================="
