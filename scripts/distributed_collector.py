@@ -36,33 +36,45 @@ def get_max_concurrent_jobs() -> int:
         
     return max_jobs
 
-def run_collector_for_pattern(pattern: str, config_file: str, log_dir: Path) -> (subprocess.Popen, Path):
-    """Launches a sequential collector for a given pattern."""
+def run_collector_for_pattern(pattern: str, config_file: str, log_dir: Path):
+    """Launches a sequential collector for a given pattern, with enhanced debugging."""
     log_file_path = log_dir / f"pattern_{pattern}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
     
     command = [
-        sys.executable,  # Use the same python interpreter
+        sys.executable,
         "-m", "simulation.collection.sequential_collector",
         "--config", config_file,
         "--trace_pattern", pattern
     ]
     
-    print(f"Starting collector for '{pattern}'...")
-    print(f"   Log file: {log_file_path}")
-    
-    # Open log file for writing stdout and stderr
+    print(f"\nDEBUG: Preparing to run command for '{pattern}':")
+    print(f"  Command: {' '.join(command)}")
+
     log_file_handle = open(log_file_path, 'w')
     
-    # Set PYTHONPATH to include project root
     env = os.environ.copy()
     project_root = Path(__file__).parent.parent.resolve()
-    # In some environments, PYTHONPATH might not be set.
     env["PYTHONPATH"] = f"{project_root}{os.pathsep}{env.get('PYTHONPATH', '')}"
+    print(f"  PYTHONPATH: {env['PYTHONPATH']}")
 
-    # Use PIPE to capture output and then write to both stdout and log file
-    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, 
-                              env=env, universal_newlines=True, bufsize=1)
-    return process, log_file_handle
+    try:
+        print(f"DEBUG: Launching subprocess for '{pattern}'...")
+        process = subprocess.Popen(
+            command, 
+            stdout=subprocess.PIPE, 
+            stderr=subprocess.STDOUT, 
+            env=env, 
+            universal_newlines=True, 
+            bufsize=1
+        )
+        print(f"DEBUG: Subprocess for '{pattern}' launched with PID: {process.pid}")
+        return process, log_file_handle
+    except Exception as e:
+        error_msg = f"FATAL ERROR: Failed to launch subprocess for '{pattern}': {e}"
+        print(error_msg)
+        log_file_handle.write(error_msg + "\n")
+        log_file_handle.close()
+        return None, None
 
 def main():
     """Main function to run distributed data collection using Python subprocesses."""
@@ -109,22 +121,48 @@ def main():
             while len(processes) < max_jobs and patterns_to_run:
                 pattern = patterns_to_run.pop(0)
                 process, log_file_handle = run_collector_for_pattern(pattern, str(config_file), log_dir)
-                processes[process] = (pattern, log_file_handle)
+                if process:
+                    # DEBUG: Check if the process terminated immediately
+                    time.sleep(0.5) # Give it a moment to potentially crash
+                    if process.poll() is not None:
+                        print(f"DEBUG: Process for '{pattern}' (PID: {process.pid}) terminated immediately with code {process.returncode}.")
+                        # Read any final output
+                        if process.stdout:
+                            for line in process.stdout.readlines():
+                                print(f"[{pattern}] IMMEDIATE EXIT: {line.strip()}")
+                                log_file_handle.write(line)
+                        log_file_handle.close()
+                        failed_patterns.append(pattern)
+                    else:
+                        print(f"DEBUG: Process for '{pattern}' is running.")
+                        processes[process] = (pattern, log_file_handle)
+                else:
+                    # The launch itself failed, mark as failed
+                    failed_patterns.append(pattern)
             
             # Check for completed processes and read output from running processes
+            if not processes:
+                print("DEBUG: No running processes to monitor. Waiting...")
+                time.sleep(5)
+                if not patterns_to_run: # If no more to launch, exit
+                    break
+                continue
+
             completed_processes = []
             for process, (pattern, log_file) in processes.items():
                 # Read any available output from the process
                 if process.stdout:
-                    output = process.stdout.readline()
-                    if output:
-                        # Write to both stdout (with pattern prefix) and log file
-                        output_line = f"[{pattern}] {output.rstrip()}"
-                        print(output_line)
-                        log_file.write(output + "\n")
-                        log_file.flush()  # Ensure output is written immediately
+                    for line in iter(process.stdout.readline, ''):
+                        if line:
+                            output_line = f"[{pattern}] {line.strip()}"
+                            print(output_line)
+                            log_file.write(line)
+                            log_file.flush()
+                        else:
+                            break # No more output for now
                 
                 if process.poll() is not None:  # Process has terminated
+                    print(f"DEBUG: Detected completed process for '{pattern}' with code {process.returncode}")
                     completed_processes.append(process)
                     log_file.close() # Close the log file handle
                     if process.returncode == 0:
