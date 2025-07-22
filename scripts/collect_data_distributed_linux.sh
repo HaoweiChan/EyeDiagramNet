@@ -1,6 +1,6 @@
 #!/bin/tcsh
 # Distributed Data Collection Script for Linux (Production)
-# Submits ONE bsub job that runs the Python-based distributed collector.
+# Submits ONE bsub job per trace pattern for maximum parallelization.
 
 # Load required modules for cluster environment
 module load LSF/mtkgpu
@@ -9,7 +9,7 @@ source /proj/siaiadm/ew_predictor/.venv/sipi/bin/activate.csh
 
 echo "=========================================="
 echo "EyeDiagramNet - Distributed Data Collection (Linux)"
-echo "Single Machine, Python-Managed Collectors"
+echo "One bsub job per trace pattern for maximum parallelization"
 echo "=========================================="
 
 # Default configuration
@@ -26,29 +26,47 @@ if ( ! -f "$cfg_file" ) then
 endif
 
 echo "Configuration: $cfg_file"
-echo "Strategy: One bsub job running a Python script to manage all collectors."
+echo "Strategy: One bsub job per trace pattern for maximum parallelization."
 echo ""
 
-# Make sure the internal launcher is executable
-chmod +x scripts/internal_distributed_launcher.csh
+# Dynamically obtain trace patterns from the YAML config using Python
+set patterns = (`python -c "import yaml, sys, pathlib; cfg = pathlib.Path(sys.argv[1]); data = yaml.safe_load(cfg.read_text()); patterns = list(data.get('dataset', {}).get('horizontal_dataset', {}).keys()); print(' '.join(patterns))" $cfg_file`)
 
-# Prepare the command that will be executed by bsub
-set internal_launcher_path = "scripts/internal_distributed_launcher.csh"
-set job_cmd = "tcsh $internal_launcher_path $cfg_file"
+if ( $#patterns == 0 ) then
+    echo "ERROR: No trace patterns found in $cfg_file"
+    exit 1
+endif
 
-echo "Submitting distributed collection job to cluster..."
-echo "Command to run: $job_cmd"
+echo "Found $#patterns trace patterns: $patterns"
 echo ""
 
-# Submit the single bsub job. Using -Is for interactive output.
-# If the job waits in the queue, this script will wait with it.
-bsub -Is \
-    -J "LongJob" \
-    -q "ML_CPU" \
-    -app "ML_CPU" \
-    -P "d_09017" \
-    "$job_cmd"
+# Create log directory for job outputs
+mkdir -p logs/parallel
+
+# Submit one bsub job per trace pattern
+foreach pattern ( $patterns )
+    set log_file = "logs/parallel/${pattern}_`date +%Y%m%d_%H%M%S`.log"
+    
+    echo "Submitting job for pattern: $pattern"
+    echo "Log file: $log_file"
+    
+    # Submit the job - each job gets its own machine and uses all cores
+    bsub -J LongJob \
+         -q ML_CPU \
+         -app ML_CPU \
+         -P d_09017 \
+         -o "$log_file" \
+         -e "$log_file" \
+         "python -u -m simulation.collection.sequential_collector \
+             --config '$cfg_file' \
+             --trace_pattern '$pattern'"
+    
+    echo "Job submitted for $pattern"
+    echo ""
+end
 
 echo "=========================================="
-echo "Distributed collection job finished."
+echo "All $#patterns jobs submitted successfully!"
+echo "Monitor jobs with: bjobs"
+echo "View logs in: logs/parallel/"
 echo "==========================================" 

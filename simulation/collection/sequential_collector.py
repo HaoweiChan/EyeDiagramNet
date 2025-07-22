@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Dict, List, Tuple, Any
 import argparse
 import platform
+from tqdm import tqdm
 
 # --- Thread limit argument parsing ---
 # Must be done at module level, before heavy libraries are imported.
@@ -37,39 +38,18 @@ _parser.add_argument("--num-threads", type=int, default=None, help="Explicit num
 _thread_args, _remaining_argv = _parser.parse_known_args()
 
 
-# Optimize BLAS threads for single-process execution with platform-aware safety
+# Optimize BLAS threads for single-process execution - use all available cores
 def optimize_blas_for_sequential(num_threads: int = None):
-    """Set optimal BLAS thread count for sequential processing with macOS safety"""
+    """Set optimal BLAS thread count for sequential processing - use all cores"""
     
     if num_threads and num_threads > 0:
         optimal_threads = num_threads
         print(f"Using user-defined BLAS threads: {optimal_threads}")
     else:
         cpu_count = psutil.cpu_count()
-        
-        # Platform-aware resource allocation to prevent system crashes
-        if platform.system() == "Darwin":  # macOS
-            # VERY CONSERVATIVE for macOS to prevent system crashes
-            # Leave plenty of headroom for system processes and other applications
-            max_safe_threads = max(2, min(4, cpu_count // 2))  # Use at most 50% of cores, cap at 4
-            optimal_threads = max_safe_threads
-            print(f"macOS detected: Using conservative BLAS threads ({optimal_threads}/{cpu_count} cores) to prevent system crashes")
-            
-            # Additional macOS safety: Check available memory
-            memory = psutil.virtual_memory()
-            available_gb = memory.available / (1024**3)
-            if available_gb < 4.0:  # Less than 4GB available
-                optimal_threads = min(optimal_threads, 2)  # Further reduce to 2 threads
-                print(f"Low memory detected ({available_gb:.1f}GB available): Reducing to {optimal_threads} BLAS threads")
-            
-        elif platform.system() == "Linux":  # Linux
-            # More aggressive for Linux servers, but still reasonable
-            optimal_threads = max(4, min(cpu_count - 2, int(cpu_count * 0.75)))  # 75% max
-            print(f"Linux detected: Using production BLAS threads ({optimal_threads}/{cpu_count} cores)")
-            
-        else:  # Other platforms
-            optimal_threads = max(2, min(4, cpu_count // 2))  # Conservative default
-            print(f"Unknown platform: Using conservative BLAS threads ({optimal_threads}/{cpu_count} cores)")
+        # Use all available cores for maximum performance
+        optimal_threads = cpu_count
+        print(f"Using all available cores: {optimal_threads} BLAS threads")
     
     # Set all BLAS library thread counts
     os.environ["OMP_NUM_THREADS"] = str(optimal_threads)
@@ -79,11 +59,9 @@ def optimize_blas_for_sequential(num_threads: int = None):
     os.environ["NUMEXPR_NUM_THREADS"] = str(optimal_threads)
     os.environ["NUMBA_NUM_THREADS"] = str(optimal_threads)
     
-    # Additional safety environment variables for macOS
-    if platform.system() == "Darwin":
-        os.environ["MKL_DYNAMIC"] = "TRUE"  # Allow MKL to dynamically adjust
-        os.environ["OMP_DYNAMIC"] = "TRUE"  # Allow OpenMP to dynamically adjust
-        os.environ["MKL_DOMAIN_NUM_THREADS"] = f"MKL_BLAS={optimal_threads}"
+    # Additional environment variables for optimal performance
+    os.environ["MKL_DYNAMIC"] = "FALSE"  # Disable dynamic adjustment
+    os.environ["OMP_DYNAMIC"] = "FALSE"  # Disable dynamic adjustment
     
     return optimal_threads
 
@@ -109,47 +87,6 @@ except ImportError:
 
 # Global state for interruption handling
 _shutdown_event = threading.Event()
-
-class SequentialProgress:
-    """Simple progress tracker for sequential processing"""
-    
-    def __init__(self, total_simulations: int, report_interval: int = 10):
-        self.total_simulations = total_simulations
-        self.completed_simulations = 0
-        self.start_time = time.time()
-        self.last_report_time = time.time()
-        self.report_interval = report_interval
-        self.last_reported_count = 0
-        
-    def update(self, completed: int = 1):
-        """Update progress counter"""
-        self.completed_simulations += completed
-        current_time = time.time()
-        
-        # Report progress every N simulations or every 60 seconds
-        if (self.completed_simulations - self.last_reported_count >= self.report_interval or 
-            current_time - self.last_report_time >= 60.0 or
-            self.completed_simulations == self.total_simulations):
-            
-            self.report_progress()
-            self.last_report_time = current_time
-            self.last_reported_count = self.completed_simulations
-    
-    def report_progress(self):
-        """Report current progress"""
-        elapsed = time.time() - self.start_time
-        percentage = (self.completed_simulations / self.total_simulations) * 100
-        
-        if self.completed_simulations > 0:
-            avg_time_per_sim = elapsed / self.completed_simulations
-            remaining_sims = self.total_simulations - self.completed_simulations
-            eta_seconds = remaining_sims * avg_time_per_sim
-            
-            print(f"Progress: {self.completed_simulations}/{self.total_simulations} "
-                  f"({percentage:.1f}%) - {avg_time_per_sim:.1f}s/sim - "
-                  f"ETA: {eta_seconds/60:.1f}min - Elapsed: {elapsed/60:.1f}min")
-        else:
-            print(f"Progress: {self.completed_simulations}/{self.total_simulations} ({percentage:.1f}%)")
 
 class OptimizedSNPCache:
     """Memory-efficient SNP cache optimized for sequential processing"""
@@ -196,7 +133,7 @@ class OptimizedSNPCache:
         self.cache_stats = {"hits": 0, "misses": 0, "memory_mb": 0}
 
 class OptimizedSequentialCollector:
-    """High-performance sequential data collector"""
+    """High-performance sequential data collector using all cores"""
     
     def __init__(self, config: Dict[str, Any], debug: bool = False):
         self.config = config
@@ -210,24 +147,8 @@ class OptimizedSequentialCollector:
             "end_time": None
         }
         
-        # Platform-aware safety settings
-        # import platform # This line is removed as per the edit hint
-        self.platform = platform.system()
-        self.is_macos = self.platform == "Darwin"
-        
-        # Performance optimization settings - get batch_size from config with platform safety
-        default_batch_size = 5 if self.is_macos else 20  # Smaller batches on macOS
-        self.batch_size = config.get('runner', {}).get('batch_size', default_batch_size)
-        
-        # macOS safety constraints
-        if self.is_macos:
-            memory = psutil.virtual_memory()
-            self.max_memory_gb = min(memory.total * 0.6 / (1024**3), 16.0)  # Use max 60% or 16GB
-            self.memory_check_interval = 10  # Check memory every 10 simulations
-            print(f"macOS safety: Memory limit set to {self.max_memory_gb:.1f}GB, batch size: {self.batch_size}")
-        else:
-            self.max_memory_gb = None  # No limit on Linux
-            self.memory_check_interval = 50
+        # Performance optimization settings - use larger batches for all-core processing
+        self.batch_size = config.get('runner', {}).get('batch_size', 50)  # Larger batches for all-core processing
         
         # Register signal handler for graceful shutdown
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -236,50 +157,6 @@ class OptimizedSequentialCollector:
         """Handle interruption signals"""
         print(f"\n[INTERRUPT] Received signal {signum}, shutting down gracefully...")
         _shutdown_event.set()
-    
-    def _check_memory_safety(self) -> bool:
-        """Check if memory usage is within safe limits (macOS only)"""
-        if not self.is_macos or self.max_memory_gb is None:
-            return True
-        
-        try:
-            current_process = psutil.Process()
-            memory_gb = current_process.memory_info().rss / (1024**3)
-            
-            if memory_gb > self.max_memory_gb:
-                print(f"[MEMORY SAFETY] Current usage {memory_gb:.1f}GB exceeds limit {self.max_memory_gb:.1f}GB")
-                return False
-            
-            # Also check system memory
-            system_memory = psutil.virtual_memory()
-            if system_memory.percent > 85:  # System memory above 85%
-                print(f"[MEMORY SAFETY] System memory usage {system_memory.percent:.1f}% too high")
-                return False
-                
-            return True
-            
-        except Exception as e:
-            if self.debug:
-                print(f"[MEMORY SAFETY] Could not check memory: {e}")
-            return True  # Continue if check fails
-    
-    def _log_memory_status(self):
-        """Log current memory status for monitoring"""
-        if not self.is_macos:
-            return
-            
-        try:
-            current_process = psutil.Process()
-            process_memory_gb = current_process.memory_info().rss / (1024**3)
-            system_memory = psutil.virtual_memory()
-            system_used_gb = system_memory.used / (1024**3)
-            system_total_gb = system_memory.total / (1024**3)
-            
-            print(f"[MEMORY] Process: {process_memory_gb:.1f}GB, System: {system_used_gb:.1f}/{system_total_gb:.1f}GB ({system_memory.percent:.1f}%)")
-            
-        except Exception as e:
-            if self.debug:
-                print(f"[MEMORY] Could not log memory status: {e}")
     
     def _get_valid_block_sizes(self, n_lines: int) -> List[int]:
         """Find divisors of n_lines that result in an even number of blocks"""
@@ -508,19 +385,17 @@ Metadata Error: {meta_error}
         print(f"Cache loaded in {cache_load_time:.2f}s: {cache_stats['cached_files']} files, "
               f"{cache_stats['memory_usage_mb']:.1f}MB")
         
-        # Initialize progress tracker
-        progress = SequentialProgress(total_simulations)
-        
-        # Process each work item
-        for trace_snp, vertical_pair, samples_needed, pickle_file in work_items:
-            if _shutdown_event.is_set():
-                print("Shutdown requested, stopping collection...")
-                break
-                
-            self._process_trace_file(
-                trace_snp, vertical_pair, samples_needed, pickle_file,
-                combined_params, enable_direction, progress, param_types, max_samples
-            )
+        # Process each work item with tqdm progress bar
+        with tqdm(total=total_simulations, desc=f"Collecting {trace_pattern_key}", unit="sim") as pbar:
+            for trace_snp, vertical_pair, samples_needed, pickle_file in work_items:
+                if _shutdown_event.is_set():
+                    print("Shutdown requested, stopping collection...")
+                    break
+                    
+                self._process_trace_file(
+                    trace_snp, vertical_pair, samples_needed, pickle_file,
+                    combined_params, enable_direction, pbar, param_types, max_samples
+                )
         
         self.stats["end_time"] = time.time()
         total_time = self.stats["end_time"] - self.stats["start_time"]
@@ -550,7 +425,7 @@ Metadata Error: {meta_error}
     
     def _process_trace_file(self, trace_snp: Path, vertical_pair: Tuple[Path, Path], 
                            samples_needed: int, pickle_file: Path, combined_params: Any,
-                           enable_direction: bool, progress: SequentialProgress, param_types: List[str], max_samples: int):
+                           enable_direction: bool, pbar: tqdm, param_types: List[str], max_samples: int):
         """Process a single trace file with optimized sequential processing"""
         
         # INITIAL RACE CONDITION CHECK: Verify quota not already filled by other parallel jobs
@@ -602,15 +477,6 @@ Metadata Error: {meta_error}
         for sample_idx in range(samples_needed):
             if _shutdown_event.is_set():
                 break
-            
-            # MEMORY SAFETY CHECK (macOS only): Prevent system crashes from memory exhaustion
-            if sample_idx % self.memory_check_interval == 0:
-                if not self._check_memory_safety():
-                    print(f"[MEMORY SAFETY] Stopping collection for {trace_snp.name} at sample {sample_idx} due to memory constraints")
-                    break
-                
-                if self.debug and sample_idx > 0:
-                    self._log_memory_status()
             
             # RACE CONDITION PROTECTION: Check if other parallel jobs have already filled the quota
             # This prevents over-collection when multiple bsub jobs run simultaneously
@@ -717,7 +583,7 @@ Metadata Error: {meta_error}
             
             # Always count this sample (successful or failed after retries)
             # Update progress regardless of success/failure to maintain accurate counts
-            progress.update(1)
+            pbar.update(1)
             
             # If simulation failed after all retries, skip result processing but count the sample
             if not simulation_successful:
@@ -868,7 +734,7 @@ def main():
     # Get batch size from config, ignoring runner section worker-specific settings
     # Use reasonable defaults for sequential processing
     runner_config = config.get('runner', {})
-    batch_size = runner_config.get('batch_size', 20)  # Default 20 for sequential processing
+    batch_size = runner_config.get('batch_size', 50)  # Larger batches for all-core processing
     
     # Display configuration (same style as parallel_collector.py)
     print(f"Using configuration:")
@@ -881,7 +747,7 @@ def main():
     print(f"  Enable inductance: {enable_inductance}")
     print(f"  Debug mode: {debug}")
     print(f"  Batch size: {batch_size}")
-    print(f"  Processing mode: Sequential (ignoring runner.max_workers)")
+    print(f"  Processing mode: Sequential (using all cores)")
     
     # Create collector
     collector = OptimizedSequentialCollector(config, debug=debug)
