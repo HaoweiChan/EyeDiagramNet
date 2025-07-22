@@ -28,6 +28,7 @@ import numpy as np
 from pathlib import Path
 from typing import Dict, List, Tuple, Any
 import argparse
+import platform
 
 # --- Thread limit argument parsing ---
 # Must be done at module level, before heavy libraries are imported.
@@ -45,7 +46,6 @@ def optimize_blas_for_sequential(num_threads: int = None):
         print(f"Using user-defined BLAS threads: {optimal_threads}")
     else:
         cpu_count = psutil.cpu_count()
-        import platform
         
         # Platform-aware resource allocation to prevent system crashes
         if platform.system() == "Darwin":  # macOS
@@ -211,7 +211,7 @@ class OptimizedSequentialCollector:
         }
         
         # Platform-aware safety settings
-        import platform
+        # import platform # This line is removed as per the edit hint
         self.platform = platform.system()
         self.is_macos = self.platform == "Darwin"
         
