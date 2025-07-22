@@ -27,36 +27,49 @@ import traceback
 import numpy as np
 from pathlib import Path
 from typing import Dict, List, Tuple, Any
+import argparse
+
+# --- Thread limit argument parsing ---
+# Must be done at module level, before heavy libraries are imported.
+_parser = argparse.ArgumentParser(add_help=False)
+_parser.add_argument("--num-threads", type=int, default=None, help="Explicit number of BLAS/OMP threads to use.")
+_thread_args, _remaining_argv = _parser.parse_known_args()
+
 
 # Optimize BLAS threads for single-process execution with platform-aware safety
-def optimize_blas_for_sequential():
+def optimize_blas_for_sequential(num_threads: int = None):
     """Set optimal BLAS thread count for sequential processing with macOS safety"""
-    cpu_count = psutil.cpu_count()
-    import platform
     
-    # Platform-aware resource allocation to prevent system crashes
-    if platform.system() == "Darwin":  # macOS
-        # VERY CONSERVATIVE for macOS to prevent system crashes
-        # Leave plenty of headroom for system processes and other applications
-        max_safe_threads = max(2, min(4, cpu_count // 2))  # Use at most 50% of cores, cap at 4
-        optimal_threads = max_safe_threads
-        print(f"macOS detected: Using conservative BLAS threads ({optimal_threads}/{cpu_count} cores) to prevent system crashes")
+    if num_threads and num_threads > 0:
+        optimal_threads = num_threads
+        print(f"Using user-defined BLAS threads: {optimal_threads}")
+    else:
+        cpu_count = psutil.cpu_count()
+        import platform
         
-        # Additional macOS safety: Check available memory
-        memory = psutil.virtual_memory()
-        available_gb = memory.available / (1024**3)
-        if available_gb < 4.0:  # Less than 4GB available
-            optimal_threads = min(optimal_threads, 2)  # Further reduce to 2 threads
-            print(f"Low memory detected ({available_gb:.1f}GB available): Reducing to {optimal_threads} BLAS threads")
+        # Platform-aware resource allocation to prevent system crashes
+        if platform.system() == "Darwin":  # macOS
+            # VERY CONSERVATIVE for macOS to prevent system crashes
+            # Leave plenty of headroom for system processes and other applications
+            max_safe_threads = max(2, min(4, cpu_count // 2))  # Use at most 50% of cores, cap at 4
+            optimal_threads = max_safe_threads
+            print(f"macOS detected: Using conservative BLAS threads ({optimal_threads}/{cpu_count} cores) to prevent system crashes")
             
-    elif platform.system() == "Linux":  # Linux
-        # More aggressive for Linux servers, but still reasonable
-        optimal_threads = max(4, min(cpu_count - 2, int(cpu_count * 0.75)))  # 75% max
-        print(f"Linux detected: Using production BLAS threads ({optimal_threads}/{cpu_count} cores)")
-        
-    else:  # Other platforms
-        optimal_threads = max(2, min(4, cpu_count // 2))  # Conservative default
-        print(f"Unknown platform: Using conservative BLAS threads ({optimal_threads}/{cpu_count} cores)")
+            # Additional macOS safety: Check available memory
+            memory = psutil.virtual_memory()
+            available_gb = memory.available / (1024**3)
+            if available_gb < 4.0:  # Less than 4GB available
+                optimal_threads = min(optimal_threads, 2)  # Further reduce to 2 threads
+                print(f"Low memory detected ({available_gb:.1f}GB available): Reducing to {optimal_threads} BLAS threads")
+            
+        elif platform.system() == "Linux":  # Linux
+            # More aggressive for Linux servers, but still reasonable
+            optimal_threads = max(4, min(cpu_count - 2, int(cpu_count * 0.75)))  # 75% max
+            print(f"Linux detected: Using production BLAS threads ({optimal_threads}/{cpu_count} cores)")
+            
+        else:  # Other platforms
+            optimal_threads = max(2, min(4, cpu_count // 2))  # Conservative default
+            print(f"Unknown platform: Using conservative BLAS threads ({optimal_threads}/{cpu_count} cores)")
     
     # Set all BLAS library thread counts
     os.environ["OMP_NUM_THREADS"] = str(optimal_threads)
@@ -75,7 +88,7 @@ def optimize_blas_for_sequential():
     return optimal_threads
 
 # Call optimization before importing heavy numerical libraries
-optimize_blas_for_sequential()
+optimize_blas_for_sequential(num_threads=_thread_args.num_threads)
 
 # Now import numerical libraries with optimized settings
 from common.signal_utils import read_snp
@@ -817,8 +830,8 @@ def main():
     print("EyeDiagramNet - Optimized Sequential Data Collector")
     print("=" * 60)
     
-    # Parse arguments
-    args = build_argparser().parse_args()
+    # Parse arguments, excluding the --num-threads argument which has already been processed.
+    args = build_argparser().parse_args(_remaining_argv)
     
     # Load configuration
     try:

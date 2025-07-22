@@ -22,17 +22,36 @@ endif
 
 echo "Internal launcher will process $#patterns patterns: $patterns"
 
+# --- Core Management for Parallel Execution ---
+set total_cores = `nproc`
+# Determine number of parallel jobs to run (up to 7, one per pattern)
+set num_parallel_jobs = $#patterns
+if ( $num_parallel_jobs > 7 ) then
+    set num_parallel_jobs = 7
+endif
+
+# Calculate threads per job, ensuring at least 2 for performance
+@ threads_per_job = $total_cores / $num_parallel_jobs
+if ( $threads_per_job < 2 ) then
+    set threads_per_job = 2
+endif
+
+echo "System has $total_cores cores. Distributing among $num_parallel_jobs parallel jobs."
+echo "Each collector will be assigned $threads_per_job threads."
+# --- End Core Management ---
+
+
 # Ensure log directory exists
 mkdir -p logs/parallel
 
 # Launch each collector in the background
 foreach pattern ( $patterns )
     set log_file = "logs/parallel/pattern_${pattern}_`date +%Y%m%d_%H%M%S`.log"
-    echo "Launching collector for $pattern -> $log_file"
-    # Run collector with unbuffered output (-u) and stream to both stdout and log via tee
+    echo "Launching collector for $pattern -> $log_file with $threads_per_job threads"
     ( python -u -m simulation.collection.sequential_collector \
         --config "$CONFIG_FILE" \
-        --trace_pattern "$pattern" |& tee "$log_file" ) &
+        --trace_pattern "$pattern" \
+        --num-threads "$threads_per_job" |& tee "$log_file" ) &
     # Optional small delay to avoid starting all at once
     sleep 2
 end
