@@ -143,7 +143,7 @@ class SampleResult:
         Convert boundary conditions to structured array format for StructuredGatedBoundaryProcessor.
         
         Expected order: [electrical(6), signal(3), ctle(4)]
-        - Electrical: R_tx, R_rx, C_tx, C_rx, L_tx, L_rx
+        - Electrical: R_drv, R_odt, C_drv, C_odt, L_drv, L_odt
         - Signal: pulse_amplitude, bits_per_sec, vmask  
         - CTLE: AC_gain, DC_gain, fp1, fp2
         
@@ -151,7 +151,7 @@ class SampleResult:
             numpy array of shape (13,) with structured boundary conditions
         """
         # Define expected parameter order
-        electrical_params = ['R_tx', 'R_rx', 'C_tx', 'C_rx', 'L_tx', 'L_rx']
+        electrical_params = ['R_drv', 'R_odt', 'C_drv', 'C_odt', 'L_drv', 'L_odt']
         signal_params = ['pulse_amplitude', 'bits_per_sec', 'vmask']
         ctle_params = ['AC_gain', 'DC_gain', 'fp1', 'fp2']
         
@@ -255,54 +255,136 @@ class CombinedParameterSet(ParameterSet):
 
         return SampleResult(**combined)
 
+class DiscreteParameterSet(ParameterSet):
+    def __init__(self, cases):
+        """
+        cases: list of dicts, each dict is a full parameter set
+        """
+        self.cases = cases
+
+    def sample(self):
+        selected = random.choice(self.cases)
+        return SampleResult(**selected)
+
 # Signal Protocol Parameters
 DDR_PARAMS = ParameterSet(
-    R_tx=LinearParameter(low=20, high=50, step=10),
-    R_rx=LinearParameter(low=40, high=120, step=10, additional_values=[1e9]),
-    C_tx=LinearParameter(low=0.1, high=1., step=0.1, scaler=1e-12),
-    C_rx=LinearParameter(low=0.1, high=1., step=0.1, scaler=1e-12),
-    L_tx=LinearParameter(low=0., high=2., step=0.2, scaler=1e-9),
-    L_rx=LinearParameter(low=0., high=2., step=0.2, scaler=1e-9),
+    R_drv=LinearParameter(low=20, high=50, step=10),
+    R_odt=LinearParameter(low=40, high=120, step=10, additional_values=[1e9]),
+    C_drv=LinearParameter(low=0.1, high=1., step=0.1, scaler=1e-12),
+    C_odt=LinearParameter(low=0.1, high=1., step=0.1, scaler=1e-12),
+    L_drv=LinearParameter(low=0., high=2., step=0.2, scaler=1e-9),
+    L_odt=LinearParameter(low=0., high=2., step=0.2, scaler=1e-9),
     pulse_amplitude=LinearParameter(low=0.4, high=0.6, step=0.1),
     bits_per_sec=LinearParameter(low=6.4, high=9.6, numbers=5, scaler=1e9),
     vmask=LinearParameter(low=0.04, high=0.05, step=0.01)
 )
 
 HBM2_PARAMS = ParameterSet(
-    R_tx=LinearParameter(low=8, high=20, step=5),
-    R_rx=DiscreteParameter(values=[1e9]),
-    C_tx=LinearParameter(low=0.1, high=0.5, step=0.1, scaler=1e-12),
-    C_rx=LinearParameter(low=0.1, high=0.5, step=0.1, scaler=1e-12),
-    L_tx=LinearParameter(low=0., high=2., step=0.2, scaler=1e-9),
-    L_rx=LinearParameter(low=0., high=2., step=0.2, scaler=1e-9),
+    R_drv=LinearParameter(low=8, high=20, step=5),
+    R_odt=DiscreteParameter(values=[1e9]),
+    C_drv=LinearParameter(low=0.1, high=0.5, step=0.1, scaler=1e-12),
+    C_odt=LinearParameter(low=0.1, high=0.5, step=0.1, scaler=1e-12),
+    L_drv=LinearParameter(low=0., high=2., step=0.2, scaler=1e-9),
+    L_odt=LinearParameter(low=0., high=2., step=0.2, scaler=1e-9),
     pulse_amplitude=LinearParameter(low=0.35, high=0.45, step=0.1),
     bits_per_sec=LinearParameter(low=10, high=12.8, numbers=8, scaler=1e9),
     vmask=DiscreteParameter(values=[0.05])
 )
 
 UCIE_PARAMS = ParameterSet(
-    R_tx=LinearParameter(low=20, high=40, step=5),
-    R_rx=DiscreteParameter(values=[1e9]),
-    C_tx=LinearParameter(low=0.1, high=0.5, step=0.1, scaler=1e-12),
-    C_rx=LinearParameter(low=0.1, high=0.5, step=0.1, scaler=1e-12),
-    L_tx=LinearParameter(low=0., high=2., step=0.2, scaler=1e-9),
-    L_rx=LinearParameter(low=0., high=2., step=0.2, scaler=1e-9),
+    R_drv=LinearParameter(low=20, high=40, step=5),
+    R_odt=DiscreteParameter(values=[1e9]),
+    C_drv=LinearParameter(low=0.1, high=0.5, step=0.1, scaler=1e-12),
+    C_odt=LinearParameter(low=0.1, high=0.5, step=0.1, scaler=1e-12),
+    L_drv=LinearParameter(low=0., high=2., step=0.2, scaler=1e-9),
+    L_odt=LinearParameter(low=0., high=2., step=0.2, scaler=1e-9),
     pulse_amplitude=LinearParameter(low=0.3, high=0.8, step=0.1),
     bits_per_sec=LinearParameter(low=10, high=12.8, numbers=8, scaler=1e9),
     vmask=DiscreteParameter(values=[0.05])
 )
 
 MIX_PARAMS = ParameterSet(
-    R_tx=LinearParameter(low=5, high=40, step=5),
-    R_rx=DiscreteParameter(values=[1e9]),
-    C_tx=LinearParameter(low=0.1, high=0.5, step=0.1, scaler=1e-12),
-    C_rx=LinearParameter(low=0.1, high=0.5, step=0.1, scaler=1e-12),
-    L_tx=LinearParameter(low=0., high=2., step=0.2, scaler=1e-9),
-    L_rx=LinearParameter(low=0., high=2., step=0.2, scaler=1e-9),
+    R_drv=LinearParameter(low=5, high=40, step=5),
+    R_odt=DiscreteParameter(values=[1e9]),
+    C_drv=LinearParameter(low=0.1, high=0.5, step=0.1, scaler=1e-12),
+    C_odt=LinearParameter(low=0.1, high=0.5, step=0.1, scaler=1e-12),
+    L_drv=LinearParameter(low=0., high=2., step=0.2, scaler=1e-9),
+    L_odt=LinearParameter(low=0., high=2., step=0.2, scaler=1e-9),
     pulse_amplitude=LinearParameter(low=0.3, high=0.8, step=0.1),
     bits_per_sec=LinearParameter(low=10, high=32, step=2, scaler=1e9),
     vmask=LinearParameter(low=0.02, high=0.05, step=0.01)
 )
+
+DER_PARAMS = DiscreteParameterSet(DER_CASES = [
+    {
+        "R_drv": 14.45,
+        "R_odt": 1e5,
+        "C_drv": 2.2e-13,
+        "C_odt": 4e-13,
+        "bits_per_sec": 12.8e9,
+        "vmask": 0.05,
+        "vh": 0.3772,
+        "vl": 0.0,
+        "tvl": 1.51e-10,
+        "tvh": 1.59e-10,
+        "tr_rising": 2.5e-11,
+        "vp": 0.3772,
+        "tvp": 6e-11,
+        "tf_rising": 1.5e-11,
+        "tf_falling": 1.2e-11
+    },
+    {
+        "R_drv": 14.45,
+        "R_odt": 1e5,
+        "C_drv": 2.2e-13,
+        "C_odt": 4e-13,
+        "bits_per_sec": 12.8e9,
+        "vmask": 0.05,
+        "vh": 0.3243,
+        "vl": 0.0,
+        "tvl": 1.52e-10,
+        "tvh": 1.55e-10,
+        "tr_rising": 2.5e-11,
+        "vp": 0.3772,
+        "tvp": 7e-11,
+        "tf_rising": 1.5e-11,
+        "tf_falling": 1.3e-11
+    },
+    {
+        "R_drv": 10.47,
+        "R_odt": 1e5,
+        "C_drv": 2.2e-13,
+        "C_odt": 4e-13,
+        "bits_per_sec": 12.8e9,
+        "vmask": 0.05,
+        "vh": 0.3772,
+        "vl": 0.0,
+        "tvl": 1.52e-10,
+        "tvh": 1.58e-10,
+        "tr_rising": 2.5e-11,
+        "vp": 0.3772,
+        "tvp": 7e-11,
+        "tf_rising": 1.5e-11,
+        "tf_falling": 1.3e-11
+    },
+    {
+        "R_drv": 10.47,
+        "R_odt": 1e5,
+        "C_drv": 2.2e-13,
+        "C_odt": 4e-13,
+        "bits_per_sec": 12.8e9,
+        "vmask": 0.05,
+        "vh": 0.3243,
+        "vl": 0.0,
+        "tvl": 1.52e-10,
+        "tvh": 1.55e-10,
+        "tr_rising": 2.5e-11,
+        "vp": 0.3772,
+        "tvp": 7e-11,
+        "tf_rising": 1.5e-11,
+        "tf_falling": 1.3e-11
+    }
+])
 
 # CTLE Parameters
 CTLE_PARAMS = RandomToggledParameterSet(
@@ -323,5 +405,6 @@ PARAM_SETS_MAP = {
     'HBM2_PARAMS': HBM2_PARAMS, 
     'UCIE_PARAMS': UCIE_PARAMS,
     'MIX_PARAMS': MIX_PARAMS,
-    'CTLE_PARAMS': CTLE_PARAMS
+    'CTLE_PARAMS': CTLE_PARAMS,
+    'DER_PARAMS': DER_PARAMS
 }

@@ -16,7 +16,7 @@ def modify_params_for_inductance(param_set, enable_inductance):
     if enable_inductance:
         return param_set
     
-    # Create a copy of the parameter set with L_tx and L_rx set to zero
+    # Create a copy of the parameter set with L_drv and L_odt set to zero
     from simulation.parameters.bound_param import ParameterSet, DiscreteParameter
     
     # Handle different parameter set types
@@ -29,16 +29,16 @@ def modify_params_for_inductance(param_set, enable_inductance):
         toggling_params = param_set.toggling_set._params.copy()
         
         # Modify static params
-        if 'L_tx' in static_params:
-            static_params['L_tx'] = DiscreteParameter(values=[0.0])
-        if 'L_rx' in static_params:
-            static_params['L_rx'] = DiscreteParameter(values=[0.0])
+        if 'L_drv' in static_params:
+            static_params['L_drv'] = DiscreteParameter(values=[0.0])
+        if 'L_odt' in static_params:
+            static_params['L_odt'] = DiscreteParameter(values=[0.0])
             
         # Modify toggling params  
-        if 'L_tx' in toggling_params:
-            toggling_params['L_tx'] = DiscreteParameter(values=[0.0])
-        if 'L_rx' in toggling_params:
-            toggling_params['L_rx'] = DiscreteParameter(values=[0.0])
+        if 'L_drv' in toggling_params:
+            toggling_params['L_drv'] = DiscreteParameter(values=[0.0])
+        if 'L_odt' in toggling_params:
+            toggling_params['L_odt'] = DiscreteParameter(values=[0.0])
         
         # Recreate the parameter sets
         from simulation.parameters.bound_param import RandomToggledParameterSet, CombinedParameterSet
@@ -56,9 +56,9 @@ def modify_params_for_inductance(param_set, enable_inductance):
             print(f"Warning: Cannot modify inductance for parameter set type: {type(param_set)}")
             return param_set
     
-    if 'L_tx' in new_params:
-        new_params['L_tx'] = DiscreteParameter(values=[0.0])
-    if 'L_rx' in new_params:
-        new_params['L_rx'] = DiscreteParameter(values=[0.0])
+    if 'L_drv' in new_params:
+        new_params['L_drv'] = DiscreteParameter(values=[0.0])
+    if 'L_odt' in new_params:
+        new_params['L_odt'] = DiscreteParameter(values=[0.0])
     
     return ParameterSet(**new_params) 

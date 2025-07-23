@@ -111,7 +111,7 @@ def generate_vertical_snp_pairs(vertical_dirs, n_pairs, trace_snps=None, base_ou
         trace_pattern_key: Trace pattern key (needed for auto-generated thru SNPs)
         
     Returns:
-        List of (tx_snp, rx_snp) tuples
+        List of (drv_snp, odt_snp) tuples
     """
     if vertical_dirs is None:
         if trace_snps is None or len(trace_snps) == 0:

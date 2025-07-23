@@ -82,9 +82,9 @@ class TraceSeqEWDataloader(LightningDataModule):
                 # Handle SNP vertical data based on ignore_snp flag
                 if self.ignore_snp:
                     # Use dummy SNP data when ignoring SNPs
-                    snp_vert = (("dummy_tx.snp", "dummy_rx.snp"),)
+                    snp_vert = (("dummy_drv.snp", "dummy_odt.snp"),)
                 else:
-                    snp_vert = tuple(zip(loaded["snp_txs"], loaded["snp_rxs"]))
+                    snp_vert = tuple(zip(loaded["snp_drvs"], loaded["snp_odts"]))
 
                 # The key must match the case_id from the CSV file
                 try:
@@ -188,16 +188,16 @@ class InferenceTraceSeqEWDataloader(LightningDataModule):
     def __init__(
         self,
         data_dirs: List[str],
-        tx_snp: str,
-        rx_snp: str,
+        drv_snp: str,
+        odt_snp: str,
         batch_size: int,
         bound_path: str = None,
         scaler_path: str = None,
     ):
         super().__init__()
         self.data_dirs = data_dirs
-        self.tx_snp = tx_snp
-        self.rx_snp = rx_snp
+        self.drv_snp = drv_snp
+        self.odt_snp = odt_snp
         self.batch_size = batch_size
         self.bound_path = bound_path
         self.scaler_path = scaler_path
@@ -211,10 +211,10 @@ class InferenceTraceSeqEWDataloader(LightningDataModule):
         scalers = torch.load(self.scaler_path)
         rank_zero_info(f"Loaded scaler object from {self.scaler_path}")
 
-        tx = read_snp(Path(self.tx_snp))
-        rx = read_snp(Path(self.rx_snp))
+        tx = read_snp(Path(self.drv_snp))
+        rx = read_snp(Path(self.odt_snp))
         assert tx.s.shape[-1] == rx.s.shape[-1], \
-            f"TX {self.tx_snp} and RX {self.rx_snp} must match ports."
+            f"TX {self.drv_snp} and RX {self.odt_snp} must match ports."
 
         # Load boundary JSON
         with open(self.bound_path, 'r') as f:

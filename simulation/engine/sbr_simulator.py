@@ -78,8 +78,8 @@ def get_line_sbr_optimized(ntwk, params):
     n_port = ntwk.number_of_ports
     n_line = n_port // 2
 
-    R_tx = ntwk.z0[0, 0].real
-    R_rx = ntwk.z0[0, n_line].real
+    R_drv = ntwk.z0[0, 0].real
+    R_odt = ntwk.z0[0, n_line].real
 
     # Create frequency axis directly from time axis
     time_axis = params.time_axis_sbr
@@ -97,7 +97,7 @@ def get_line_sbr_optimized(ntwk, params):
 
     # single bit pulse in frequency domain
     pulse_f_volt_at_source = params.pulse.freq_dom(f_ax_sp_new_array)
-    pulse_f_wave_at_port = pulse_f_volt_at_source / (2 * np.sqrt(R_tx))
+    pulse_f_wave_at_port = pulse_f_volt_at_source / (2 * np.sqrt(R_drv))
 
     # --- OPTIMIZED: Fully vectorized S-parameter interpolation ---
     new_freq_array = f_ax_sp_new_array
@@ -126,7 +126,7 @@ def get_line_sbr_optimized(ntwk, params):
     
     # Vectorized operation to obtain SBR in frequency domain
     pulse_f_wave_at_port_bcast = pulse_f_wave_at_port[:, np.newaxis, np.newaxis]
-    sbr_f_dom = pulse_f_wave_at_port_bcast * s_param_interp * np.sqrt(R_rx)
+    sbr_f_dom = pulse_f_wave_at_port_bcast * s_param_interp * np.sqrt(R_odt)
 
     # --- OPTIMIZED: Vectorized inverse continuous FT ---
     M = sbr_f_dom.shape[0]
@@ -333,10 +333,10 @@ class TransientParams:
     """Configuration parameters for transient analysis.
     
     Attributes:
-        R_tx (float): Port impedance of input ports after renormalization
-        R_rx (float): Port impedance of output ports after renormalization
-        C_tx (float): Capacitance to add to each input port
-        C_rx (float): Capacitance to add to each output port
+        R_drv (float): Port impedance of input ports after renormalization
+        R_odt (float): Port impedance of output ports after renormalization
+        C_drv (float): Capacitance to add to each input port
+        C_odt (float): Capacitance to add to each output port
         pulse_amplitude (float): Maximum pulse voltage
         bits_per_sec (float): Bit rate in bits per second
         vmask (float): Eye mask voltage margin
@@ -352,18 +352,18 @@ class TransientParams:
         t_rise_p_divided_by_UI_dur (float): Rise time in UI durations
         t_start_p_divided_by_UI_dur (float): Start time in UI durations
     """
-    R_tx: float
-    R_rx: float
-    C_tx: float
-    C_rx: float
+    R_drv: float
+    R_odt: float
+    C_drv: float
+    C_odt: float
     pulse_amplitude: float
     bits_per_sec: float
     vmask: float
     snp_horiz: str
-    L_tx: float = 0
-    L_rx: float = 0
-    snp_tx: Optional[str] = None
-    snp_rx: Optional[str] = None
+    L_drv: float = 0
+    L_odt: float = 0
+    snp_drv: Optional[str] = None
+    snp_odt: Optional[str] = None
     directions: Optional[list] = None
     DC_gain: Optional[float] = None
     AC_gain: Optional[float] = None
@@ -391,7 +391,7 @@ class TransientParams:
         self.t_step_intrp = self.UI_dur / self.n_perUI_intrp
 
         # Calculate default reference voltage
-        self.vref_dfl = 0.005 * round((self.pulse_amplitude * (self.R_rx / (self.R_tx + self.R_rx)) / 2) / 0.005)
+        self.vref_dfl = 0.005 * round((self.pulse_amplitude * (self.R_odt / (self.R_drv + self.R_odt)) / 2) / 0.005)
         
         # Calculate time axis parameters
         self.t_num = self.t_stop_divided_by_UI_dur * self.UI_dur_divided_by_t_step + 1
@@ -454,8 +454,8 @@ class EyeWidthSimulator:
         if snp_files is not None:
             if isinstance(snp_files, (tuple, list)) and len(snp_files) >= 3:
                 config_dict['snp_horiz'] = snp_files[0]
-                config_dict['snp_tx'] = snp_files[1]
-                config_dict['snp_rx'] = snp_files[2]
+                config_dict['snp_drv'] = snp_files[1]
+                config_dict['snp_odt'] = snp_files[2]
             elif isinstance(snp_files, str):
                 config_dict['snp_horiz'] = snp_files
         
@@ -518,13 +518,13 @@ class EyeWidthSimulator:
     # NETWORK COMPONENT METHODS (moved from standalone functions)
     # ===============================================
 
-    def add_capacitance(self, ntwk: rf.Network, C_tx: float, C_rx: float) -> rf.Network:
+    def add_capacitance(self, ntwk: rf.Network, C_drv: float, C_odt: float) -> rf.Network:
         """Add shunt capacitors to network ports.
         
         Args:
             ntwk: Network to modify
-            C_tx: Capacitance for input ports
-            C_rx: Capacitance for output ports
+            C_drv: Capacitance for input ports
+            C_odt: Capacitance for output ports
             
         Returns:
             Network with added capacitance
@@ -539,12 +539,12 @@ class EyeWidthSimulator:
 
         # Calculate capacitor admittance
         omega = 2 * np.pi * freq.f
-        y_tx = 1j * omega * C_tx
-        y_rx = 1j * omega * C_rx
+        y_drv = 1j * omega * C_drv
+        y_odt = 1j * omega * C_odt
 
         # Create arrays for computation
-        y_tx = y_tx[:, np.newaxis, np.newaxis]
-        y_rx = y_rx[:, np.newaxis, np.newaxis]
+        y_drv = y_drv[:, np.newaxis, np.newaxis]
+        y_odt = y_odt[:, np.newaxis, np.newaxis]
         eye_array = np.tile(np.eye(n_port, dtype=np.complex128), (len(freq.f), 1, 1))
         
         # Create masks for input and output ports
@@ -552,7 +552,7 @@ class EyeWidthSimulator:
         bottom_right_mask = np.flip(np.tril(np.ones((n_port, n_port)), k=0), axis=1)[np.newaxis, :, :]
         
         # Combine masks with admittances
-        cap_list = eye_array * (top_left_mask * y_tx + bottom_right_mask * y_rx)
+        cap_list = eye_array * (top_left_mask * y_drv + bottom_right_mask * y_odt)
 
         # Convert and add capacitance
         y_array = s2y(ntwk.s, ntwk.z0)
@@ -562,7 +562,7 @@ class EyeWidthSimulator:
         # Create new network
         return rf.Network(frequency=freq, s=s_new, z0=ntwk.z0)
 
-    def add_inductance(self, ntwk: rf.Network, L_tx: float, L_rx: float) -> rf.Network:
+    def add_inductance(self, ntwk: rf.Network, L_drv: float, L_odt: float) -> rf.Network:
         """Add series inductors to network ports based on transmission direction.
         
         This method uses a vectorized approach to add inductance to the correct
@@ -571,8 +571,8 @@ class EyeWidthSimulator:
 
         Args:
             ntwk (rf.Network): Network to modify.
-            L_tx (float): Inductance for the transmit-side port of a line.
-            L_rx (float): Inductance for the receive-side port of a line.
+            L_drv (float): Inductance for the transmit-side port of a line.
+            L_odt (float): Inductance for the receive-side port of a line.
             
         Returns:
             rf.Network: Network with added inductance, respecting port directions.
@@ -586,8 +586,8 @@ class EyeWidthSimulator:
 
         # Calculate inductive impedance, shaped for broadcasting.
         omega = 2 * np.pi * freq.f
-        zL_tx = (1j * omega * L_tx)[:, np.newaxis]
-        zL_rx = (1j * omega * L_rx)[:, np.newaxis]
+        zL_drv = (1j * omega * L_drv)[:, np.newaxis]
+        zL_odt = (1j * omega * L_odt)[:, np.newaxis]
 
         # Convert network to impedance parameters for modification.
         z_array = s2z(ntwk.s, ntwk.z0)
@@ -603,12 +603,12 @@ class EyeWidthSimulator:
 
         # 3. Apply inductance to diagonal impedance elements using the masks.
         # For forward lines, p1 is TX and p2 is RX.
-        z_array[:, p1_indices[dir_is_forward], p1_indices[dir_is_forward]] += zL_tx
-        z_array[:, p2_indices[dir_is_forward], p2_indices[dir_is_forward]] += zL_rx
+        z_array[:, p1_indices[dir_is_forward], p1_indices[dir_is_forward]] += zL_drv
+        z_array[:, p2_indices[dir_is_forward], p2_indices[dir_is_forward]] += zL_odt
 
         # For flipped lines, p1 is RX and p2 is TX.
-        z_array[:, p1_indices[dir_is_flipped], p1_indices[dir_is_flipped]] += zL_rx
-        z_array[:, p2_indices[dir_is_flipped], p2_indices[dir_is_flipped]] += zL_tx
+        z_array[:, p1_indices[dir_is_flipped], p1_indices[dir_is_flipped]] += zL_odt
+        z_array[:, p2_indices[dir_is_flipped], p2_indices[dir_is_flipped]] += zL_drv
         
         # Convert back to S-parameters.
         s_new = z2s(z_array, ntwk.z0)
@@ -725,12 +725,12 @@ class EyeWidthSimulator:
         new_network = rf.Network(frequency=network.frequency, s=s_new, z0=z_new)
         return new_network
 
-    def renorm(self, ntwk, R_tx, R_rx):
+    def renorm(self, ntwk, R_drv, R_odt):
         """Renormalize network for TX and RX impedances."""
         n_port = ntwk.number_of_ports
         if n_port % 2 != 0:
             raise RuntimeError('Network should be 2n-port.')
-        z = np.array([R_tx] * (n_port//2) + [R_rx] * (n_port//2))
+        z = np.array([R_drv] * (n_port//2) + [R_odt] * (n_port//2))
         ntwk = self.renormalize_network(ntwk, z)
         return ntwk
 
@@ -743,8 +743,8 @@ class EyeWidthSimulator:
         n_port = ntwk.number_of_ports
         n_line = n_port // 2
 
-        R_tx = ntwk.z0[0, 0].real
-        R_rx = ntwk.z0[0, n_line].real
+        R_drv = ntwk.z0[0, 0].real
+        R_odt = ntwk.z0[0, n_line].real
 
         # Create frequency axis directly from time axis
         time_axis = self.params.time_axis_sbr
@@ -760,7 +760,7 @@ class EyeWidthSimulator:
 
         # single bit pulse in frequency domain
         pulse_f_volt_at_source = self.params.pulse.freq_dom(f_ax_sp_new.array)
-        pulse_f_wave_at_port = pulse_f_volt_at_source / (2 * np.sqrt(R_tx))
+        pulse_f_wave_at_port = pulse_f_volt_at_source / (2 * np.sqrt(R_drv))
 
         # --- Fully vectorized S-parameter interpolation ---
         new_freq_array = f_ax_sp_new.array
@@ -779,7 +779,7 @@ class EyeWidthSimulator:
         
         # Vectorized operation to obtain SBR in frequency domain
         pulse_f_wave_at_port_bcast = pulse_f_wave_at_port[:, np.newaxis, np.newaxis]
-        sbr_f_dom = pulse_f_wave_at_port_bcast * s_param_interp * np.sqrt(R_rx)
+        sbr_f_dom = pulse_f_wave_at_port_bcast * s_param_interp * np.sqrt(R_odt)
 
         # --- Vectorized inverse continuous FT ---
         M = sbr_f_dom.shape[0]
@@ -807,9 +807,9 @@ class EyeWidthSimulator:
         ntwk.z0 = self.params.snp_path_z0
 
         # add shunt C
-        ntwk = self.add_capacitance(ntwk, self.params.C_tx, self.params.C_rx)
+        ntwk = self.add_capacitance(ntwk, self.params.C_drv, self.params.C_odt)
         # renormalize
-        ntwk = self.renorm(ntwk, self.params.R_tx, self.params.R_rx)
+        ntwk = self.renorm(ntwk, self.params.R_drv, self.params.R_odt)
         
         # add CTLE if parameters are valid
         if (self.params.DC_gain is not None and not np.isnan(self.params.DC_gain) and
@@ -1144,7 +1144,7 @@ class EyeWidthSimulator:
         ntwk.z0 = self.params.snp_path_z0
 
         # add shunt C
-        ntwk = self.add_capacitance(ntwk, self.params.C_tx, self.params.C_rx)
+        ntwk = self.add_capacitance(ntwk, self.params.C_drv, self.params.C_odt)
 
         # add CTLE if parameters are valid
         if (self.params.DC_gain is not None and not np.isnan(self.params.DC_gain) and
@@ -1154,7 +1154,7 @@ class EyeWidthSimulator:
             ntwk = self.add_ctle(ntwk, self.params.DC_gain, self.params.AC_gain, self.params.fp1, self.params.fp2)
 
         # renormalize
-        ntwk = self.renorm(ntwk, self.params.R_tx, self.params.R_rx)
+        ntwk = self.renorm(ntwk, self.params.R_drv, self.params.R_odt)
 
         # get single bit response of each line (optimized)
         line_sbrs = self.get_line_sbr_optimized(ntwk)
@@ -1211,21 +1211,21 @@ class EyeWidthSimulator:
             # Load networks, ensuring they are proper rf.Network objects
             ntwk_horiz = ensure_rf_network(self.params.snp_horiz)
             
-            if self.params.snp_tx and self.params.snp_rx:
-                ntwk_tx = ensure_rf_network(self.params.snp_tx)
-                ntwk_rx = ensure_rf_network(self.params.snp_rx)
+            if self.params.snp_drv and self.params.snp_odt:
+                ntwk_drv = ensure_rf_network(self.params.snp_drv)
+                ntwk_odt = ensure_rf_network(self.params.snp_odt)
                 
                 # Apply inductance before cascading
-                ntwk_horiz = self.add_inductance(ntwk_horiz, self.params.L_tx, self.params.L_rx)
+                ntwk_horiz = self.add_inductance(ntwk_horiz, self.params.L_drv, self.params.L_odt)
                 
                 # Flip RX network for cascading
-                ntwk_rx.flip()
+                ntwk_odt.flip()
                 
                 # Cascade the networks
-                ntwk = ntwk_tx ** ntwk_horiz ** ntwk_rx
+                ntwk = ntwk_drv ** ntwk_horiz ** ntwk_odt
             else:
                 # Apply inductance directly if no vertical networks
-                ntwk = self.add_inductance(ntwk_horiz, self.params.L_tx, self.params.L_rx)
+                ntwk = self.add_inductance(ntwk_horiz, self.params.L_drv, self.params.L_odt)
                 
             return ntwk
             
@@ -1234,10 +1234,10 @@ class EyeWidthSimulator:
             print(f"[ERROR] {error_msg}")
             # Print more details for debugging
             print(f"[ERROR] snp_horiz type: {type(self.params.snp_horiz)}")
-            if self.params.snp_tx:
-                print(f"[ERROR] snp_tx type: {type(self.params.snp_tx)}")
-            if self.params.snp_rx:
-                print(f"[ERROR] snp_rx type: {type(self.params.snp_rx)}")
+            if self.params.snp_drv:
+                print(f"[ERROR] snp_drv type: {type(self.params.snp_drv)}")
+            if self.params.snp_odt:
+                print(f"[ERROR] snp_odt type: {type(self.params.snp_odt)}")
             raise RuntimeError(error_msg) from e
 
 # ===============================================
@@ -1271,9 +1271,9 @@ def snp_eyewidth_simulation(config, snp_files=None, directions=None, use_optimiz
         if snp_files:
             if isinstance(snp_files, (tuple, list)) and len(snp_files) >= 3:
                 horiz_name = getattr(snp_files[0], 'name', str(snp_files[0]))
-                tx_name = getattr(snp_files[1], 'name', str(snp_files[1]))
-                rx_name = getattr(snp_files[2], 'name', str(snp_files[2]))
-                error_msg += f" (Files: horiz={horiz_name}, tx={tx_name}, rx={rx_name})"
+                drv_name = getattr(snp_files[1], 'name', str(snp_files[1]))
+                odt_name = getattr(snp_files[2], 'name', str(snp_files[2]))
+                error_msg += f" (Files: horiz={horiz_name}, tx={drv_name}, rx={odt_name})"
             else:
                 error_msg += f" (File: {snp_files})"
         
@@ -1305,13 +1305,13 @@ def main():
         data_dir = "../../test_data"
     
     snp_horiz = os.path.join(data_dir, "tlines4_seed0.s8p")
-    snp_tx = os.path.join(data_dir, "tlines4_seed1.s8p")
-    snp_rx = os.path.join(data_dir, "tlines4_seed2.s8p")
+    snp_drv = os.path.join(data_dir, "tlines4_seed1.s8p")
+    snp_odt = os.path.join(data_dir, "tlines4_seed2.s8p")
     
     config_dict = {
-        "R_tx": 10, "R_rx": 1.0e9, "C_tx": 1e-13, "C_rx": 1e-13, "L_tx": 1e-10, "L_rx": 1e-10,
+        "R_drv": 10, "R_odt": 1.0e9, "C_drv": 1e-13, "C_odt": 1e-13, "L_drv": 1e-10, "L_odt": 1e-10,
         "pulse_amplitude": 0.4, "bits_per_sec": 6.4e9, "vmask": 0.04,
-        "snp_horiz": snp_horiz, "snp_tx": snp_tx, "snp_rx": snp_rx,
+        "snp_horiz": snp_horiz, "snp_drv": snp_drv, "snp_odt": snp_odt,
         "directions": [1] * 1 + [0] * 1 + [1] * 1 + [0] * 1
     }
     

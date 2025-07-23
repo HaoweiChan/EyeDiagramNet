@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import pandas as pd
 
 from simulation.parameters.bound_param import ParameterSet
-from simulation.engine.eye_width_simulator import snp_eyewidth_simulation
+from simulation.engine.sbr_simulator import snp_eyewidth_simulation
 
 class EyeWidthSimulatePipeline:
     def __init__(self, infer_yaml_path, device="cuda", debug=False, proc_per_gpu=1):
@@ -68,7 +68,7 @@ class EyeWidthSimulatePipeline:
 
     def simulate_eye_width(self, snp_file, id_gpu):
         """Simulate eye width for a single SNP file."""
-        snp_horiz, snp_tx, snp_rx = snp_file
+        snp_horiz, snp_drv, snp_odt = snp_file
         snp_key = snp_horiz.stem
         directions = self.directions
 
@@ -93,8 +93,8 @@ class EyeWidthSimulatePipeline:
         return snp_key, {
             'config': config.to_list(),
             'line_ews': line_ew.tolist(),
-            'snp_tx': snp_tx.as_posix(),
-            'snp_rx': snp_rx.as_posix(),
+            'snp_drv': snp_drv.as_posix(),
+            'snp_odt': snp_odt.as_posix(),
             'directions': directions.tolist()
         }
 
@@ -107,9 +107,9 @@ class EyeWidthSimulatePipeline:
         # Load horizontal data
         horiz_dir = self.infer_cfg.data_dirs[0]
         horiz_files = self.parse_snps(Path(horiz_dir))
-        tx_file = Path(self.infer_cfg.tx_snp)
-        rx_file = Path(self.infer_cfg.rx_snp)
-        snp_files = [(horiz_file, tx_file, rx_file) for horiz_file in horiz_files]
+        drv_file = Path(self.infer_cfg.drv_snp)
+        odt_file = Path(self.infer_cfg.odt_snp)
+        snp_files = [(horiz_file, drv_file, odt_file) for horiz_file in horiz_files]
 
         # Run simulation
         num_gpus = max(torch.cuda.device_count(), 1)

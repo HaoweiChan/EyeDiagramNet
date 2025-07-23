@@ -10,13 +10,13 @@ class SNPEmbedding(nn.Module):
         self,
         model_dim,
         freq_length,
-        use_tx_rx_tokens=True
+        use_drv_odt_tokens=True
     ):
         super().__init__()
 
         self.freq_length = freq_length
         self.model_dim = model_dim
-        self.use_tx_rx_tokens = use_tx_rx_tokens
+        self.use_drv_odt_tokens = use_drv_odt_tokens
 
         # Optimized: Use single projection instead of separate real/imag
         self.snp_proj = nn.Linear(freq_length * 2, freq_length)
@@ -34,7 +34,7 @@ class SNPEmbedding(nn.Module):
         """Optimized power transformation using fused operations"""
         return x.sign() * torch.pow(x.abs(), self._power_inv)
 
-    def forward(self, snp_vert, tx_token=None, rx_token=None):
+    def forward(self, snp_vert, drv_token=None, odt_token=None):
         """Encoder of snp for encoding vertical frequency responses"""
         # For self-supervised learning, we may have shape (B, F, P1, P2) without tx/rx dimension
         if snp_vert.dim() == 4:
@@ -46,7 +46,7 @@ class SNPEmbedding(nn.Module):
             b, d, f, p1, p2 = snp_vert.size()
             
             # Input validation moved to top for early exit
-            if self.use_tx_rx_tokens and d != 2:
+            if self.use_drv_odt_tokens and d != 2:
                 raise ValueError("Invalid input shape: snp_vert must have 2 snp tensors (tx and rx) in dimension 1.")
         
         if p1 != p2:
@@ -75,11 +75,11 @@ class SNPEmbedding(nn.Module):
         hidden_states_snp = rearrange(hidden_states_snp, "(b d p) e -> b d p e", b=b, d=d, p=half_p)
 
         # Add tx and rx tokens if enabled and provided
-        if self.use_tx_rx_tokens and d == 2:
-            if tx_token is None or rx_token is None:
-                raise ValueError("tx_token and rx_token must be provided when use_tx_rx_tokens is True.")
-            hidden_states_snp[:, 0].add_(tx_token)
-            hidden_states_snp[:, 1].add_(rx_token)
+        if self.use_drv_odt_tokens and d == 2:
+            if drv_token is None or odt_token is None:
+                raise ValueError("drv_token and odt_token must be provided when use_drv_odt_tokens is True.")
+            hidden_states_snp[:, 0].add_(drv_token)
+            hidden_states_snp[:, 1].add_(odt_token)
 
         return hidden_states_snp
 
@@ -92,7 +92,7 @@ class OptimizedSNPEmbedding(nn.Module):
         freq_length,
         use_checkpointing=False,
         use_mixed_precision=True,
-        use_tx_rx_tokens=True
+        use_drv_odt_tokens=True
     ):
         super().__init__()
 
@@ -100,7 +100,7 @@ class OptimizedSNPEmbedding(nn.Module):
         self.model_dim = model_dim
         self.use_checkpointing = use_checkpointing
         self.use_mixed_precision = use_mixed_precision
-        self.use_tx_rx_tokens = use_tx_rx_tokens
+        self.use_drv_odt_tokens = use_drv_odt_tokens
 
         # Optimized projection with proper initialization
         self.snp_proj = nn.Linear(freq_length * 2, freq_length)
@@ -138,7 +138,7 @@ class OptimizedSNPEmbedding(nn.Module):
         
         return snp_chunk
 
-    def forward(self, snp_vert, tx_token=None, rx_token=None):
+    def forward(self, snp_vert, drv_token=None, odt_token=None):
         """Memory-optimized forward pass with optional gradient checkpointing"""
         # For self-supervised learning, we may have shape (B, F, P1, P2) without tx/rx dimension
         if snp_vert.dim() == 4:
@@ -149,7 +149,7 @@ class OptimizedSNPEmbedding(nn.Module):
         else:
             b, d, f, p1, p2 = snp_vert.size()
             
-            if self.use_tx_rx_tokens and d != 2:
+            if self.use_drv_odt_tokens and d != 2:
                 raise ValueError("Invalid input shape: snp_vert must have 2 snp tensors (tx and rx) in dimension 1.")
         
         if p1 != p2:
@@ -176,12 +176,12 @@ class OptimizedSNPEmbedding(nn.Module):
         hidden_states_snp = rearrange(hidden_states_snp, "(b d p) e -> b d p e", b=b, d=d, p=half_p)
         
         # Add tx and rx tokens if enabled and provided
-        if self.use_tx_rx_tokens and d == 2:
-            if tx_token is None or rx_token is None:
-                raise ValueError("tx_token and rx_token must be provided when use_tx_rx_tokens is True.")
+        if self.use_drv_odt_tokens and d == 2:
+            if drv_token is None or odt_token is None:
+                raise ValueError("drv_token and odt_token must be provided when use_drv_odt_tokens is True.")
             # Use positional arguments for checkpointing compatibility
-            hidden_states_snp[:, 0] = hidden_states_snp[:, 0] + tx_token
-            hidden_states_snp[:, 1] = hidden_states_snp[:, 1] + rx_token
+            hidden_states_snp[:, 0] = hidden_states_snp[:, 0] + drv_token
+            hidden_states_snp[:, 1] = hidden_states_snp[:, 1] + odt_token
         
         return hidden_states_snp
 
@@ -199,7 +199,7 @@ class FasterSNPEmbedding(nn.Module):
         freq_length,
         use_checkpointing=False,
         use_mixed_precision=True,
-        use_tx_rx_tokens=True,
+        use_drv_odt_tokens=True,
         conv_kernel_size=7,
         conv_channels=32,
     ):
@@ -208,7 +208,7 @@ class FasterSNPEmbedding(nn.Module):
         self.model_dim = model_dim
         self.use_checkpointing = use_checkpointing
         self.use_mixed_precision = use_mixed_precision
-        self.use_tx_rx_tokens = use_tx_rx_tokens
+        self.use_drv_odt_tokens = use_drv_odt_tokens
 
         # Efficient 1D convolutional block to replace the large linear projection
         self.snp_conv_proj = nn.Sequential(
@@ -271,14 +271,14 @@ class FasterSNPEmbedding(nn.Module):
         )
         return snp_chunk
 
-    def forward(self, snp_vert, tx_token=None, rx_token=None):
+    def forward(self, snp_vert, drv_token=None, odt_token=None):
         if snp_vert.dim() == 4:
             b, f, p1, p2 = snp_vert.size()
             snp_vert = snp_vert.unsqueeze(1)
             d = 1
         else:
             b, d, f, p1, p2 = snp_vert.size()
-            if self.use_tx_rx_tokens and d != 2:
+            if self.use_drv_odt_tokens and d != 2:
                 raise ValueError(
                     "Input `snp_vert` must have 2 tensors (tx and rx) in dim 1."
                 )
@@ -315,13 +315,13 @@ class FasterSNPEmbedding(nn.Module):
         )
 
         # Add Tx/Rx tokens if enabled
-        if self.use_tx_rx_tokens and d == 2:
-            if tx_token is None or rx_token is None:
+        if self.use_drv_odt_tokens and d == 2:
+            if drv_token is None or odt_token is None:
                 raise ValueError(
-                    "`tx_token` and `rx_token` must be provided when `use_tx_rx_tokens` is True."
+                    "`drv_token` and `odt_token` must be provided when `use_drv_odt_tokens` is True."
                 )
-            hidden_states_snp[:, 0].add_(tx_token)
-            hidden_states_snp[:, 1].add_(rx_token)
+            hidden_states_snp[:, 0].add_(drv_token)
+            hidden_states_snp[:, 1].add_(odt_token)
 
         return hidden_states_snp
 

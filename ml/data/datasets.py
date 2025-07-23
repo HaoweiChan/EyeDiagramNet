@@ -117,10 +117,10 @@ class TraceEWDataset(Dataset):
             vert_snp = self.dummy_snp.clone()
         else:
             # Retrieve the left and right snps
-            tx_vert_file, rx_vert_file = self.vert_snps[seq_index, bnd_index]
-            tx_vert_snp = self.vert_snp(tx_vert_file)
-            rx_vert_snp = self.vert_snp(rx_vert_file)
-            vert_snp = torch.stack((tx_vert_snp, flip_snp(rx_vert_snp)))
+            drv_vert_file, odt_vert_file = self.vert_snps[seq_index, bnd_index]
+            drv_vert_snp = self.vert_snp(drv_vert_file)
+            odt_vert_snp = self.vert_snp(odt_vert_file)
+            vert_snp = torch.stack((drv_vert_snp, flip_snp(odt_vert_snp)))
 
         # Retrieve the boundary and eye width values
         direction = self.directions[seq_index, bnd_index]
@@ -210,8 +210,8 @@ class InferenceTraceEWDataset(Dataset):
         trace_seqs,
         direction,
         boundary,
-        tx_snp,
-        rx_snp
+        drv_snp,
+        odt_snp
     ):
         super().__init__()
 
@@ -219,9 +219,9 @@ class InferenceTraceEWDataset(Dataset):
         self.boundary = torch.from_numpy(boundary).float()
         self.direction = torch.from_numpy(direction).int()
 
-        tx_snp = torch.from_numpy(tx_snp).to(torch.complex64)
-        rx_snp = torch.from_numpy(rx_snp).to(torch.complex64)
-        self.vert_snp = torch.stack((tx_snp, flip_snp(rx_snp)))
+        drv_snp = torch.from_numpy(drv_snp).to(torch.complex64)
+        odt_snp = torch.from_numpy(odt_snp).to(torch.complex64)
+        self.vert_snp = torch.stack((drv_snp, flip_snp(odt_snp)))
         
         # Extract port positions from trace sequences (where type == 0)
         self.port_positions = []

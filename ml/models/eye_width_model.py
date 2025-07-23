@@ -159,9 +159,9 @@ class EyeWidthRegressor(nn.Module):
 
         # SNP encoder (only create if not ignoring SNPs)
         if not self.ignore_snp:
-            self.snp_encoder = OptimizedSNPEmbedding(model_dim=model_dim, freq_length=freq_length, use_tx_rx_tokens=True)
-            self.tx_token = nn.Parameter(torch.randn(1, 1, model_dim) * 0.02)
-            self.rx_token = nn.Parameter(torch.randn(1, 1, model_dim) * 0.02)
+            self.snp_encoder = OptimizedSNPEmbedding(model_dim=model_dim, freq_length=freq_length, use_drv_odt_tokens=True)
+            self.drv_token = nn.Parameter(torch.randn(1, 1, model_dim) * 0.02)
+            self.odt_token = nn.Parameter(torch.randn(1, 1, model_dim) * 0.02)
             
             # Load pretrained SNP encoder if provided
             if pretrained_snp_path is not None:
@@ -175,8 +175,8 @@ class EyeWidthRegressor(nn.Module):
         else:
             # Create dummy parameters to maintain interface compatibility
             self.snp_encoder = None
-            self.tx_token = None
-            self.rx_token = None
+            self.drv_token = None
+            self.odt_token = None
         
         # Positional encoding (only used if not using RoPE)
         if not use_rope:
@@ -244,10 +244,10 @@ class EyeWidthRegressor(nn.Module):
             if self.use_gradient_checkpointing and self.training:
                 # Pass all tensor arguments positionally for checkpointing
                 hidden_states_vert = torch.utils.checkpoint.checkpoint(
-                    self.snp_encoder, snp_vert, self.tx_token, self.rx_token, use_reentrant=False
+                    self.snp_encoder, snp_vert, self.drv_token, self.odt_token, use_reentrant=False
                 )
             else:
-                hidden_states_vert = self.snp_encoder(snp_vert, tx_token=self.tx_token, rx_token=self.rx_token)
+                hidden_states_vert = self.snp_encoder(snp_vert, drv_token=self.drv_token, odt_token=self.odt_token)
         else:
             # Create dummy SNP states with same dimensions as expected
             batch_size = hidden_states_seq.size(0)
