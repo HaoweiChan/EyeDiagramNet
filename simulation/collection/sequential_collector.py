@@ -173,15 +173,15 @@ class OptimizedSequentialCollector:
             divisors.append(1)
         return divisors
 
-    def _format_error_metadata(self, trace_snp, snp_tx_path, snp_rx_path, combined_config, 
+    def _format_error_metadata(self, trace_snp, snp_drv_path, snp_odt_path, combined_config, 
                               sim_directions, sample_idx, samples_needed, error_msg):
         """
         Format comprehensive error metadata for debugging purposes (SEQUENTIAL version).
         
         Args:
             trace_snp: Path to horizontal trace SNP file
-            snp_tx_path: Path to TX vertical SNP file  
-            snp_rx_path: Path to RX vertical SNP file
+            snp_drv_path: Path to TX vertical SNP file  
+            snp_odt_path: Path to RX vertical SNP file
             combined_config: Parameter configuration that caused the error
             sim_directions: Directions array used in simulation
             sample_idx: Current sample index (0-based)
@@ -201,8 +201,8 @@ class OptimizedSequentialCollector:
 === SEQUENTIAL SIMULATION ERROR METADATA ===
 Error Message: {error_msg}
 Trace File: {trace_snp.name} (Full path: {trace_snp})
-Vertical TX: {Path(snp_tx_path).name} (Full path: {snp_tx_path})
-Vertical RX: {Path(snp_rx_path).name} (Full path: {snp_rx_path})
+Vertical TX: {Path(snp_drv_path).name} (Full path: {snp_drv_path})
+Vertical RX: {Path(snp_odt_path).name} (Full path: {snp_odt_path})
 Sample: {sample_idx + 1}/{samples_needed}
 Directions: {sim_directions.tolist() if hasattr(sim_directions, 'tolist') else sim_directions}
 Number of Lines: {len(sim_directions) if sim_directions is not None else 'Unknown'}
@@ -211,7 +211,7 @@ Parameter Configuration:
 """
             
             # Add parameter details in organized groups
-            electrical_params = ['R_tx', 'R_rx', 'C_tx', 'C_rx', 'L_tx', 'L_rx']
+            electrical_params = ['R_drv', 'R_odt', 'C_drv', 'C_odt', 'L_drv', 'L_odt']
             signal_params = ['pulse_amplitude', 'bits_per_sec', 'vmask']
             ctle_params = ['DC_gain', 'AC_gain', 'fp1', 'fp2']
             
@@ -248,8 +248,8 @@ Parameter Configuration:
 === SEQUENTIAL SIMULATION ERROR (METADATA FORMATTING FAILED) ===
 Error Message: {error_msg}
 Trace File: {trace_snp}
-Vertical TX: {snp_tx_path}
-Vertical RX: {snp_rx_path}
+Vertical TX: {snp_drv_path}
+Vertical RX: {snp_odt_path}
 Sample: {sample_idx + 1}/{samples_needed}
 Metadata Error: {meta_error}
 ================================================================
@@ -281,7 +281,7 @@ Metadata Error: {meta_error}
     
     def collect_data(self, trace_pattern_key: str, trace_pattern: str, vertical_dirs: List[str], 
                     output_dir: Path, param_types: List[str], max_samples: int, 
-                    enable_direction: bool = False, enable_inductance: bool = False) -> Dict[str, Any]:
+                    enable_direction: bool = False, enable_inductance: bool = False, shuffle: bool = False) -> Dict[str, Any]:
         """
         Collect eye width simulation data using optimized sequential processing
         
@@ -294,7 +294,8 @@ Metadata Error: {meta_error}
             max_samples: Maximum samples per trace file
             enable_direction: Whether to use random directions
             enable_inductance: Whether to enable inductance modifications
-            
+            shuffle: Whether to shuffle the work items before processing
+        
         Returns:
             Collection statistics and results
         """
@@ -307,6 +308,7 @@ Metadata Error: {meta_error}
         print(f"  Max samples: {max_samples}")
         print(f"  Enable direction: {enable_direction}")
         print(f"  Enable inductance: {enable_inductance}")
+        print(f"  Shuffle work items: {shuffle}")
         
         # Create output directory
         trace_specific_output_dir = output_dir / trace_pattern_key
@@ -368,13 +370,18 @@ Metadata Error: {meta_error}
         self.stats["total_simulations"] = total_simulations
         print(f"Total simulations needed: {total_simulations}")
         
+        # Shuffle work_items if requested
+        if shuffle:
+            import random
+            random.shuffle(work_items)
+        
         # Pre-load all vertical SNPs into cache
         print("Pre-loading vertical SNPs into memory cache...")
         unique_vertical_snps = set()
         for _, vertical_pair, _, _ in work_items:
-            snp_tx_path, snp_rx_path = vertical_pair
-            unique_vertical_snps.add(snp_tx_path)
-            unique_vertical_snps.add(snp_rx_path)
+            snp_drv_path, snp_odt_path = vertical_pair
+            unique_vertical_snps.add(snp_drv_path)
+            unique_vertical_snps.add(snp_odt_path)
         
         cache_start_time = time.time()
         for snp_path in unique_vertical_snps:
@@ -459,12 +466,12 @@ Metadata Error: {meta_error}
         n_lines = n_ports // 2
         
         # Load vertical SNPs from cache
-        snp_tx_path, snp_rx_path = vertical_pair
-        tx_ntwk = self.snp_cache.get_snp(snp_tx_path)
-        rx_ntwk = self.snp_cache.get_snp(snp_rx_path)
+        snp_drv_path, snp_odt_path = vertical_pair
+        drv_ntwk = self.snp_cache.get_snp(snp_drv_path)
+        odt_ntwk = self.snp_cache.get_snp(snp_odt_path)
         
         # Load existing data
-        existing_data = {'configs': [], 'line_ews': [], 'snp_txs': [], 'snp_rxs': [], 'directions': [], 'meta': {}}
+        existing_data = {'configs': [], 'line_ews': [], 'snp_drvs': [], 'snp_odts': [], 'directions': [], 'meta': {}}
         if pickle_file.exists():
             try:
                 with open(pickle_file, 'rb') as f:
@@ -529,7 +536,7 @@ Metadata Error: {meta_error}
                     try:
                         line_ew = snp_eyewidth_simulation(
                             config=combined_config,
-                            snp_files=(trace_ntwk, tx_ntwk, rx_ntwk),
+                            snp_files=(trace_ntwk, drv_ntwk, odt_ntwk),
                             directions=sim_directions
                         )
                         simulation_successful = True
@@ -541,7 +548,7 @@ Metadata Error: {meta_error}
                         
                         # Format comprehensive error metadata
                         metadata_report = self._format_error_metadata(
-                            trace_snp, snp_tx_path, snp_rx_path, combined_config,
+                            trace_snp, snp_drv_path, snp_odt_path, combined_config,
                             sim_directions, sample_idx, samples_needed, error_msg
                         )
                         
@@ -566,7 +573,7 @@ Metadata Error: {meta_error}
                     
                     # Format comprehensive error metadata
                     metadata_report = self._format_error_metadata(
-                        trace_snp, snp_tx_path, snp_rx_path, combined_config,
+                        trace_snp, snp_drv_path, snp_odt_path, combined_config,
                         sim_directions, sample_idx, samples_needed, error_msg
                     )
                     
@@ -610,8 +617,8 @@ Metadata Error: {meta_error}
                 'config_values': config_values,
                 'config_keys': config_keys,
                 'line_ews': line_ew.tolist(),
-                'snp_tx': snp_tx_path.as_posix(),
-                'snp_rx': snp_rx_path.as_posix(),
+                'snp_drv': snp_drv_path.as_posix(),
+                'snp_odt': snp_odt_path.as_posix(),
                 'directions': sim_directions.tolist(),
                 'snp_horiz': str(trace_snp),
                 'n_ports': n_ports,
@@ -668,8 +675,8 @@ Metadata Error: {meta_error}
             for result in results_to_add:
                 current_data['configs'].append(result['config_values'])
                 current_data['line_ews'].append(result['line_ews'])
-                current_data['snp_txs'].append(result['snp_tx'])
-                current_data['snp_rxs'].append(result['snp_rx'])
+                current_data['snp_drvs'].append(result['snp_drv'])
+                current_data['snp_odts'].append(result['snp_odt'])
                 current_data['directions'].append(result['directions'])
             
             # Update metadata
@@ -697,7 +704,9 @@ def main():
     print("=" * 60)
     
     # Parse arguments, excluding the --num-threads argument which has already been processed.
-    args = build_argparser().parse_args(_remaining_argv)
+    args = build_argparser()
+    args.add_argument('--shuffle', action='store_true', help='Shuffle the work items before processing')
+    args = args.parse_args(_remaining_argv)
     
     # Load configuration
     try:
@@ -729,6 +738,9 @@ def main():
     # Handle enable_inductance logic (default to False) - same as parallel_collector.py
     enable_inductance = args.enable_inductance or config['boundary'].get('enable_inductance', False)
     
+    # Handle shuffle logic (default to False)
+    shuffle = args.shuffle if hasattr(args, 'shuffle') else config['boundary'].get('shuffle', False)
+    
     debug = args.debug if args.debug else config.get('debug', False)
     
     # Get batch size from config, ignoring runner section worker-specific settings
@@ -745,6 +757,7 @@ def main():
     print(f"  Max samples: {max_samples}")
     print(f"  Enable direction: {enable_direction}")
     print(f"  Enable inductance: {enable_inductance}")
+    print(f"  Shuffle work items: {shuffle}")
     print(f"  Debug mode: {debug}")
     print(f"  Batch size: {batch_size}")
     print(f"  Processing mode: Sequential (using all cores)")
@@ -762,7 +775,8 @@ def main():
             param_types=param_types,
             max_samples=max_samples,
             enable_direction=enable_direction,
-            enable_inductance=enable_inductance
+            enable_inductance=enable_inductance,
+            shuffle=shuffle
         )
         
         print(f"\nCollection completed successfully!")

@@ -59,7 +59,8 @@ foreach pattern ( $patterns )
          -e "$log_file" \
          "python -u -m simulation.collection.sequential_collector \
              --config '$cfg_file' \
-             --trace_pattern '$pattern'"
+             --trace_pattern '$pattern' \
+             --shuffle"
     
     echo "Job submitted for $pattern"
     echo ""
