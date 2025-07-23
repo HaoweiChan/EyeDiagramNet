@@ -53,7 +53,73 @@ class RMSNorm(nn.Module):
 # =============================================================================
 
 class RotaryPositionalEmbeddings(nn.Module):
-    """Rotary Positional Embeddings implementation"""
+    """
+    Torch.compile-friendly Rotary Positional Embeddings implementation.
+    
+    This version pre-computes all rotation matrices up to max_seq_len
+    and avoids dynamic caching and device conversions that break compilation.
+    """
+    def __init__(self, dim: int, max_seq_len: int = 2048, base: int = 10000):
+        super().__init__()
+        self.dim = dim
+        self.max_seq_len = max_seq_len
+        self.base = base
+        
+        # Pre-compute rotation matrices for all positions up to max_seq_len
+        inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2).float() / dim))
+        
+        # Pre-compute for all positions
+        t = torch.arange(max_seq_len, dtype=torch.float32)
+        freqs = torch.outer(t, inv_freq)
+        emb = torch.cat((freqs, freqs), dim=-1)
+        
+        # Register as buffers so they move with the model
+        self.register_buffer("cos_cached", emb.cos())
+        self.register_buffer("sin_cached", emb.sin())
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Apply rotary positional embeddings to input tensor.
+        
+        Args:
+            x: Input tensor of shape [batch, seq_len, num_heads, head_dim]
+            
+        Returns:
+            Tensor with rotary embeddings applied
+        """
+        batch_size, seq_len, num_heads, head_dim = x.shape
+        
+        # Ensure we don't exceed pre-computed length
+        if seq_len > self.max_seq_len:
+            raise ValueError(f"Sequence length {seq_len} exceeds maximum {self.max_seq_len}")
+        
+        # Get pre-computed cos/sin for current sequence length
+        # No .to() calls needed - buffers are already on the right device
+        cos = self.cos_cached[:seq_len, :head_dim]  # [seq_len, head_dim]
+        sin = self.sin_cached[:seq_len, :head_dim]  # [seq_len, head_dim]
+        
+        # Reshape for broadcasting: [1, seq_len, 1, head_dim]
+        cos = cos.unsqueeze(0).unsqueeze(2)
+        sin = sin.unsqueeze(0).unsqueeze(2)
+        
+        # Split x into two halves
+        x1 = x[..., :head_dim // 2]
+        x2 = x[..., head_dim // 2:]
+        
+        # Apply rotation without any dynamic operations
+        rotated = torch.cat([
+            x1 * cos[..., :head_dim // 2] - x2 * sin[..., head_dim // 2:],
+            x2 * cos[..., head_dim // 2:] + x1 * sin[..., :head_dim // 2]
+        ], dim=-1)
+        
+        return rotated
+
+
+class LegacyRotaryPositionalEmbeddings(nn.Module):
+    """
+    Original RoPE implementation with dynamic caching.
+    Keep this for backwards compatibility but don't use with torch.compile.
+    """
     def __init__(self, dim: int, max_seq_len: int = 2048, base: int = 10000):
         super().__init__()
         self.dim = dim
@@ -116,7 +182,8 @@ class RotaryPositionalEmbeddings(nn.Module):
 # Try to import from torchtune, fallback to our implementation
 try:
     from torchtune.modules import RotaryPositionalEmbeddings as TorchtuneRoPE
-    RoPE = TorchtuneRoPE
+    # Always use our compile-friendly implementation for now
+    RoPE = RotaryPositionalEmbeddings
 except ImportError:
     RoPE = RotaryPositionalEmbeddings
 
@@ -420,7 +487,7 @@ class StructuredGatedBoundaryProcessor(nn.Module):
     Structured processor for boundary conditions with separate MLPs for different parameter types.
     
     Boundary condition structure:
-    - Electrical (RLC): R_tx, R_rx, C_tx, C_rx, L_tx, L_rx (6 params)
+    - Electrical (RLC): R_drv, R_odt, C_drv, C_odt, L_drv, L_odt (6 params)
     - Signal: pulse_amplitude, bits_per_sec, vmask (3 params)  
     - CTLE (optional): AC_gain, DC_gain, fp1, fp2 (4 params, may contain NaNs)
     """
