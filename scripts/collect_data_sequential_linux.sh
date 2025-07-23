@@ -30,4 +30,4 @@ echo "Config file: $cfg_file"
 
 # Submit to cluster with resource requests optimized for sequential processing
 # Sequential processing needs fewer cores but higher per-core performance
-bsub -Is -J SeqDataJob -q ML_CPU -app ML_CPU -P d_09017 $python_cmd 
+bsub -Is -J LongJob -q ML_CPU -app ML_CPU -P d_09017 $python_cmd 

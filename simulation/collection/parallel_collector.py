@@ -78,7 +78,7 @@ except ImportError:
 
 from common.signal_utils import read_snp
 from simulation.parameters.bound_param import PARAM_SETS_MAP
-from simulation.engine.eye_width_simulator import snp_eyewidth_simulation
+from simulation.engine.sbr_simulator import snp_eyewidth_simulation
 from simulation.io.config_utils import load_config, resolve_trace_pattern, resolve_vertical_dirs, build_argparser
 from simulation.io.snp_utils import parse_snps, generate_vertical_snp_pairs
 from simulation.io.progress_utils import progress_monitor, report_progress
@@ -415,8 +415,8 @@ class BufferedPickleWriter:
         return {
             'configs': [],
             'line_ews': [], 
-            'snp_txs': [],
-            'snp_rxs': [],
+            'snp_drvs': [],
+            'snp_odts': [],
             'directions': [],
             'meta': {}
         }
@@ -451,8 +451,8 @@ class BufferedPickleWriter:
             for result in self.buffer:
                 self.data['configs'].append(result['config_values'])
                 self.data['line_ews'].append(result['line_ews'])
-                self.data['snp_txs'].append(result['snp_tx'])
-                self.data['snp_rxs'].append(result['snp_rx'])
+                self.data['snp_drvs'].append(result['snp_drv'])
+                self.data['snp_odts'].append(result['snp_odt'])
                 self.data['directions'].append(result['directions'])
             
             # Update meta if needed
@@ -771,6 +771,89 @@ def _get_valid_block_sizes(n_lines):
         divisors.append(1)
     return divisors
 
+def format_error_metadata(trace_snp_path, snp_drv_path, snp_odt_path, combined_config, 
+                         sim_directions, sample_idx, total_samples, error_msg):
+    """
+    Format comprehensive error metadata for debugging purposes.
+    
+    Args:
+        trace_snp_path: Path to horizontal trace SNP file
+        snp_drv_path: Path to TX vertical SNP file  
+        snp_odt_path: Path to RX vertical SNP file
+        combined_config: Parameter configuration that caused the error
+        sim_directions: Directions array used in simulation
+        sample_idx: Current sample index (0-based)
+        total_samples: Total number of samples for this trace
+        error_msg: The actual error message
+    
+    Returns:
+        Formatted error metadata string
+    """
+    try:
+        # Get config values and keys for display
+        config_values, config_keys = combined_config.to_list(return_keys=True)
+        config_dict = dict(zip(config_keys, config_values))
+        
+        # Format the comprehensive error report
+        error_report = f"""
+=== SIMULATION ERROR METADATA ===
+Error Message: {error_msg}
+Trace File: {trace_snp_path.name} (Full path: {trace_snp_path})
+Vertical TX: {Path(snp_drv_path).name} (Full path: {snp_drv_path})
+Vertical RX: {Path(snp_odt_path).name} (Full path: {snp_odt_path})
+Sample: {sample_idx + 1}/{total_samples}
+Directions: {sim_directions.tolist() if hasattr(sim_directions, 'tolist') else sim_directions}
+Number of Lines: {len(sim_directions) if sim_directions is not None else 'Unknown'}
+
+Parameter Configuration:
+"""
+        
+        # Add parameter details in organized groups
+        electrical_params = ['R_drv', 'R_odt', 'C_drv', 'C_odt', 'L_drv', 'L_odt']
+        signal_params = ['pulse_amplitude', 'bits_per_sec', 'vmask']
+        ctle_params = ['DC_gain', 'AC_gain', 'fp1', 'fp2']
+        
+        for group_name, param_list in [('Electrical', electrical_params), 
+                                     ('Signal', signal_params), 
+                                     ('CTLE', ctle_params)]:
+            error_report += f"  {group_name} Parameters:\n"
+            for param in param_list:
+                if param in config_dict:
+                    value = config_dict[param]
+                    if isinstance(value, float):
+                        error_report += f"    {param}: {value:.6e}\n"
+                    else:
+                        error_report += f"    {param}: {value}\n"
+        
+        # Add any remaining parameters
+        remaining_params = set(config_dict.keys()) - set(electrical_params + signal_params + ctle_params)
+        if remaining_params:
+            error_report += "  Other Parameters:\n"
+            for param in sorted(remaining_params):
+                value = config_dict[param]
+                if isinstance(value, float):
+                    error_report += f"    {param}: {value:.6e}\n"
+                else:
+                    error_report += f"    {param}: {value}\n"
+        
+        error_report += "================================="
+        
+        return error_report
+        
+    except Exception as meta_error:
+        # Fallback if metadata formatting fails
+        return f"""
+=== SIMULATION ERROR (METADATA FORMATTING FAILED) ===
+Error Message: {error_msg}
+Trace File: {trace_snp_path}
+Vertical TX: {snp_drv_path}
+Vertical RX: {snp_odt_path}
+Sample: {sample_idx + 1}/{total_samples}
+Metadata Error: {meta_error}
+=====================================================
+"""
+
+
 def collect_trace_simulation_data(trace_snp_file, vertical_pairs_with_counts, combined_params, 
                                 pickle_dir, param_type_names, enable_direction=True, 
                                 batch_size=10, debug=False, use_optimized=False):
@@ -841,18 +924,18 @@ def collect_trace_simulation_data(trace_snp_file, vertical_pairs_with_counts, co
             break
             
         # Load vertical SNPs from cache
-        snp_tx_path, snp_rx_path = vertical_snp_pair
+        snp_drv_path, snp_odt_path = vertical_snp_pair
         vertical_start_time = time.time()
         
         # Check if files are in cache for performance monitoring
-        tx_cached = str(snp_tx_path) in _vertical_cache_info
-        rx_cached = str(snp_rx_path) in _vertical_cache_info
-        cache_status = f"TX:{'cache' if tx_cached else 'disk'}, RX:{'cache' if rx_cached else 'disk'}"
+        drv_cached = str(snp_drv_path) in _vertical_cache_info
+        odt_cached = str(snp_odt_path) in _vertical_cache_info
+        cache_status = f"TX:{'cache' if drv_cached else 'disk'}, RX:{'cache' if odt_cached else 'disk'}"
         
-        profile_print(f"Worker {worker_id} loading vertical SNPs ({cache_status}): {Path(snp_tx_path).name}, {Path(snp_rx_path).name}")
+        profile_print(f"Worker {worker_id} loading vertical SNPs ({cache_status}): {Path(snp_drv_path).name}, {Path(snp_odt_path).name}")
         
-        tx_ntwk = get_snp_from_cache(snp_tx_path, _vertical_cache_info)
-        rx_ntwk = get_snp_from_cache(snp_rx_path, _vertical_cache_info)
+        drv_ntwk = get_snp_from_cache(snp_drv_path, _vertical_cache_info)
+        odt_ntwk = get_snp_from_cache(snp_odt_path, _vertical_cache_info)
         
         vertical_load_time = time.time() - vertical_start_time
         profile_print(f"Worker {worker_id} loaded vertical SNPs ({cache_status})", vertical_load_time)
@@ -862,106 +945,151 @@ def collect_trace_simulation_data(trace_snp_file, vertical_pairs_with_counts, co
             if sample_idx % 10 == 0 and _shutdown_event.is_set():
                 profile_print(f"Shutdown detected, stopping {trace_snp_path.name} early")
                 break
-            # Sample parameters
-            combined_config = combined_params.sample()
             
-            # Performance monitoring for simulation
-            sim_start_time = time.time()
+            # Retry logic for failed simulations
+            max_retries = 3
+            retry_count = 0
+            simulation_successful = False
             
-            try:
-                # Set directions
-                if enable_direction:
-                    # Generate directions in a block-wise pattern
-                    valid_block_sizes = _get_valid_block_sizes(n_lines)
-                    block_size = np.random.choice(valid_block_sizes)
-                    n_blocks = n_lines // block_size
-                    
-                    # Create an equal number of 0 and 1 blocks and shuffle them
-                    blocks = [0] * (n_blocks // 2) + [1] * (n_blocks // 2)
-                    if n_blocks % 2 != 0:
-                        blocks.append(np.random.randint(0,2))
-
-                    np.random.shuffle(blocks)
-                    
-                    # Repeat the blocks to create the final directions array
-                    sim_directions = np.repeat(blocks, block_size)
-                    # Truncate if n_blocks was odd and we added an extra
-                    if len(sim_directions) > n_lines:
-                        sim_directions = sim_directions[:n_lines]
-                else:
-                    sim_directions = np.ones(n_lines, dtype=int)
+            while not simulation_successful and retry_count <= max_retries:
+                # Sample parameters (get new config for retries)
+                combined_config = combined_params.sample()
                 
-                # Run simulation with robust error handling
+                # Performance monitoring for simulation
+                sim_start_time = time.time()
+                
                 try:
-                    line_ew = snp_eyewidth_simulation(
-                        config=combined_config,
-                        snp_files=(trace_ntwk, tx_ntwk, rx_ntwk),
-                        directions=sim_directions,
-                        use_optimized=use_optimized
+                    # Set directions
+                    if enable_direction:
+                        # Generate directions in a block-wise pattern
+                        valid_block_sizes = _get_valid_block_sizes(n_lines)
+                        block_size = np.random.choice(valid_block_sizes)
+                        n_blocks = n_lines // block_size
+                        
+                        # Create an equal number of 0 and 1 blocks and shuffle them
+                        blocks = [0] * (n_blocks // 2) + [1] * (n_blocks // 2)
+                        if n_blocks % 2 != 0:
+                            blocks.append(np.random.randint(0,2))
+
+                        np.random.shuffle(blocks)
+                        
+                        # Repeat the blocks to create the final directions array
+                        sim_directions = np.repeat(blocks, block_size)
+                        # Truncate if n_blocks was odd and we added an extra
+                        if len(sim_directions) > n_lines:
+                            sim_directions = sim_directions[:n_lines]
+                    else:
+                        sim_directions = np.ones(n_lines, dtype=int)
+                    
+                    # Run simulation with comprehensive error handling
+                    try:
+                        line_ew = snp_eyewidth_simulation(
+                            config=combined_config,
+                            snp_files=(trace_ntwk, drv_ntwk, odt_ntwk),
+                            directions=sim_directions,
+                            use_optimized=use_optimized
+                        )
+                        simulation_successful = True
+                        
+                    except Exception as sim_error:
+                        # Handle simulation errors with detailed metadata
+                        error_msg = str(sim_error)
+                        retry_count += 1
+                        
+                        # Format comprehensive error metadata
+                        metadata_report = format_error_metadata(
+                            trace_snp_path, snp_drv_path, snp_odt_path, combined_config,
+                            sim_directions, sample_idx, sample_count, error_msg
+                        )
+                        
+                        if retry_count <= max_retries:
+                            print(f"[ERROR] Simulation failed (attempt {retry_count}/{max_retries + 1}), will retry with new config:")
+                            print(metadata_report)
+                            print(f"[RETRY] Retrying simulation for {trace_snp_path.name}, sample {sample_idx + 1}")
+                            continue
+                        else:
+                            print(f"[ERROR] Simulation failed after {max_retries + 1} attempts, giving up:")
+                            print(metadata_report)
+                            print(f"[SKIP] Skipping simulation for {trace_snp_path.name}, sample {sample_idx + 1}")
+                            break
+                    
+                    if not simulation_successful:
+                        continue  # Retry with new config
+                
+                except Exception as outer_error:
+                    # Handle errors in directions generation or other setup
+                    error_msg = str(outer_error)
+                    retry_count += 1
+                    
+                    # Format comprehensive error metadata
+                    metadata_report = format_error_metadata(
+                        trace_snp_path, snp_drv_path, snp_odt_path, combined_config,
+                        sim_directions if 'sim_directions' in locals() else None,
+                        sample_idx, sample_count, error_msg
                     )
-                except Exception as sim_error:
-                    # Handle simulation errors gracefully
-                    error_msg = str(sim_error)
-                    if "fid" in error_msg.lower():
-                        print(f"[WARNING] SKRf library error (likely corrupted/invalid SNP data): {error_msg}")
-                        print(f"[WARNING] Skipping simulation for {trace_snp_path.name}, sample {sample_idx+1}")
+                    
+                    if retry_count <= max_retries:
+                        print(f"[ERROR] Setup/preprocessing failed (attempt {retry_count}/{max_retries + 1}), will retry:")
+                        print(metadata_report)
+                        print(f"[RETRY] Retrying setup for {trace_snp_path.name}, sample {sample_idx + 1}")
                         continue
                     else:
-                        # Re-raise non-fid errors as they might be more serious
-                        print(f"[ERROR] Simulation error for {trace_snp_path.name}: {error_msg}")
-                        raise sim_error
-                
-                # Handle tuple return
-                if isinstance(line_ew, tuple):
-                    line_ew, actual_directions = line_ew
-                    sim_directions = actual_directions
-                
-                # Process results
-                line_ew = np.array(line_ew)
-                line_ew[line_ew >= 99.9] = -0.1
-                
-                # Create result
-                config_values, config_keys = combined_config.to_list(return_keys=True)
-                result = {
-                    'config_values': config_values,
-                    'config_keys': config_keys,
-                    'line_ews': line_ew.tolist(),
-                    'snp_tx': snp_tx_path.as_posix(),
-                    'snp_rx': snp_rx_path.as_posix(),
-                    'directions': sim_directions.tolist(),
-                    'snp_horiz': str(trace_snp_path),
-                    'n_ports': n_ports,
-                    'param_types': param_type_names
-                }
-                
-                # Add to buffered writer
-                writer.add_result(result)
+                        print(f"[ERROR] Setup/preprocessing failed after {max_retries + 1} attempts:")
+                        print(metadata_report)
+                        print(f"[SKIP] Skipping simulation for {trace_snp_path.name}, sample {sample_idx + 1}")
+                        break
+            
+            # Always count this sample (successful or failed after retries)
+            # If simulation failed after all retries, skip result processing but count the sample
+            if not simulation_successful:
                 total_completed += 1
-                
-                # Report progress after each simulation
                 report_progress(1, _progress_queue, _shutdown_event)
-                
-                # Performance monitoring with BLAS/Numba analysis
-                sim_time = time.time() - sim_start_time
-                if sim_time > 5.0:  # Log slow simulations
-                    blas_threads = os.environ.get("OMP_NUM_THREADS", "unknown")
-                    profile_print(f"Worker {worker_id} slow simulation: {sim_time:.1f}s for {trace_snp_path.name} sample {sample_idx+1} (BLAS threads: {blas_threads})")
-                
-                # Track performance statistics for optimization
-                if not hasattr(collect_trace_simulation_data, '_perf_stats'):
-                    collect_trace_simulation_data._perf_stats = []
-                collect_trace_simulation_data._perf_stats.append(sim_time)
-                
-                if debug:
-                    print(f"  Completed simulation {sample_idx+1}/{sample_count}: EW={line_ew} ({sim_time:.1f}s)")
-                    
-            except Exception as e:
-                print(f"Error in simulation for {trace_snp_path.name}: {e}")
-                if debug:
-                    import traceback
-                    traceback.print_exc()
                 continue
-        
+            
+            # Handle tuple return
+            if isinstance(line_ew, tuple):
+                line_ew, actual_directions = line_ew
+                sim_directions = actual_directions
+            
+            # Process results
+            line_ew = np.array(line_ew)
+            line_ew[line_ew >= 99.9] = -0.1
+            
+            # Create result
+            config_values, config_keys = combined_config.to_list(return_keys=True)
+            result = {
+                'config_values': config_values,
+                'config_keys': config_keys,
+                'line_ews': line_ew.tolist(),
+                'snp_drv': snp_drv_path.as_posix(),
+                'snp_odt': snp_odt_path.as_posix(),
+                'directions': sim_directions.tolist(),
+                'snp_horiz': str(trace_snp_path),
+                'n_ports': n_ports,
+                'param_types': param_type_names
+            }
+            
+            # Add to buffered writer
+            writer.add_result(result)
+            total_completed += 1
+            
+            # Report progress after each simulation
+            report_progress(1, _progress_queue, _shutdown_event)
+            
+            # Performance monitoring with BLAS/Numba analysis
+            sim_time = time.time() - sim_start_time
+            if sim_time > 5.0:  # Log slow simulations
+                blas_threads = os.environ.get("OMP_NUM_THREADS", "unknown")
+                profile_print(f"Worker {worker_id} slow simulation: {sim_time:.1f}s for {trace_snp_path.name} sample {sample_idx+1} (BLAS threads: {blas_threads})")
+            
+            # Track performance statistics for optimization
+            if not hasattr(collect_trace_simulation_data, '_perf_stats'):
+                collect_trace_simulation_data._perf_stats = []
+            collect_trace_simulation_data._perf_stats.append(sim_time)
+            
+            if debug:
+                print(f"  Completed simulation {sample_idx+1}/{sample_count}: EW={line_ew} ({sim_time:.1f}s)")
+                
         # Break outer loop if shutdown detected during inner loop
         if _shutdown_event.is_set():
             break
@@ -1495,9 +1623,9 @@ def main():
     # Collect all unique vertical SNP files that workers will need
     unique_vertical_snps = set()
     for _, vertical_pair in zip(trace_snps, vertical_pairs):
-        snp_tx_path, snp_rx_path = vertical_pair
-        unique_vertical_snps.add(snp_tx_path)
-        unique_vertical_snps.add(snp_rx_path)
+        snp_drv_path, snp_odt_path = vertical_pair
+        unique_vertical_snps.add(snp_drv_path)
+        unique_vertical_snps.add(snp_odt_path)
     
     print(f"Loading {len(unique_vertical_snps)} unique vertical SNP files into shared memory...")
     
