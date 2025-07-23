@@ -189,6 +189,7 @@ ew-predictor*
 test_data/*
 !test_data/make_snp_index_csv.py
 !test_data/random_tline_network.py
+simulation/engine/der/
 
 # Data
 *.s*p
