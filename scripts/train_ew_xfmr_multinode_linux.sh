@@ -7,10 +7,10 @@ set TRAINER_COMMAND = "ml/trainer.py fit --config configs/training/train_ew_xfmr
 # 1. Load necessary modules for the cluster environment
 module load LSF/mtkgpu
 module load openmpi/4.0.3
-module load Python3/3.11.8_gpu_torch251
+module load Python3/3.12.2_gpu_torch270
 
 # 2. Activate the project's Python virtual environment
-source /proj/siaiadm/ew_predictor/.venv/sipi/bin/activate.csh
+source /proj/siaiadm/ew_predictor/.venv/sipi_torch270/bin/activate.csh
 
 # 3. Check for available GPU resources
 echo "Checking for available GPU hosts..."
