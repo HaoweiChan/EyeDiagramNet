@@ -4,10 +4,12 @@ import json
 import uuid
 import tempfile
 import subprocess
+import skrf as rf
 import pandas as pd
-import shutil
 from pathlib import Path
-from typing import Any, Dict, List
+from contextlib import contextmanager
+from dataclasses import dataclass, fields
+from typing import Any, Dict, List, Iterator, Optional
 
 from simulation.parameters.bound_param import DER_PARAMS
 
@@ -15,9 +17,22 @@ from simulation.parameters.bound_param import DER_PARAMS
 # Adjust as necessary if the directory moves.
 DEFAULT_MODULE_ROOT = Path("/proj/siaiadm/ddr_peak_distortion_analysis/enzo/20250623_to_willy")
 
+
 # -------------------------------------------------
 # Utility functions
 # -------------------------------------------------
+
+@contextmanager
+def temp_snp_file(network: rf.Network) -> Iterator[Path]:
+    """Context manager to temporarily save an skrf.Network to a file."""
+    with tempfile.NamedTemporaryFile(suffix=".s2p", delete=False) as fp:
+        tmp_path = Path(fp.name)
+    try:
+        network.write_touchstone(tmp_path)
+        yield tmp_path
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
 
 def _map_der_params_to_config(der_params: Dict[str, Any]) -> Dict[str, Any]:
     """Map parameter keys from DER_PARAMS to the JSON keys expected by the
@@ -45,11 +60,9 @@ def _map_der_params_to_config(der_params: Dict[str, Any]) -> Dict[str, Any]:
         cfg[key_map.get(k, k.lower())] = v
     return cfg
 
-
 def _write_json(config: Dict[str, Any], path: Path) -> None:
     """Write *config* to *path* in pretty-printed JSON format."""
     path.write_text(json.dumps(config, indent=2))
-
 
 def _parse_csv(csv_path: Path) -> pd.DataFrame:
     """Load the CSV produced by the DER simulator and return a DataFrame."""
@@ -57,15 +70,12 @@ def _parse_csv(csv_path: Path) -> pd.DataFrame:
         raise FileNotFoundError(f"Expected output CSV not found: {csv_path}")
     return pd.read_csv(csv_path)
 
-
 # -------------------------------------------------
 # Public API
 # -------------------------------------------------
 
 def run_der_simulation(
     snp_path: str | Path,
-    output_dir: str | Path | None = None,
-    sim_id: str | None = None,
     der_params: Dict[str, Any] | None = None,
     algorithm: str = "from_enzo.der_spara_pattern_to_wave",
     python_executable: str | None = None,
@@ -74,15 +84,12 @@ def run_der_simulation(
     """Run a double-edge-response (DER) simulation in a separate Python
     subprocess and return the parsed CSV results as a *pandas* DataFrame.
 
+    This function automatically manages intermediate files in a temporary directory.
+
     Parameters
     ----------
     snp_path
         Path to the S-parameter file (.snp/.s96p/npz) to be simulated.
-    output_dir
-        Directory to store intermediate files and final CSV. A temporary
-        directory is created if *None*.
-    sim_id
-        Optional simulation identifier written into the CSV.
     der_params
         Optional dictionary of DER parameters. If *None*, a sample from
         ``DER_PARAMS`` is used.
@@ -91,6 +98,8 @@ def run_der_simulation(
         point. Defaults to ``from_enzo.der_spara_pattern_to_wave``.
     python_executable
         Python interpreter to use. Defaults to ``sys.executable``.
+    module_roots
+        Optional list of directories to add to PYTHONPATH for the subprocess.
 
     Returns
     -------
@@ -98,92 +107,185 @@ def run_der_simulation(
         Parsed contents of the output CSV.
     """
     snp_path = Path(snp_path)
-    output_dir_provided = output_dir is not None
-    if output_dir is None:
-        output_dir = Path(tempfile.mkdtemp(prefix="der_sim_"))
-    else:
-        output_dir = Path(output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
 
-    sim_id = sim_id or uuid.uuid4().hex[:8]
-    der_params = der_params or DER_PARAMS.sample().to_dict()
+    with tempfile.TemporaryDirectory(prefix="der_sim_") as tmpdir:
+        output_dir = Path(tmpdir)
+        sim_id = uuid.uuid4().hex[:8]
+        der_params = der_params or DER_PARAMS.sample().to_dict()
 
-    cfg: Dict[str, Any] = {
-        "snp_path": snp_path.as_posix(),
-        "if_add_c": True,  # keep default behaviour of adding capacitance
-    }
-    cfg.update(_map_der_params_to_config(der_params))
+        cfg: Dict[str, Any] = {
+            "snp_path": snp_path.as_posix(),
+            "if_add_c": True,  # keep default behaviour of adding capacitance
+        }
+        cfg.update(_map_der_params_to_config(der_params))
 
-    csv_path = output_dir / f"{sim_id}.csv"
-    cfg.update({
-        "output_path": output_dir.as_posix(),
-        "csv_path": csv_path.as_posix(),
-        "sim_id": sim_id,
-    })
+        csv_path = output_dir / f"{sim_id}.csv"
+        cfg.update({
+            "output_path": output_dir.as_posix(),
+            "csv_path": csv_path.as_posix(),
+            "sim_id": sim_id,
+        })
 
-    # Write config JSON
-    config_path = output_dir / f"config_{sim_id}.json"
-    _write_json(cfg, config_path)
+        # Write config JSON
+        config_path = output_dir / f"config_{sim_id}.json"
+        _write_json(cfg, config_path)
 
-    # Build command
-    python_exec = python_executable or sys.executable
-    cmd = [python_exec, "-m", algorithm, str(config_path)]
+        # Build command
+        python_exec = python_executable or sys.executable
+        cmd = [python_exec, "-m", algorithm, str(config_path)]
 
-    # Prepare environment with optional extra PYTHONPATH entries so that the
-    # external *from_enzo* module can be resolved even if it is not installed
-    # in the current environment.
-    env = os.environ.copy()
-    # Default to the hard-coded module root if caller didn't provide one
-    module_roots = module_roots or [DEFAULT_MODULE_ROOT]
-    extra_paths = [str(Path(p).expanduser()) for p in module_roots]
-    existing = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = os.pathsep.join(extra_paths + ([existing] if existing else [])) if existing else os.pathsep.join(extra_paths)
+        # Prepare environment with optional extra PYTHONPATH entries so that the
+        # external *from_enzo* module can be resolved even if it is not installed
+        # in the current environment.
+        env = os.environ.copy()
+        # Default to the hard-coded module root if caller didn't provide one
+        module_roots = module_roots or [DEFAULT_MODULE_ROOT]
+        extra_paths = [str(Path(p).expanduser()) for p in module_roots]
+        existing = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = os.pathsep.join(extra_paths + ([existing] if existing else []))
 
-    print(f"DEBUG: Default module root: {DEFAULT_MODULE_ROOT}", file=sys.stderr)
-    print(f"DEBUG: Command to be executed: {' '.join(cmd)}", file=sys.stderr)
-    print(f"DEBUG: PYTHONPATH for subprocess: {env.get("PYTHONPATH")}", file=sys.stderr)
+        # Run subprocess and capture output for debugging purposes
+        try:
+            subprocess.run(cmd, check=True, env=env, capture_output=True, text=True)
+        except subprocess.CalledProcessError as exc:
+            print("DEBUG: Subprocess stdout (on error):", exc.stdout, file=sys.stderr)
+            print("DEBUG: Subprocess stderr (on error):", exc.stderr, file=sys.stderr)
+            raise RuntimeError(
+                f"DER simulation failed with exit code {exc.returncode}. "
+                f"Command: {' '.join(cmd)}"
+            ) from exc
 
-    # Run subprocess and capture output for debugging purposes
+        # Parse resulting CSV
+        df = _parse_csv(csv_path)
+        return df
+
+
+@dataclass
+class DERTransientParams:
+    """Configuration parameters for DER transient analysis."""
+    R_drv: float
+    R_odt: float
+    C_drv: float
+    C_odt: float
+    L_drv: float
+    L_odt: float
+    pulse_amplitude: float
+    bits_per_sec: float
+    snp_horiz: Any
+    snp_drv: Optional[Any] = None
+    snp_odt: Optional[Any] = None
+
+    @classmethod
+    def from_config(cls, config: Dict[str, Any]) -> 'DERTransientParams':
+        """Create a DERTransientParams instance from a configuration dictionary."""
+        valid_fields = {f.name for f in fields(cls)}
+        filtered_config = {key: value for key, value in config.items() if key in valid_fields}
+        return cls(**filtered_config)
+
+class DERCollectorSimulator:
+    """
+    Simulator class for DER analysis, compatible with the collection framework.
+    """
+
+    def __init__(self, config, snp_files=None):
+        """Initialize the DERCollectorSimulator."""
+        if isinstance(config, dict):
+            config_dict = config.copy()
+        else:
+            config_dict = {attr: getattr(config, attr) for attr in dir(config) if not attr.startswith('_')}
+
+        if snp_files:
+            if isinstance(snp_files, (tuple, list)) and len(snp_files) >= 1:
+                config_dict['snp_horiz'] = snp_files[0]
+            if len(snp_files) >= 3:
+                config_dict['snp_drv'] = snp_files[1]
+                config_dict['snp_odt'] = snp_files[2]
+
+        self.params = DERTransientParams.from_config(config_dict)
+        self.ntwk = self._load_and_cascade_networks()
+
+    def _load_and_cascade_networks(self) -> rf.Network:
+        """Load and cascade S-parameter networks."""
+        ntwk_horiz = self.params.snp_horiz
+        if isinstance(ntwk_horiz, (str, Path)):
+            ntwk_horiz = rf.Network(ntwk_horiz)
+
+        if self.params.snp_drv and self.params.snp_odt:
+            ntwk_drv = self.params.snp_drv
+            ntwk_odt = self.params.snp_odt
+            if isinstance(ntwk_drv, (str, Path)):
+                ntwk_drv = rf.Network(ntwk_drv)
+            if isinstance(ntwk_odt, (str, Path)):
+                ntwk_odt = rf.Network(ntwk_odt)
+
+            # Cascade the networks
+            ntwk = ntwk_drv ** ntwk_horiz ** ntwk_odt
+        else:
+            ntwk = ntwk_horiz
+
+        return ntwk
+
+    def run_simulation(self) -> pd.DataFrame:
+        """Run the DER simulation and return the results."""
+        der_params = {
+            "R_drv": self.params.R_drv,
+            "R_odt": self.params.R_odt,
+            "C_drv": self.params.C_drv,
+            "C_odt": self.params.C_odt,
+            "L_drv": self.params.L_drv,
+            "L_odt": self.params.L_odt,
+            "pulse_amplitude": self.params.pulse_amplitude,
+            "bits_per_sec": self.params.bits_per_sec,
+        }
+
+        with temp_snp_file(self.ntwk) as snp_path:
+            df = run_der_simulation(
+                snp_path=snp_path,
+                der_params=der_params
+            )
+        return df
+
+
+def snp_der_simulation(config, snp_files=None) -> List[float]:
+    """
+    Main function for DER simulation compatible with data collectors.
+    """
     try:
-        result = subprocess.run(cmd, check=True, env=env, capture_output=True, text=True)
-        print("DEBUG: Subprocess stdout:", result.stdout, file=sys.stderr)
-        print("DEBUG: Subprocess stderr:", result.stderr, file=sys.stderr)
-    except subprocess.CalledProcessError as exc:
-        print("DEBUG: Subprocess stdout (on error):", exc.stdout, file=sys.stderr)
-        print("DEBUG: Subprocess stderr (on error):", exc.stderr, file=sys.stderr)
-        raise RuntimeError(
-            f"DER simulation failed with exit code {exc.returncode}. "
-            f"Command: {' '.join(cmd)}"
-        ) from exc
+        simulator = DERCollectorSimulator(config, snp_files)
+        df = simulator.run_simulation()
 
-    # Parse resulting CSV
-    df = _parse_csv(csv_path)
+        # Extract a single metric from the result DataFrame.
+        # Assuming the CSV has a column 'der_metric' and we need one value per line
+        # For now, just return the first value of the first column.
+        # This part might need adjustment based on the actual CSV format.
+        if not df.empty and 'der_metric' in df.columns:
+             return df['der_metric'].tolist()
 
-    # Clean up temp directory unless the caller explicitly asked to keep it
-    if not output_dir_provided:
-        shutil.rmtree(output_dir, ignore_errors=True)
+        # Fallback: if no 'der_metric' column, return first value of first column
+        if not df.empty:
+            return [df.iloc[0, 0]]
+            
+        return [-1.0] # Return a default value for failure
 
-    return df
-
+    except Exception as e:
+        print(f"DER simulation failed: {str(e)}")
+        raise RuntimeError(f"DER simulation failed: {str(e)}") from e
 
 def main() -> None:
     """CLI wrapper for quick testing.
 
     Example
     -------
-    python -m simulation.engine.def_simulator --snp_path my.s96p --output_dir ./out
+    python -m simulation.engine.der_simulator --snp_path my.s96p
     """
     import argparse
 
     parser = argparse.ArgumentParser(description="Run DER simulation via subprocess")
     parser.add_argument("--snp_path", required=True, help="Path to the SNP file")
-    parser.add_argument("--output_dir", help="Directory for outputs; defaults to tmp")
-    parser.add_argument("--sim_id", help="Optional simulation id")
     args = parser.parse_args()
 
     df = run_der_simulation(args.snp_path)
     print(df.head())
-
 
 if __name__ == "__main__":
     main()

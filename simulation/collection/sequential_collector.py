@@ -22,14 +22,13 @@ import time
 import signal
 import pickle
 import psutil
+import argparse
 import threading
 import traceback
 import numpy as np
+from tqdm import tqdm
 from pathlib import Path
 from typing import Dict, List, Tuple, Any
-import argparse
-import platform
-from tqdm import tqdm
 
 # --- Thread limit argument parsing ---
 # Must be done at module level, before heavy libraries are imported.
@@ -88,7 +87,7 @@ except ImportError:
 # Global state for interruption handling
 _shutdown_event = threading.Event()
 
-class OptimizedSNPCache:
+class SNPCache:
     """Memory-efficient SNP cache optimized for sequential processing"""
     
     def __init__(self):
@@ -132,13 +131,13 @@ class OptimizedSNPCache:
         self.cache.clear()
         self.cache_stats = {"hits": 0, "misses": 0, "memory_mb": 0}
 
-class OptimizedSequentialCollector:
+class SequentialCollector:
     """High-performance sequential data collector using all cores"""
     
     def __init__(self, config: Dict[str, Any], debug: bool = False):
         self.config = config
         self.debug = debug
-        self.snp_cache = OptimizedSNPCache()
+        self.snp_cache = SNPCache()
         self.stats = {
             "total_simulations": 0,
             "completed_simulations": 0,
@@ -281,7 +280,8 @@ Metadata Error: {meta_error}
     
     def collect_data(self, trace_pattern_key: str, trace_pattern: str, vertical_dirs: List[str], 
                     output_dir: Path, param_types: List[str], max_samples: int, 
-                    enable_direction: bool = False, enable_inductance: bool = False, shuffle: bool = False) -> Dict[str, Any]:
+                    enable_direction: bool = False, enable_inductance: bool = False, shuffle: bool = False,
+                    simulator_type: str = 'sbr') -> Dict[str, Any]:
         """
         Collect eye width simulation data using optimized sequential processing
         
@@ -295,6 +295,7 @@ Metadata Error: {meta_error}
             enable_direction: Whether to use random directions
             enable_inductance: Whether to enable inductance modifications
             shuffle: Whether to shuffle the work items before processing
+            simulator_type: The type of simulator to use ('sbr' or 'der')
         
         Returns:
             Collection statistics and results
@@ -309,6 +310,7 @@ Metadata Error: {meta_error}
         print(f"  Enable direction: {enable_direction}")
         print(f"  Enable inductance: {enable_inductance}")
         print(f"  Shuffle work items: {shuffle}")
+        print(f"  Simulator type: {simulator_type}")
         
         # Create output directory
         trace_specific_output_dir = output_dir / trace_pattern_key
@@ -401,7 +403,8 @@ Metadata Error: {meta_error}
                     
                 self._process_trace_file(
                     trace_snp, vertical_pair, samples_needed, pickle_file,
-                    combined_params, enable_direction, pbar, param_types, max_samples
+                    combined_params, enable_direction, pbar, param_types, max_samples,
+                    simulator_type
                 )
         
         self.stats["end_time"] = time.time()
@@ -432,7 +435,8 @@ Metadata Error: {meta_error}
     
     def _process_trace_file(self, trace_snp: Path, vertical_pair: Tuple[Path, Path], 
                            samples_needed: int, pickle_file: Path, combined_params: Any,
-                           enable_direction: bool, pbar: tqdm, param_types: List[str], max_samples: int):
+                           enable_direction: bool, pbar: tqdm, param_types: List[str], max_samples: int,
+                           simulator_type: str):
         """Process a single trace file with optimized sequential processing"""
         
         # INITIAL RACE CONDITION CHECK: Verify quota not already filled by other parallel jobs
@@ -460,6 +464,13 @@ Metadata Error: {meta_error}
         if self.debug:
             print(f"\nProcessing {trace_snp.name}: {samples_needed} samples")
         
+        # Dynamically select the simulation function
+        if simulator_type == 'der':
+            from simulation.engine.der_simulator import snp_der_simulation
+            simulation_func = snp_der_simulation
+        else: # Default to sbr
+            simulation_func = snp_eyewidth_simulation
+
         # Load trace SNP (will be cached automatically)
         trace_ntwk = read_snp(trace_snp)
         n_ports = trace_ntwk.nports
@@ -534,11 +545,15 @@ Metadata Error: {meta_error}
                     # Run simulation
                     sim_start_time = time.time()
                     try:
-                        line_ew = snp_eyewidth_simulation(
-                            config=combined_config,
-                            snp_files=(trace_ntwk, drv_ntwk, odt_ntwk),
-                            directions=sim_directions
-                        )
+                        # Prepare simulator-specific arguments
+                        sim_kwargs = {
+                            'config': combined_config,
+                            'snp_files': (trace_ntwk, drv_ntwk, odt_ntwk),
+                        }
+                        if simulator_type == 'sbr':
+                            sim_kwargs['directions'] = sim_directions
+
+                        line_ew = simulation_func(**sim_kwargs)
                         simulation_successful = True
                         
                     except Exception as sim_error:
@@ -704,9 +719,10 @@ def main():
     print("=" * 60)
     
     # Parse arguments, excluding the --num-threads argument which has already been processed.
-    args = build_argparser()
-    args.add_argument('--shuffle', action='store_true', help='Shuffle the work items before processing')
-    args = args.parse_args(_remaining_argv)
+    parser = build_argparser()
+    parser.add_argument('--shuffle', action='store_true', help='Shuffle the work items before processing')
+    parser.add_argument('--simulator-type', type=str, default='sbr', choices=['sbr', 'der'], help='Type of simulator to use')
+    args = parser.parse_args(_remaining_argv)
     
     # Load configuration
     try:
@@ -741,6 +757,9 @@ def main():
     # Handle shuffle logic (default to False)
     shuffle = args.shuffle if hasattr(args, 'shuffle') else config['boundary'].get('shuffle', False)
     
+    # Handle simulator type
+    simulator_type = args.simulator_type or config.get('runner', {}).get('simulator_type', 'sbr')
+
     debug = args.debug if args.debug else config.get('debug', False)
     
     # Get batch size from config, ignoring runner section worker-specific settings
@@ -761,9 +780,10 @@ def main():
     print(f"  Debug mode: {debug}")
     print(f"  Batch size: {batch_size}")
     print(f"  Processing mode: Sequential (using all cores)")
+    print(f"  Simulator Type: {simulator_type}")
     
     # Create collector
-    collector = OptimizedSequentialCollector(config, debug=debug)
+    collector = SequentialCollector(config, debug=debug)
     
     try:
         # Run collection
@@ -776,7 +796,8 @@ def main():
             max_samples=max_samples,
             enable_direction=enable_direction,
             enable_inductance=enable_inductance,
-            shuffle=shuffle
+            shuffle=shuffle,
+            simulator_type=simulator_type
         )
         
         print(f"\nCollection completed successfully!")
