@@ -51,16 +51,14 @@ foreach pattern ( $patterns )
     echo "Log file: $log_file"
     
     # Submit the job - each job gets its own machine and uses all cores
+    set python_cmd = ( python3 -m simulation.collection.sequential_collector --config $cfg_file --trace_pattern $pattern --shuffle)
     bsub -J LongJob \
          -q ML_CPU \
          -app ML_CPU \
          -P d_09017 \
          -o "$log_file" \
          -e "$log_file" \
-         "python -u -m simulation.collection.sequential_collector \
-             --config '$cfg_file' \
-             --trace_pattern '$pattern' \
-             --shuffle"
+         $python_cmd
     
     echo "Job submitted for $pattern"
     echo ""

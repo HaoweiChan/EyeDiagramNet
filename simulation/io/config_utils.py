@@ -30,7 +30,6 @@ def build_argparser():
     )
     parser.add_argument(
         '--config', type=Path, 
-        default='configs/data/default.yaml',
         help="Path to configuration YAML file"
     )
     # Allow command line overrides
