@@ -139,10 +139,18 @@ def run_der_simulation(
     existing = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = os.pathsep.join(extra_paths + ([existing] if existing else [])) if existing else os.pathsep.join(extra_paths)
 
+    print(f"DEBUG: Default module root: {DEFAULT_MODULE_ROOT}", file=sys.stderr)
+    print(f"DEBUG: Command to be executed: {' '.join(cmd)}", file=sys.stderr)
+    print(f"DEBUG: PYTHONPATH for subprocess: {env.get("PYTHONPATH")}", file=sys.stderr)
+
     # Run subprocess and capture output for debugging purposes
     try:
-        subprocess.run(cmd, check=True, env=env)
+        result = subprocess.run(cmd, check=True, env=env, capture_output=True, text=True)
+        print("DEBUG: Subprocess stdout:", result.stdout, file=sys.stderr)
+        print("DEBUG: Subprocess stderr:", result.stderr, file=sys.stderr)
     except subprocess.CalledProcessError as exc:
+        print("DEBUG: Subprocess stdout (on error):", exc.stdout, file=sys.stderr)
+        print("DEBUG: Subprocess stderr (on error):", exc.stderr, file=sys.stderr)
         raise RuntimeError(
             f"DER simulation failed with exit code {exc.returncode}. "
             f"Command: {' '.join(cmd)}"
