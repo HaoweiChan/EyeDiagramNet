@@ -154,7 +154,12 @@ class EyeWidthRegressor(nn.Module):
         self.register_buffer('port_position_encoding', port_position_encoding)
 
         # Structured boundary condition processor with CTLE gating
-        self.boundary_processor = StructuredGatedBoundaryProcessor(model_dim)
+        # self.boundary_processor = StructuredGatedBoundaryProcessor(model_dim)
+        self.boundary_processor = nn.Sequential(
+            nn.LazyLinear(model_dim),
+            nn.GELU(),
+            nn.Linear(model_dim, model_dim)
+        )
         self.fix_token = nn.Parameter(torch.zeros(1, 1, self.model_dim))
 
         # SNP encoder (only create if not ignoring SNPs)
@@ -187,7 +192,12 @@ class EyeWidthRegressor(nn.Module):
             self.signal_projection = None
 
         # Prediction heads
-        self.pred_head = PredictionHead(model_dim, output_dim, dropout)
+        # self.pred_head = PredictionHead(model_dim, output_dim, dropout)
+        self.pred_head = nn.Sequential(
+            nn.Linear(model_dim, model_dim),
+            nn.GELU(),
+            nn.Linear(model_dim, output_dim),
+        )
 
         # ----------  Laplace placeholders  ----------
         self._laplace_model = None        # will hold Laplace object
@@ -238,6 +248,7 @@ class EyeWidthRegressor(nn.Module):
 
         # Process boundary conditions with structured processor
         hidden_states_fix = self.boundary_processor(boundary).unsqueeze(1) # (B, 1, M)
+        hidden_states_fix = hidden_states_fix + self.fix_token
 
         # Process snp into hidden states
         if not self.ignore_snp and self.snp_encoder is not None:
@@ -283,13 +294,13 @@ class EyeWidthRegressor(nn.Module):
             hidden_states = torch.cat((
                 hidden_states_seq,
                 hidden_states_vert,
-                hidden_states_fix + self.fix_token
+                hidden_states_fix
             ), dim=1)
         else:
             # Skip SNP states when ignoring SNPs
             hidden_states = torch.cat((
                 hidden_states_seq,
-                hidden_states_fix + self.fix_token
+                hidden_states_fix
             ), dim=1)
 
         # Final norm before signal transformer
