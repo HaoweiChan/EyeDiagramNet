@@ -1,14 +1,15 @@
 """Parameter utilities for training data collection."""
 
-def parse_param_types(param_type_str):
-    """Parse comma-separated parameter types"""
+from typing import List
+from simulation.parameters.bound_param import PARAM_SETS_MAP, ParameterSet
+
+def parse_param_types(param_type_str: str) -> List[str]:
+    """Parse comma-separated parameter type string into a list of valid types."""
+    valid_types = list(PARAM_SETS_MAP.keys())
     param_types = [ptype.strip() for ptype in param_type_str.split(',')]
-    valid_types = ['DDR_PARAMS', 'HBM2_PARAMS', 'UCIE_PARAMS', 'MIX_PARAMS', 'CTLE_PARAMS']
-    
     for ptype in param_types:
         if ptype not in valid_types:
             raise ValueError(f"Invalid parameter type: {ptype}. Valid types: {valid_types}")
-    
     return param_types
 
 def modify_params_for_inductance(param_set, enable_inductance):
