@@ -1,0 +1,71 @@
+# lightning.pytorch
+seed_everything: true
+
+trainer:
+  accelerator: gpu
+  devices: -1
+  precision: 32
+  max_epochs: 50
+  logger:
+    class_path: lightning.pytorch.loggers.TensorBoardLogger
+    init_args:
+      save_dir: saved
+      name: snp_s96p_ssl
+  callbacks:
+    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+      init_args:
+        monitor: train_loss
+        dirpath: saved/snp_s96p_ssl/checkpoints
+        filename: snp-s96p-encoder-{epoch:02d}-{train_loss:.5f}
+        auto_insert_metric_name: false
+        save_last: true
+        save_top_k: 3
+    - class_path: lightning.pytorch.callbacks.LearningRateMonitor
+      init_args:
+        logging_interval: step
+    - class_path: ml.callbacks.visualization_callbacks.SParameterVisualizer
+      init_args:
+        num_samples: 2
+
+model:
+  class_path: ml.modules.snp_ssl_module.SNPSelfSupervisedModule
+  init_args:
+    model_dim: 768
+    freq_length: 256
+    encoder_type: OptimizedSNPEmbedding
+    decoder_hidden_ratio: 2
+    reconstruction_loss:
+      class_path: ml.utils.snp_losses.SNPReconstructionLoss
+      init_args:
+        magnitude_weight: 1.0
+        phase_weight: 0.5
+        latent_reg_type: l2
+        latent_reg_weight: 0.001
+    use_gradient_checkpointing: true
+    use_mixed_precision: true
+
+data:
+  class_path: ml.data.snp_dataloader.SNPDataModule
+  init_args:
+    data_dirs:
+      - /proj/siaiadm/AI_training_data/D2D/vertical/snp_for_UCIE_20250121
+    file_pattern: "*.S96P"
+    batch_size: 4
+    num_workers: 4
+    pin_memory: true
+    cache_in_memory: false
+
+optimizer:
+  class_path: torch.optim.AdamW
+  init_args:
+    lr: 1e-3
+    weight_decay: 1e-5
+
+lr_scheduler:
+  class_path: ml.utils.lr_schedulers.CosineAnnealingWarmRestartsWithWarmupDecay
+  init_args:
+    T_0: 10
+    T_mult: 2
+    eta_min: 1e-6
+    warmup_epochs: 5
+    decay_factor: 0.95 

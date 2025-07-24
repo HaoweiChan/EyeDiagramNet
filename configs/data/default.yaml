@@ -1,0 +1,37 @@
+# Default Data Collection Configuration for EyeDiagramNet Training Data
+# Used by: simulation.collection.parallel_collector and simulation.collection.sequential_collector
+
+debug: false
+
+dataset:
+  horizontal_dataset:
+    pattern2_cowos_8mi: /proj/siaiadm/AI_training_data/D2D/UCIe_Trace/pattern2/cowos_8mi
+    pattern2_cowos_9mi: /proj/siaiadm/AI_training_data/D2D/UCIe_Trace/pattern2/cowos_9mi
+    pattern2_emib: /proj/siaiadm/AI_training_data/D2D/UCIe_Trace/pattern2/emib
+    pattern2_cowos_8mi_0124: /proj/siaiadm/AI_training_data/D2D/UCIe_Trace/pattern2/cowos_8mi_0124
+    pattern2_cowos_9mi_0124: /proj/siaiadm/AI_training_data/D2D/UCIe_Trace/pattern2/cowos_9mi_0124
+    pattern2_emib_9mi_0124: /proj/siaiadm/AI_training_data/D2D/UCIe_Trace/pattern2/emib_9mi_0124
+    pattern2_emib_10mi_0124: /proj/siaiadm/AI_training_data/D2D/UCIe_Trace/pattern2/emib_10mi_0124
+
+  vertical_dataset:
+    - /proj/siaiadm/AI_training_data/D2D/vertical/snp_for_UCIE_20250121
+    - /proj/siaiadm/AI_training_data/D2D/from_enzo
+
+# Data configuration
+data:
+  trace_pattern: pattern2_cowos_8mi
+  output_dir: "/proj/siaiadm/ew_predictor/data/"
+
+# Boundary parameter configuration
+boundary:
+  param_type: MIX_PARAMS,CTLE_PARAMS
+  max_samples: 50
+  enable_direction: false
+  enable_inductance: false
+
+# Runner configuration
+runner:
+  max_workers: 16        # Increased from 8 to utilize more CPU cores
+  batch_size: 20         # Simulations per pickle write for better I/O efficiency
+  blas_threads: 2        # BLAS threads per worker (1-4 recommended)
+  progress_interval: 5   # Progress reporting interval in seconds

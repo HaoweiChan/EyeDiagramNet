@@ -1,0 +1,89 @@
+#!/bin/bash
+# LSF Job Script for Multinode Training
+#
+# This script is intended to be submitted to LSF via the `bsub` command.
+# Example: bsub < scripts/run_multinode.lsf
+
+# --- LSF Directives ---
+#BSUB -m GPU_3090_4
+#BSUB -gpu "num={{GPU_NUM}}"
+#BSUB -P d_09017
+#BSUB -Is
+#BSUB -q ML_GPU
+#BSUB -app PyTorch
+#BSUB -J multinode
+
+# --- Job Logic ---
+
+# Set PYTHONPATH to include the project root, so imports like "ml.trainer" work.
+echo "Setting PYTHONPATH..."
+export PYTHONPATH=${PWD}:${PYTHONPATH}
+echo "PYTHONPATH set to: $PYTHONPATH"
+
+# === TRAINER COMMAND TO UPDATE ===
+# This is the command that will be launched by torchrun on each node.
+# Do NOT include "python" or "torchrun" here.
+TRAINER_COMMAND="{{TRAINER_COMMAND}}"
+# =================================
+
+echo "Trainer command set to: $TRAINER_COMMAND"
+
+# Set the default MPI prefix. This may be overridden based on the host type.
+MPI_PREFIX=/mktoss/openmpi/4.0.3.ubuntu22/x86-64
+
+# --- Host Parsing ---
+# Parse the LSB_MCPU_HOSTS variable provided by LSF to identify GPU/CPU hosts.
+echo "Parsing LSB_MCPU_HOSTS: $LSB_MCPU_HOSTS"
+CPU_HOSTS=""
+GPU_HOSTS=""
+re='^[0-9]+$'
+
+for loop in $LSB_MCPU_HOSTS; do
+    hostname="${loop%% *}" # Get the hostname part
+    num_procs="${loop##* }" # Get the number of processors part
+
+    if [[ ${hostname:3:3} == 'glx' || ${hostname:3:3} == 'hgx' ]]; then
+        myhost='GPU'
+        myname=$hostname
+        if [ -z "$masternode" ]; then
+            masternode="$myname"
+        fi
+        if [ -z "$GPU_HOSTS" ]; then
+            GPU_HOSTS="$myname:$num_procs"
+        else
+            GPU_HOSTS="$GPU_HOSTS,$myname:$num_procs"
+        fi
+    elif [[ ${hostname:3:3} == 'alx' || ${hostname:3:3} == 'hlx' || ${hostname:3:3} == 'ur' ]]; then
+        myhost='CPU'
+        myname=$hostname
+        if [ -z "$CPU_HOSTS" ]; then
+            CPU_HOSTS="$myname:$num_procs"
+        else
+            CPU_HOSTS="$CPU_HOSTS,$myname:$num_procs"
+        fi
+    fi
+    nproc_per_node=$num_procs
+done
+
+echo "Parsed Hosts --> CPU: $CPU_HOSTS | GPU: $GPU_HOSTS"
+nnodes=$(echo $GPU_HOSTS | tr "," "\n" | wc -l)
+masterport="9487"
+rdzv_id="$RANDOM"
+
+# --- Torchrun and MPI Setup ---
+echo "Configuring torchrun and MPI..."
+GPU_SCRIPT="torchrun --nnodes=$nnodes --nproc_per_node=$nproc_per_node --max_restart=3 --rdzv_id $rdzv_id --rdzv_backend=c10d --rdzv_endpoint=$masternode:$masterport $TRAINER_COMMAND"
+
+# Define MPI options
+MPI_SHARED_OPTIONS="-x PATH -x LD_LIBRARY_PATH --tag-output --bind-to none -mca pml ob1 -mca btl ^openib -mca btl_tcp_if_include bond0 -x NCCL_SOCKET_IFNAME=bond0 -x NCCL_DEBUG=INFO --report-bindings"
+MPI_OPTIONS="$MPI_SHARED_OPTIONS"
+
+echo "Final User Command: $GPU_SCRIPT"
+echo "MPI Options: $MPI_OPTIONS"
+echo "MPI Prefix: $MPI_PREFIX"
+
+# --- Execution ---
+echo "Executing training script with mpirun..."
+mpirun --prefix $MPI_PREFIX $MPI_OPTIONS $GPU_SCRIPT
+
+echo "Job finished."
