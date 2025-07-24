@@ -167,13 +167,22 @@ class DERTransientParams:
     R_odt: float
     C_drv: float
     C_odt: float
-    L_drv: float
-    L_odt: float
-    pulse_amplitude: float
     bits_per_sec: float
     snp_horiz: Any
     snp_drv: Optional[Any] = None
     snp_odt: Optional[Any] = None
+
+    # Parameters from DER_PARAMS in bound_param.py
+    vmask: Optional[float] = None
+    vh: Optional[float] = None
+    vl: Optional[float] = None
+    tvl: Optional[float] = None
+    tvh: Optional[float] = None
+    tr_rising: Optional[float] = None
+    vp: Optional[float] = None
+    tvp: Optional[float] = None
+    tf_rising: Optional[float] = None
+    tf_falling: Optional[float] = None
 
     @classmethod
     def from_config(cls, config: Dict[str, Any]) -> 'DERTransientParams':
@@ -192,7 +201,10 @@ class DERCollectorSimulator:
         if isinstance(config, dict):
             config_dict = config.copy()
         else:
-            config_dict = {attr: getattr(config, attr) for attr in dir(config) if not attr.startswith('_')}
+            if hasattr(config, 'to_dict'):
+                config_dict = config.to_dict()
+            else:
+                config_dict = {attr: getattr(config, attr) for attr in dir(config) if not attr.startswith('_')}
 
         if snp_files:
             if isinstance(snp_files, (tuple, list)) and len(snp_files) >= 1:
@@ -227,21 +239,19 @@ class DERCollectorSimulator:
 
     def run_simulation(self) -> pd.DataFrame:
         """Run the DER simulation and return the results."""
-        der_params = {
-            "R_drv": self.params.R_drv,
-            "R_odt": self.params.R_odt,
-            "C_drv": self.params.C_drv,
-            "C_odt": self.params.C_odt,
-            "L_drv": self.params.L_drv,
-            "L_odt": self.params.L_odt,
-            "pulse_amplitude": self.params.pulse_amplitude,
-            "bits_per_sec": self.params.bits_per_sec,
-        }
+        import dataclasses
+        der_params = dataclasses.asdict(self.params)
 
+        # Clean up None values and network objects before passing
+        params_to_pass = {
+            k: v for k, v in der_params.items() 
+            if v is not None and k not in ['snp_horiz', 'snp_drv', 'snp_odt']
+        }
+        
         with temp_snp_file(self.ntwk) as snp_path:
             df = run_der_simulation(
                 snp_path=snp_path,
-                der_params=der_params
+                der_params=params_to_pass
             )
         return df
 
