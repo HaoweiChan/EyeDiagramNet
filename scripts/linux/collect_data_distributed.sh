@@ -4,8 +4,8 @@
 
 # Load required modules for cluster environment
 module load LSF/mtkgpu
-module load Python3/3.11.8_gpu_torch251
-source /proj/siaiadm/ew_predictor/.venv/sipi/bin/activate.csh
+module load Python3/3.12.2_gpu_torch270
+source /proj/siaiadm/ew_predictor/.venv/sipi_torch270/bin/activate.csh
 
 echo "=========================================="
 echo "EyeDiagramNet - Distributed Data Collection"
