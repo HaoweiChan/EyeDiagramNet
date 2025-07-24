@@ -315,7 +315,7 @@ MIX_PARAMS = ParameterSet(
     vmask=LinearParameter(low=0.02, high=0.05, step=0.01)
 )
 
-DER_PARAMS = DiscreteParameterSet(DER_CASES = [
+DER_PARAMS = DiscreteParameterSet([
     {
         "R_drv": 14.45,
         "R_odt": 1e5,
