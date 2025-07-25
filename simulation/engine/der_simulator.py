@@ -15,7 +15,7 @@ from simulation.parameters.bound_param import DER_PARAMS
 
 # Absolute path where the `from_enzo` package resides.
 # Adjust as necessary if the directory moves.
-DEFAULT_MODULE_ROOT = Path("/proj/siaiadm/ddr_peak_distortion_analysis/enzo/20250623_to_willy")
+DEFAULT_MODULE_ROOT = Path("/proj/siaiadm/ddr_peak_distorsion_analysis/enzo/20250623_to_willy")
 
 
 # -------------------------------------------------
