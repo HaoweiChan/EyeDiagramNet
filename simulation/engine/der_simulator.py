@@ -140,9 +140,19 @@ def run_der_simulation(
         env = os.environ.copy()
         # Default to the hard-coded module root if caller didn't provide one
         module_roots = module_roots or [DEFAULT_MODULE_ROOT]
+        
+        # Validate that the DEFAULT_MODULE_ROOT indeed contains 'from_enzo'
+        for root in module_roots:
+            if Path(root) == DEFAULT_MODULE_ROOT and not (DEFAULT_MODULE_ROOT / "from_enzo").exists():
+                raise FileNotFoundError(
+                    f"DEFAULT_MODULE_ROOT ({DEFAULT_MODULE_ROOT}) does not contain the expected 'from_enzo' directory. "
+                    f"Please ensure the external module path is correct and accessible."
+                )
+
         extra_paths = [str(Path(p).expanduser()) for p in module_roots]
-        existing = env.get("PYTHONPATH", "")
-        env["PYTHONPATH"] = os.pathsep.join(extra_paths + ([existing] if existing else []))
+        # Explicitly set PYTHONPATH to only include our desired paths
+        # This prevents issues with inherited inconsistent PYTHONPATH values
+        env["PYTHONPATH"] = os.pathsep.join(extra_paths)
 
         # Run subprocess and capture output for debugging purposes
         try:
