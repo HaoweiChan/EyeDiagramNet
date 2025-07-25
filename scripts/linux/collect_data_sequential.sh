@@ -21,8 +21,8 @@ echo "Sequential processing mode - optimizing BLAS threads for single-process ex
 echo "This mode eliminates multiprocessing overhead and shared memory complexity"
 
 # Configuration
-set cfg_file = "configs/data/d2d_novert_nodir_noind_noctle.yaml"
-set python_cmd = ( python3 -m simulation.collection.sequential_collector --config $cfg_file $argv )
+set cfg_file = "configs/data/d2d_der_novert.yaml"
+set python_cmd = ( python3 -m simulation.collection.sequential_collector --config $cfg_file --simulator-type "der" $argv )
 
 echo "Starting sequential data collection..."
 echo "Using optimized sequential processing: single process with high BLAS thread count"

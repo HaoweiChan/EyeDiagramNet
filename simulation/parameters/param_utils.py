@@ -7,10 +7,24 @@ def parse_param_types(param_type_str: str) -> List[str]:
     """Parse comma-separated parameter type string into a list of valid types."""
     valid_types = list(PARAM_SETS_MAP.keys())
     param_types = [ptype.strip() for ptype in param_type_str.split(',')]
+    
+    processed_types = []
     for ptype in param_types:
-        if ptype not in valid_types:
-            raise ValueError(f"Invalid parameter type: {ptype}. Valid types: {valid_types}")
-    return param_types
+        if ptype in valid_types:
+            processed_types.append(ptype)
+            continue
+        
+        # Be lenient: if user provides "DER", auto-correct to "DER_PARAMS"
+        ptype_with_suffix = f"{ptype}_PARAMS"
+        if ptype_with_suffix in valid_types:
+            print(f"[CONFIG WARNING] Corrected param_type '{ptype}' to '{ptype_with_suffix}'.")
+            processed_types.append(ptype_with_suffix)
+            continue
+            
+        # If still not found, raise an error
+        raise ValueError(f"Invalid parameter type: {ptype}. Valid types: {valid_types}")
+            
+    return processed_types
 
 def modify_params_for_inductance(param_set, enable_inductance):
     """Modify parameter set to zero out inductance if disabled"""
