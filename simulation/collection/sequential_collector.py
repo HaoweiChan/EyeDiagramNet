@@ -312,6 +312,14 @@ Metadata Error: {meta_error}
         print(f"  Shuffle work items: {shuffle}")
         print(f"  Simulator type: {simulator_type}")
         
+        # Validate parameter types against simulator type
+        if simulator_type == 'der':
+            if not all(ptype == 'DER_PARAMS' for ptype in param_types):
+                raise ValueError(f"For 'der' simulator, only 'DER_PARAMS' is allowed as param_type. Got: {param_types}")
+        elif simulator_type == 'sbr':
+            if 'DER_PARAMS' in param_types:
+                raise ValueError(f"For 'sbr' simulator, 'DER_PARAMS' is not allowed as param_type. Got: {param_types}")
+
         # Create output directory
         trace_specific_output_dir = output_dir / trace_pattern_key
         trace_specific_output_dir.mkdir(parents=True, exist_ok=True)
@@ -552,6 +560,7 @@ Metadata Error: {meta_error}
                         }
                         if simulator_type == 'sbr':
                             sim_kwargs['directions'] = sim_directions
+                            sim_kwargs['use_optimized'] = use_optimized # Pass use_optimized from function arg
 
                         line_ew = simulation_func(**sim_kwargs)
                         simulation_successful = True

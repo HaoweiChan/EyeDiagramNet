@@ -1541,6 +1541,14 @@ def main():
     print(f"  Platform: {platform.system()}")
     print(f"  Simulator Type: {simulator_type}")
     
+    # Validate parameter types against simulator type
+    if simulator_type == 'der':
+        if not all(ptype == 'DER_PARAMS' for ptype in param_types):
+            raise ValueError(f"For 'der' simulator, only 'DER_PARAMS' is allowed as param_type. Got: {param_types}")
+    elif simulator_type == 'sbr':
+        if 'DER_PARAMS' in param_types:
+            raise ValueError(f"For 'sbr' simulator, 'DER_PARAMS' is not allowed as param_type. Got: {param_types}")
+
     # Validate resource allocation before starting
     print("\n--- Resource Validation ---")
     validate_worker_allocation(max_workers, blas_threads)
