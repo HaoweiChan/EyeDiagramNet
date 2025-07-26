@@ -281,7 +281,7 @@ Metadata Error: {meta_error}
     def collect_data(self, trace_pattern_key: str, trace_pattern: str, vertical_dirs: List[str], 
                     output_dir: Path, param_types: List[str], max_samples: int, 
                     enable_direction: bool = False, enable_inductance: bool = False, shuffle: bool = False,
-                    simulator_type: str = 'sbr') -> Dict[str, Any]:
+                    simulator_type: str = 'sbr', use_optimized: bool = False) -> Dict[str, Any]:
         """
         Collect eye width simulation data using optimized sequential processing
         
@@ -296,6 +296,7 @@ Metadata Error: {meta_error}
             enable_inductance: Whether to enable inductance modifications
             shuffle: Whether to shuffle the work items before processing
             simulator_type: The type of simulator to use ('sbr' or 'der')
+            use_optimized: Whether to use optimized SBR simulation functions.
         
         Returns:
             Collection statistics and results
@@ -311,6 +312,7 @@ Metadata Error: {meta_error}
         print(f"  Enable inductance: {enable_inductance}")
         print(f"  Shuffle work items: {shuffle}")
         print(f"  Simulator type: {simulator_type}")
+        print(f"  Use optimized: {use_optimized}")
         
         # Validate parameter types against simulator type
         if simulator_type == 'der':
@@ -412,7 +414,7 @@ Metadata Error: {meta_error}
                 self._process_trace_file(
                     trace_snp, vertical_pair, samples_needed, pickle_file,
                     combined_params, enable_direction, pbar, param_types, max_samples,
-                    simulator_type
+                    simulator_type, use_optimized
                 )
         
         self.stats["end_time"] = time.time()
@@ -444,7 +446,7 @@ Metadata Error: {meta_error}
     def _process_trace_file(self, trace_snp: Path, vertical_pair: Tuple[Path, Path], 
                            samples_needed: int, pickle_file: Path, combined_params: Any,
                            enable_direction: bool, pbar: tqdm, param_types: List[str], max_samples: int,
-                           simulator_type: str):
+                           simulator_type: str, use_optimized: bool):
         """Process a single trace file with optimized sequential processing"""
         
         # INITIAL RACE CONDITION CHECK: Verify quota not already filled by other parallel jobs
@@ -560,7 +562,7 @@ Metadata Error: {meta_error}
                         }
                         if simulator_type == 'sbr':
                             sim_kwargs['directions'] = sim_directions
-                            sim_kwargs['use_optimized'] = use_optimized # Pass use_optimized from function arg
+                            sim_kwargs['use_optimized'] = use_optimized
 
                         line_ew = simulation_func(**sim_kwargs)
                         simulation_successful = True
@@ -731,6 +733,7 @@ def main():
     parser = build_argparser()
     parser.add_argument('--shuffle', action='store_true', help='Shuffle the work items before processing')
     parser.add_argument('--simulator-type', type=str, default='sbr', choices=['sbr', 'der'], help='Type of simulator to use')
+    parser.add_argument('--use-optimized', action='store_true', help='Use optimized SBR simulation functions.')
     args = parser.parse_args(_remaining_argv)
     
     # Load configuration
@@ -769,6 +772,9 @@ def main():
     # Handle simulator type
     simulator_type = args.simulator_type or config.get('runner', {}).get('simulator_type', 'sbr')
 
+    # Handle use_optimized logic
+    use_optimized = args.use_optimized or config.get('runner', {}).get('use_optimized', False)
+
     debug = args.debug if args.debug else config.get('debug', False)
     
     # Get batch size from config, ignoring runner section worker-specific settings
@@ -790,6 +796,7 @@ def main():
     print(f"  Batch size: {batch_size}")
     print(f"  Processing mode: Sequential (using all cores)")
     print(f"  Simulator Type: {simulator_type}")
+    print(f"  Use optimized: {use_optimized}")
     
     # Create collector
     collector = SequentialCollector(config, debug=debug)
@@ -806,7 +813,8 @@ def main():
             enable_direction=enable_direction,
             enable_inductance=enable_inductance,
             shuffle=shuffle,
-            simulator_type=simulator_type
+            simulator_type=simulator_type,
+            use_optimized=use_optimized
         )
         
         print(f"\nCollection completed successfully!")
