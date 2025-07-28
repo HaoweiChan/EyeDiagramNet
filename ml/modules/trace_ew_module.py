@@ -528,7 +528,7 @@ class TraceEWModule(LightningModule):
         
         # Pre-compute coverage metrics to avoid redundant calculations
         coverage_metrics = {}
-        if mask.any():
+        if self.hparams.predict_logvar and mask.any():
             for key in self.metrics[stage].keys():
                 if 'cov' in key:
                     sigma_multiplier = 1.0 if '1s' in key else 2.0
@@ -554,7 +554,10 @@ class TraceEWModule(LightningModule):
         stage = self.convert_metric_name(stage)
         log_metrics = {}
         for key, metric in self.metrics[stage].items():
-            log_metrics[f'{stage}/{key}'] = metric.compute()
+            if not self.hparams.predict_logvar and 'cov' in key:
+                log_metrics[f'{stage}/{key}'] = float('nan')
+            else:
+                log_metrics[f'{stage}/{key}'] = metric.compute()
             metric.reset()
         if stage in ("train_", "val") and self.logger is not None:
             self.logger.log_metrics(log_metrics, self.current_epoch)

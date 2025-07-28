@@ -295,7 +295,7 @@ class EyeWidthRegressor(nn.Module):
             values, log_var, logits = torch.unbind(output, dim=-1)
         else:
             values, logits = torch.unbind(output, dim=-1)
-            log_var = torch.ones_like(values) * -1e6 # Return a very small log_var
+            log_var = torch.zeros_like(values)
 
         return values, log_var, logits
 

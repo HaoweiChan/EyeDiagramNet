@@ -125,7 +125,8 @@ def plot_ew_curve(outputs, metrics, ew_threshold, sigma=2):
     ax1 = fig.add_subplot(gs[0, 0])
     ax1.set_title('Eye width')
     ax1.plot(pred_ew * pred_mask, color='#1777b4', alpha=0.8, label='Pred')
-    ax1.fill_between(np.arange(len(pred_ew)), upper_mask, lower_masked, color='#aec7e8', alpha=0.3, label='\u00B1\u03C3')
+    if pred_sigma.abs().sum() > 1e-6:
+        ax1.fill_between(np.arange(len(pred_ew)), upper_mask, lower_masked, color='#aec7e8', alpha=0.3, label='\u00B1\u03C3')
     ax1.plot(true_ew * true_prob, color='#111111', alpha=0.8, label='True')
     ax1.legend(loc='lower right')
 
