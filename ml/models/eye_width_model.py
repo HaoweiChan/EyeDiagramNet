@@ -209,8 +209,7 @@ class EyeWidthRegressor(nn.Module):
         trace_seq: torch.Tensor,
         direction: torch.Tensor,
         boundary: torch.Tensor,
-        snp_vert: torch.Tensor,
-        output_hidden_states: bool = False
+        snp_vert: torch.Tensor
     ):
         """
         Predict frequency response of the given trace inputs and query frequencies
@@ -220,13 +219,11 @@ class EyeWidthRegressor(nn.Module):
             direction (torch.Tensor): Direction inputs of shape (B, P), specifying the Tx/Rx directions of the signal traces.
             boundary (torch.Tensor): Selected port indices of the signal traces of shape (B, P), where B is the batch size and P is the number of ports.
             snp_vert (torch.Tensor): Vertical S-parameter inputs of shape (B, 2, F, P, P), where Tx and Rx vertical S-parameter information is stacked at dimension 1.
-            output_hidden_states (bool, optional): Whether to output shared hidden states. Defaults to False.
 
         Returns:
             values (torch.Tensor): Predicted eye width averages of shape (B, P), where B is the batch size and P is the number of ports.
             log_var (torch.Tensor): Predicted eye width sigmas of shape (B, P).
             logits (torch.Tensor): Predicted open-eye probability logits (real values, before sigmoid) of shape (B, P).
-            hidden_states_sig (torch.Tensor, optional): Hidden states of shared embedding before output head of shape (B, P, D), only returned if output_hidden_states is True.
         """
         # Process trace sequence
         if self.use_gradient_checkpointing and self.training:
@@ -300,8 +297,6 @@ class EyeWidthRegressor(nn.Module):
             values, logits = torch.unbind(output, dim=-1)
             log_var = torch.ones_like(values) * -1e6 # Return a very small log_var
 
-        if output_hidden_states:
-            return values, log_var, logits, hidden_states_sig
         return values, log_var, logits
 
     def predict_with_uncertainty(

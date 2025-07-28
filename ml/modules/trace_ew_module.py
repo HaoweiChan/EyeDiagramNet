@@ -387,9 +387,8 @@ class TraceEWModule(LightningModule):
             pred_ew_eval = pred_logvar_eval = pred_prob_eval = None
 
         # Gradient-carrying forward pass (always)
-        pred_ew, pred_logvar, pred_logits, hidden_states = self(
-            item.trace_seq, item.direction, item.boundary, item.snp_vert,
-            output_hidden_states=True
+        pred_ew, pred_logvar, pred_logits = self(
+            item.trace_seq, item.direction, item.boundary, item.snp_vert
         )
         pred_prob = torch.sigmoid(pred_logits)
 
@@ -398,13 +397,13 @@ class TraceEWModule(LightningModule):
             pred_ew_eval, pred_logvar_eval, pred_prob_eval = pred_ew, pred_logvar, pred_prob
 
         return {
-            "train":   (pred_ew, pred_logvar, pred_prob, hidden_states),
+            "train":   (pred_ew, pred_logvar, pred_prob),
             "eval":    (pred_ew_eval, pred_logvar_eval, pred_prob_eval)
         }
 
     def _compute_loss(self, item: "BatchItem", forward_out):
         """Calculate composite loss and prepare everything needed for metric updates."""
-        pred_ew, pred_logvar, pred_prob, hidden_states = forward_out["train"]
+        pred_ew, pred_logvar, pred_prob = forward_out["train"]
 
         # --- classification helpers --------------------------------------------------
         true_prob = (item.true_ew > 0).float()
@@ -416,12 +415,12 @@ class TraceEWModule(LightningModule):
             loss = self.weighted_loss({
                 'nll': losses.gaussian_nll_loss(pred_ew, item.true_ew, pred_logvar, mask=true_prob),
                 'bce': F.binary_cross_entropy_with_logits(pred_prob, true_prob, weight=weight_prob)
-            }, hidden_states)
+            })
         else:
             loss = self.weighted_loss({
                 'mse': F.mse_loss(pred_ew[true_prob.bool()], item.true_ew[true_prob.bool()]),
                 'bce': F.binary_cross_entropy_with_logits(pred_prob, true_prob, weight=weight_prob)
-            }, hidden_states)
+            })
 
 
         # Use the eval tensors (may come from MC/Laplace inference) for metrics
