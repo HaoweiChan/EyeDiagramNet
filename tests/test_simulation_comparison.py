@@ -14,7 +14,7 @@ except ImportError:
 
 # Source 2: The current EyeWidthSimulator class.
 try:
-    from simulation.engine.eye_width_simulator import EyeWidthSimulator
+    from simulation.engine.sbr_simulator import EyeWidthSimulator
     from simulation.parameters.bound_param import SampleResult
     NEW_SIMULATOR_AVAILABLE = True
     print("Successfully imported `EyeWidthSimulator`.")

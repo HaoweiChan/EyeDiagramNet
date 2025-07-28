@@ -1,5 +1,5 @@
 #!/bin/bash
-# Sequential Data Collection Script for EyeDiagramNet
+# Sequential Data Collection Script
 # Uses the same configuration file as parallel collector but runs sequentially
 # for better performance when multiprocessing overhead is too high
 

@@ -1,9 +1,9 @@
 #!/bin/bash
-# Distributed Data Collection Script for macOS (Testing)
+# Distributed Data Collection Script
 # Runs one sequential_collector process per trace pattern for testing.
 
 echo "=========================================="
-echo "EyeDiagramNet - Distributed Data Collection (macOS)"
+echo "EyeDiagramNet - Distributed Data Collection"
 echo "One process per trace pattern for testing"
 echo "=========================================="
 

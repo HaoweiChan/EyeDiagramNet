@@ -11,7 +11,7 @@ The test covers:
 2. BLAS threading configuration impact
 3. Memory access patterns and cache effects
 4. Multiprocessing vs threading performance
-5. Specific operations used in eye_width_simulator.py
+5. Specific operations used in sbr_simulator.py
 
 Usage:
     python test_parallel_scipy_performance.py [--workers 4] [--verbose]
@@ -49,7 +49,7 @@ except ImportError as e:
 
 try:
     from common.signal_utils import read_snp
-    from simulation.engine.eye_width_simulator import snp_eyewidth_simulation, EyeWidthSimulator
+    from simulation.engine.sbr_simulator import snp_eyewidth_simulation, EyeWidthSimulator
     from simulation.engine.network_utils import s2y, y2s, s2z, z2s, nudge_eig, rsolve
     from simulation.parameters.bound_param import SampleResult
     SIMULATION_AVAILABLE = True
@@ -115,7 +115,7 @@ class BLASConfigManager:
         return f"OMP:{config['OMP_NUM_THREADS']}, MKL:{config['MKL_NUM_THREADS']}, OPENBLAS:{config['OPENBLAS_NUM_THREADS']}"
 
 class SciPyOperationBenchmark:
-    """Benchmarks specific scipy operations used in eye_width_simulator.py"""
+    """Benchmarks specific scipy operations used in sbr_simulator.py"""
     
     def __init__(self, verbose=False):
         self.verbose = verbose
@@ -126,7 +126,7 @@ class SciPyOperationBenchmark:
             print(f"[BENCH] {message}")
     
     def create_test_matrices(self, size: int = 200) -> Tuple[np.ndarray, np.ndarray]:
-        """Create test matrices similar to those in eye_width_simulator.py"""
+        """Create test matrices similar to those in sbr_simulator.py"""
         np.random.seed(42)  # Consistent results
         
         # Create S-parameter-like matrices (complex)
@@ -139,7 +139,7 @@ class SciPyOperationBenchmark:
         return s_matrix, z0
     
     def create_test_frequency_data(self, nfreq: int = 1000, nports: int = 8) -> Tuple[np.ndarray, np.ndarray]:
-        """Create frequency-domain data similar to eye_width_simulator.py"""
+        """Create frequency-domain data similar to sbr_simulator.py"""
         np.random.seed(42)
         
         # Frequency array
@@ -228,7 +228,7 @@ class SciPyOperationBenchmark:
         start_time = time.perf_counter()
         
         for i in range(iterations):
-            # Simulate the pattern from eye_width_simulator.py
+            # Simulate the pattern from sbr_simulator.py
             s_data = s_matrix[i % s_matrix.shape[0]]
             
             # Parameter conversion chain (s2z -> operations -> z2s)

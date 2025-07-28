@@ -8,7 +8,7 @@ export PYTHONPATH="${PYTHONPATH}:$(pwd)"
 CONFIG_FILE="configs/training/pretrain_snp_ssl.yaml"
 
 # Pass all command line arguments after the script name to the trainer
-# Example: ./scripts/pretrain_snp_macos.sh fit --trainer.max_epochs 5
+# Example: ./scripts/macos/pretrain_snp.sh fit --trainer.max_epochs 5
 ARGS="$@"
 
 echo "========================================="

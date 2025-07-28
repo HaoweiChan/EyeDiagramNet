@@ -1,5 +1,5 @@
 #!/bin/tcsh
-# Sequential data collection script for EyeDiagramNet (Linux Production)
+# Sequential data collection script for EyeDiagramNet
 # Uses single-process execution with optimized BLAS threading
 # Target: 75-85% CPU usage with maximum per-operation performance
 
@@ -8,7 +8,7 @@ module load LSF/mtkgpu
 module load Python3/3.11.8_gpu_torch251
 source /proj/siaiadm/ew_predictor/.venv/sipi/bin/activate.csh
 
-# Sequential processing resource settings for Linux production
+# Sequential processing resource settings
 # The sequential_collector will automatically detect Linux and use:
 # - Optimized BLAS threads (75-85% of available cores)
 # - Single-process execution (no multiprocessing overhead)
@@ -24,7 +24,7 @@ echo "This mode eliminates multiprocessing overhead and shared memory complexity
 set cfg_file = "configs/data/d2d_novert_nodir_noind_noctle.yaml"
 set python_cmd = ( python3 -m simulation.collection.sequential_collector --config $cfg_file $argv )
 
-echo "Starting sequential data collection for Linux (production mode)..."
+echo "Starting sequential data collection..."
 echo "Using optimized sequential processing: single process with high BLAS thread count"
 echo "Config file: $cfg_file"
 

@@ -1,5 +1,5 @@
 #!/bin/tcsh
-# Distributed Data Collection Script for Linux (Production)
+# Distributed Data Collection Script (Production)
 # Submits ONE bsub job per trace pattern for maximum parallelization.
 
 # Load required modules for cluster environment
@@ -8,7 +8,7 @@ module load Python3/3.11.8_gpu_torch251
 source /proj/siaiadm/ew_predictor/.venv/sipi/bin/activate.csh
 
 echo "=========================================="
-echo "EyeDiagramNet - Distributed Data Collection (Linux)"
+echo "EyeDiagramNet - Distributed Data Collection"
 echo "One bsub job per trace pattern for maximum parallelization"
 echo "=========================================="
 
