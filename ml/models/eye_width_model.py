@@ -85,18 +85,18 @@ class EyeWidthRegressor(nn.Module):
         self,
         num_types,
         model_dim,
-        predict_logvar,
         num_heads,
         num_layers,
         dropout,
         freq_length,
         use_rope=True,
         max_seq_len=2048,
-        max_ports=1000,
+        max_traces=1000,
         use_gradient_checkpointing=False,
         pretrained_snp_path=None,
         freeze_snp_encoder=False,
         ignore_snp=False,
+        predict_logvar=True,
     ):
         super().__init__()
 
@@ -176,12 +176,12 @@ class EyeWidthRegressor(nn.Module):
             self.odt_token = None
         
         # Positional encoding (only used if not using RoPE)
-        if not use_rope:
-            signal_projection = positional_encoding_1d(model_dim, max_len=max_seq_len)
-            self.register_buffer('signal_projection', signal_projection)
-        else:
-            # For RoPE, we don't need explicit positional embeddings
-            self.signal_projection = None
+        # It will be zeroed out if using RoPE to maintain the same interface, but still available.
+        signal_projection = positional_encoding_1d(model_dim, max_len=max_traces)
+        if use_rope:
+            # If using RoPE, zero out the signal_projection as it's not explicitly used for positional encoding
+            signal_projection = torch.zeros_like(signal_projection)
+        self.register_buffer('signal_projection', signal_projection)
 
         # Prediction heads
         # self.pred_head = PredictionHead(model_dim, output_dim, dropout)
@@ -255,12 +255,11 @@ class EyeWidthRegressor(nn.Module):
 
         num_signals = hidden_states_seq.size(1)
         
-        # Add positional embeddings only if not using RoPE
-        if not self.use_rope and self.signal_projection is not None:
-            signal_embeds = self.signal_projection[:num_signals].unsqueeze(0) # (B, L, M)
-            hidden_states_seq = hidden_states_seq + signal_embeds
-            if not self.ignore_snp:
-                hidden_states_vert = hidden_states_vert + signal_embeds.unsqueeze(0)
+        # Add positional embeddings (always present, but may be zeroed if using RoPE)
+        signal_embeds = self.signal_projection[:num_signals].unsqueeze(0) # (B, L, M)
+        hidden_states_seq = hidden_states_seq + signal_embeds
+        if not self.ignore_snp:
+            hidden_states_vert = hidden_states_vert + signal_embeds.unsqueeze(0)
         
         # Concatenate all hidden states
         if not self.ignore_snp:
@@ -292,9 +291,11 @@ class EyeWidthRegressor(nn.Module):
         # Predict eye width and open eye probabilities respectively
         output = self.pred_head(hidden_states_sig)
         if self.predict_logvar:
-            values, log_var, logits = torch.unbind(output, dim=-1)
+            values, log_var, logits = output.split([1, 1, 1], dim=-1)
+            values, log_var, logits = values.squeeze(-1), log_var.squeeze(-1), logits.squeeze(-1)
         else:
-            values, logits = torch.unbind(output, dim=-1)
+            values, logits = output.split([1, 1], dim=-1)
+            values, logits = values.squeeze(-1), logits.squeeze(-1)
             log_var = torch.zeros_like(values)
 
         return values, log_var, logits

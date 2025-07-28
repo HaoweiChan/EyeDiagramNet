@@ -82,6 +82,8 @@ class TraceEWModule(LightningModule):
         # Set ignore_snp on the model if it supports it
         if hasattr(model, 'ignore_snp'):
             model.ignore_snp = ignore_snp
+        if hasattr(model, 'predict_logvar'):
+            model.predict_logvar = self.hparams.predict_logvar
 
         self.model = model
         self.train_step_outputs = {}
