@@ -26,9 +26,18 @@ echo "OMP_NUM_THREADS: $OMP_NUM_THREADS"
 bhosts GPU_3090_4
 set python_cmd = ( \
     python3 -m ml.trainer fit --config configs/training/train_ew_xfmr.yaml \
-    --trainer.num_nodes 1 \
-    # --trainer.devices 1 \
-    --trainer.limit_train_batches 1 --trainer.limit_val_batches 1 --trainer.max_epochs 10 \
+    --trainer.num_nodes 1
 )
+
+if ( "$1" == "--debug" ) then
+    set python_cmd = ( \
+        $python_cmd \
+        --trainer.devices 1 \
+        --trainer.limit_train_batches 1 \
+        --trainer.limit_val_batches 1 \
+        --trainer.max_epochs 10 \
+        --trainer.check_val_every_n_epoch 1 \
+    )
+endif
 
 bsub -Is -J LongJob -q ML_GPU -app PyTorch -P d_09017 -gpu "num=4" -m GPU_3090_4 $python_cmd
