@@ -118,7 +118,12 @@ class TraceSeqEWDataloader(LightningDataModule):
 
             configs, directions, eye_widths, snp_paths = [], [], [], []
             for sample in sorted_vals:
-                configs.append(sample[0][:min_len])
+                sample_configs = sample[0]
+                if sample_configs and isinstance(sample_configs[0], list):
+                    # Handle malformed configs: list of lists instead of list of dicts
+                    sample_configs = [cfg[0] for cfg in sample_configs if cfg]
+
+                configs.append(sample_configs[:min_len])
                 directions.append(sample[1][:min_len])
                 eye_widths.append(sample[2][:min_len])
                 snp_paths.append(sample[3][:min_len])
