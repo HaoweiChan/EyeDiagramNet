@@ -61,7 +61,6 @@ class BatchItem:
     boundary: torch.Tensor
     snp_vert: torch.Tensor
     true_ew: torch.Tensor
-    port_positions: torch.Tensor = None
 
 class TraceEWModule(LightningModule):
     def __init__(
@@ -320,17 +319,10 @@ class TraceEWModule(LightningModule):
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
         # Model handles uncertainty method internally
-        # Handle both old format (4 items) and new format (5 items with port_positions)
-        if len(batch) == 5:
-            trace_seq, direction, boundary, snp_vert, port_positions = batch
-            pred_ew, _, _, _, pred_logits = self.model.predict_with_uncertainty(
-                trace_seq, direction, boundary, snp_vert, port_positions
-            )
-        else:
-            trace_seq, direction, boundary, snp_vert = batch
-            pred_ew, _, _, _, pred_logits = self.model.predict_with_uncertainty(
-                trace_seq, direction, boundary, snp_vert
-            )
+        trace_seq, direction, boundary, snp_vert = batch
+        pred_ew, _, _, _, pred_logits = self.model.predict_with_uncertainty(
+            trace_seq, direction, boundary, snp_vert
+        )
         pred_prob = torch.sigmoid(pred_logits)
         
         pred_ew = pred_ew * self.ew_scaler
@@ -372,14 +364,9 @@ class TraceEWModule(LightningModule):
 
     def _to_batch_item(self, raw) -> "BatchItem":
         """Convert the raw tuple coming from DataLoader into a BatchItem and apply EW scaling."""
-        # Handle both old format (5 items) and new format (6 items with port_positions)
-        if len(raw) == 6:
-            trace_seq, direction, boundary, snp_vert, true_ew, port_positions = raw
-        else:
-            trace_seq, direction, boundary, snp_vert, true_ew = raw
-            port_positions = None
+        trace_seq, direction, boundary, snp_vert, true_ew = raw
         true_ew = true_ew * self.ew_scaler_inv.to(true_ew.device)
-        return BatchItem(trace_seq, direction, boundary, snp_vert, true_ew, port_positions)
+        return BatchItem(trace_seq, direction, boundary, snp_vert, true_ew)
 
     def _run_model(self, item: "BatchItem", stage: str):
         """
@@ -391,7 +378,7 @@ class TraceEWModule(LightningModule):
         # Use the model's internal uncertainty logic (Laplace or MC)
         if stage == "val" and hasattr(self.model, 'predict_with_uncertainty'):
             pred_ew_eval, total_var, _, _, pred_logits_eval = self.model.predict_with_uncertainty(
-                item.trace_seq, item.direction, item.boundary, item.snp_vert, item.port_positions
+                item.trace_seq, item.direction, item.boundary, item.snp_vert
             )
             pred_prob_eval = torch.sigmoid(pred_logits_eval)
             pred_logvar_eval = torch.log(total_var + 1e-8)
@@ -400,7 +387,7 @@ class TraceEWModule(LightningModule):
 
         # Gradient-carrying forward pass (always)
         pred_ew, pred_logvar, pred_logits, hidden_states = self(
-            item.trace_seq, item.direction, item.boundary, item.snp_vert, item.port_positions,
+            item.trace_seq, item.direction, item.boundary, item.snp_vert,
             output_hidden_states=True
         )
         pred_prob = torch.sigmoid(pred_logits)

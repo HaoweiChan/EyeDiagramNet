@@ -16,17 +16,16 @@ class _ForwardWrapper(nn.Module):
     Laplace-torch assumes model(x) where x is a single tensor.
     We wrap EyeWidthRegressor so that x is a *tuple* of the four usual inputs.
     """
-    def __init__(self, base: nn.Module, sample_direction=None, sample_boundary=None, sample_snp_vert=None, sample_port_positions=None):
+    def __init__(self, base: nn.Module, sample_direction=None, sample_boundary=None, sample_snp_vert=None):
         super().__init__()
         self.base = base
         self.sample_direction = sample_direction
         self.sample_boundary = sample_boundary
         self.sample_snp_vert = sample_snp_vert
-        self.sample_port_positions = sample_port_positions
 
     def forward(self, x):
         if isinstance(x, tuple): # Normal call with all inputs
-            trace_seq, direction, boundary, snp_vert, port_positions = x
+            trace_seq, direction, boundary, snp_vert = x
         elif isinstance(x, torch.Tensor) and self.sample_direction is not None:
             # Call from _find_last_layer, x is trace_seq
             trace_seq = x
@@ -38,7 +37,6 @@ class _ForwardWrapper(nn.Module):
                 direction = self.sample_direction.to(current_device)
                 boundary = self.sample_boundary.to(current_device)
                 snp_vert = self.sample_snp_vert.to(current_device)
-                port_positions = self.sample_port_positions.to(current_device) if self.sample_port_positions is not None else None
             else:
                 # If _find_last_layer passes a batch > 1, this needs more robust handling
                 # For now, assume B=1 or replicate/slice sample.
@@ -53,15 +51,12 @@ class _ForwardWrapper(nn.Module):
                 boundary = self.sample_boundary.to(current_device).expand(batch_size, -1) if self.sample_boundary.ndim == 2 else self.sample_boundary.to(current_device).expand(batch_size, -1, -1)
                 snp_vert_shape = self.sample_snp_vert.shape
                 snp_vert = self.sample_snp_vert.to(current_device).expand(batch_size, *snp_vert_shape[1:])
-                port_positions_shape = self.sample_port_positions.shape
-                port_positions = self.sample_port_positions.to(current_device).expand(batch_size, *port_positions_shape[1:]) if self.sample_port_positions is not None else None
-
 
         else:
             raise TypeError(f"Input to _ForwardWrapper must be a tuple or a single trace_seq tensor (if sample inputs provided). Got {type(x)}")
 
         # For likelihood='regression', Laplace expects a single output (mean)
-        values, _, _ = self.base(trace_seq, direction, boundary, snp_vert, port_positions)
+        values, _, _ = self.base(trace_seq, direction, boundary, snp_vert)
         
         # Ensure values is 1D for Laplace regression (flatten all outputs)
         values = values.view(-1).contiguous()  # Flatten to 1D and ensure contiguous layout
@@ -149,10 +144,6 @@ class EyeWidthRegressor(nn.Module):
         # Direction embedding (0 for Tx, 1 for Rx)
         self.dir_projection = nn.Embedding(2, model_dim)
 
-        # Port position encoding
-        port_position_encoding = positional_encoding_1d(model_dim, max_len=max_ports)
-        self.register_buffer('port_position_encoding', port_position_encoding)
-
         # Structured boundary condition processor with CTLE gating
         # self.boundary_processor = StructuredGatedBoundaryProcessor(model_dim)
         self.boundary_processor = nn.Sequential(
@@ -218,7 +209,6 @@ class EyeWidthRegressor(nn.Module):
         direction: torch.Tensor,
         boundary: torch.Tensor,
         snp_vert: torch.Tensor,
-        port_positions: torch.Tensor = None,
         output_hidden_states: bool = False
     ):
         """
@@ -229,7 +219,6 @@ class EyeWidthRegressor(nn.Module):
             direction (torch.Tensor): Direction inputs of shape (B, P), specifying the Tx/Rx directions of the signal traces.
             boundary (torch.Tensor): Selected port indices of the signal traces of shape (B, P), where B is the batch size and P is the number of ports.
             snp_vert (torch.Tensor): Vertical S-parameter inputs of shape (B, 2, F, P, P), where Tx and Rx vertical S-parameter information is stacked at dimension 1.
-            port_positions (torch.Tensor): Port position indices of shape (B, P), specifying the original physical position of each port.
             output_hidden_states (bool, optional): Whether to output shared hidden states. Defaults to False.
 
         Returns:
@@ -259,22 +248,9 @@ class EyeWidthRegressor(nn.Module):
                 )
             else:
                 hidden_states_vert = self.snp_encoder(snp_vert, drv_token=self.drv_token, odt_token=self.odt_token)
-        else:
-            # Create dummy SNP states with same dimensions as expected
-            batch_size = hidden_states_seq.size(0)
-            # Expected SNP output shape: (B, 2, num_traces, model_dim)
-            num_traces = hidden_states_seq.size(1)
-            hidden_states_vert = torch.zeros(batch_size, 2, num_traces, self.model_dim, 
-                                           device=hidden_states_seq.device, dtype=hidden_states_seq.dtype)
-
         # Process direction embedding
         hidden_states_dir = self.dir_projection(direction) # (B, P, M)
         
-        # Add port position encoding if provided
-        if port_positions is not None:
-            port_pos_embeds = self.port_position_encoding[port_positions.long()] # (B, P, M)
-            hidden_states_seq = hidden_states_seq + port_pos_embeds
-
         # Sum all hidden states and forward to the signal sequence decoder
         hidden_states_seq = hidden_states_seq + hidden_states_dir
         hidden_states_seq = self.norm_trace_seq(hidden_states_seq) # (B, P, M)
@@ -329,14 +305,12 @@ class EyeWidthRegressor(nn.Module):
         direction: torch.Tensor,
         boundary: torch.Tensor,
         snp_vert: torch.Tensor,
-        port_positions: torch.Tensor = None,
     ):
         """
         Predict with uncertainty using Last-Layer Laplace Approximation.
         
         Args:
             trace_seq, direction, boundary, snp_vert: Input tensors
-            port_positions: Port position indices
             
         Returns:
             mean_values: Mean predictions from Laplace
@@ -347,10 +321,10 @@ class EyeWidthRegressor(nn.Module):
         """
         if self._laplace_model is not None:
             # Use Laplace for fast uncertainty
-            return self.laplace_predict(trace_seq, direction, boundary, snp_vert, port_positions)
+            return self.laplace_predict(trace_seq, direction, boundary, snp_vert)
         else:
             # Fallback to standard forward pass without uncertainty
-            values, log_var, logits = self(trace_seq, direction, boundary, snp_vert, port_positions)
+            values, log_var, logits = self(trace_seq, direction, boundary, snp_vert)
             aleatoric_var = torch.exp(log_var)
             epistemic_var = torch.zeros_like(aleatoric_var)
             total_var = aleatoric_var
@@ -412,16 +386,15 @@ class EyeWidthRegressor(nn.Module):
 
         # Get single sample (first item of the batch) for each component
         # and move to device. These will be used by _ForwardWrapper.
-        # raw_data is (trace_seq, direction, boundary, snp_vert, true_ew, port_positions)
+        # raw_data is (trace_seq, direction, boundary, snp_vert, true_ew)
         _sample_trace_seq = sample_raw_data[0][0:1].to(device) # Batch size 1
         sample_direction = sample_raw_data[1][0:1].to(device)
         sample_boundary = sample_raw_data[2][0:1].to(device)
         sample_snp_vert = sample_raw_data[3][0:1].to(device)
-        sample_port_positions = sample_raw_data[5][0:1].to(device) if len(sample_raw_data) > 5 else None
         
         # Create a wrapper for the forward pass that Laplace can use
         # This is NOT a submodule to avoid recursion during .apply() calls
-        laplace_wrapper = _ForwardWrapper(self, sample_direction, sample_boundary, sample_snp_vert, sample_port_positions)
+        laplace_wrapper = _ForwardWrapper(self, sample_direction, sample_boundary, sample_snp_vert)
 
         lap = Laplace(
             laplace_wrapper.to(device),
@@ -444,7 +417,6 @@ class EyeWidthRegressor(nn.Module):
         direction: torch.Tensor,
         boundary: torch.Tensor,
         snp_vert: torch.Tensor,
-        port_positions: torch.Tensor = None,
     ):
         """
         Return mean, total variance from Laplace predictive distribution.
@@ -456,7 +428,7 @@ class EyeWidthRegressor(nn.Module):
             raise RuntimeError("Call `fit_laplace` once before Laplace inference.")
 
         self.eval()
-        x = (trace_seq, direction, boundary, snp_vert, port_positions) if port_positions is not None else (trace_seq, direction, boundary, snp_vert)
+        x = (trace_seq, direction, boundary, snp_vert)
 
         # Re-create a temporary wrapper for prediction
         laplace_wrapper = _ForwardWrapper(self)
@@ -464,7 +436,7 @@ class EyeWidthRegressor(nn.Module):
         var = self._laplace_model.predictive_variance(x, model=laplace_wrapper)
 
         # Retrieve aleatoric variance from log_var head:
-        _, log_var, logits = self(trace_seq, direction, boundary, snp_vert, port_positions)
+        _, log_var, logits = self(trace_seq, direction, boundary, snp_vert)
         aleatoric_var = torch.exp(log_var)
         total_var = var + aleatoric_var
         epistemic_var = var
