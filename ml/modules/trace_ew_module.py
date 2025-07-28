@@ -61,6 +61,7 @@ class BatchItem:
     boundary: torch.Tensor
     snp_vert: torch.Tensor
     true_ew: torch.Tensor
+    config: dict
 
 class TraceEWModule(LightningModule):
     def __init__(
@@ -365,9 +366,9 @@ class TraceEWModule(LightningModule):
 
     def _to_batch_item(self, raw) -> "BatchItem":
         """Convert the raw tuple coming from DataLoader into a BatchItem and apply EW scaling."""
-        trace_seq, direction, boundary, snp_vert, true_ew = raw
+        trace_seq, direction, boundary, snp_vert, true_ew, config = raw
         true_ew = true_ew * self.ew_scaler_inv.to(true_ew.device)
-        return BatchItem(trace_seq, direction, boundary, snp_vert, true_ew)
+        return BatchItem(trace_seq, direction, boundary, snp_vert, true_ew, config)
 
     def _run_model(self, item: "BatchItem", stage: str):
         """
@@ -437,7 +438,8 @@ class TraceEWModule(LightningModule):
             "true_ew":   true_ew_scaled,
             "pred_prob": pred_prob_eval,
             "true_prob": true_prob,
-            "pred_sigma": pred_sigma
+            "pred_sigma": pred_sigma,
+            "config": item.config
         }
         return loss, extras
 
@@ -488,7 +490,8 @@ class TraceEWModule(LightningModule):
                     extras["true_ew"],
                     extras["pred_prob"],
                     extras["true_prob"],
-                    extras["pred_sigma"]
+                    extras["pred_sigma"],
+                    extras["config"]
                 )
                 self._maybe_collect_samples(stage, name, batch_idx, extras)
 
@@ -511,7 +514,8 @@ class TraceEWModule(LightningModule):
         true_ew: torch.Tensor,
         pred_prob: torch.Tensor,
         true_prob: torch.Tensor,
-        pred_sigma: torch.Tensor
+        pred_sigma: torch.Tensor,
+        config: dict
     ):
         stage = self.convert_metric_name(stage)
         

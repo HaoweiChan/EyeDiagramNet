@@ -114,12 +114,24 @@ class TraceSeqEWDataloader(LightningDataModule):
             sorted_vals = [labels[k] for k in sorted_keys]
 
             # all tensors must share same length along trace dim
-            min_len = min(len(v[0]) for v in sorted_vals)
-            boundary_inputs, direction_inputs, eye_widths, snp_vert = map(
-                lambda arrs: np.array([a[:min_len] for a in arrs]),
-                zip(*sorted_vals),
+            min_len = min(len(v[0]) for v in sorted_vals if v[0])
+
+            configs, directions, eye_widths, snp_paths = [], [], [], []
+            for sample in sorted_vals:
+                configs.append(sample[0][:min_len])
+                directions.append(sample[1][:min_len])
+                eye_widths.append(sample[2][:min_len])
+                snp_paths.append(sample[3][:min_len])
+
+            # Convert list of dicts to numerical array for model input
+            boundary_inputs = np.array(
+                [[SampleResult.from_dict(p).to_structured_array() for p in sample_configs] for sample_configs in configs]
             )
-            eye_widths = np.asarray(eye_widths)
+            directions = np.array(directions)
+            eye_widths = np.array(eye_widths)
+            snp_paths = np.array(snp_paths)
+            configs = np.array(configs, dtype=object)
+
             eye_widths[eye_widths < 0] = 0 # Make -0.1 eye_widths to 0
 
             rank_zero_info(f"{name}| input_seq {input_arr.shape} | eye_width {eye_widths.shape} | ignore_snp={self.ignore_snp}")
@@ -134,10 +146,11 @@ class TraceSeqEWDataloader(LightningDataModule):
                 return arr[train_idx], arr[val_idx]
 
             x_seq_tr, x_seq_val = _split(input_arr)
-            x_tok_tr, x_tok_val = _split(direction_inputs)
+            x_tok_tr, x_tok_val = _split(directions)
             x_fix_tr, x_fix_val = _split(boundary_inputs)
-            x_vert_tr, x_vert_val = _split(snp_vert)
+            x_vert_tr, x_vert_val = _split(snp_paths)
             y_tr, y_val = _split(eye_widths)
+            configs_tr, configs_val = _split(configs)
 
             # fit scalers once on training data
             if fit_scaler:
@@ -151,10 +164,10 @@ class TraceSeqEWDataloader(LightningDataModule):
 
             # build datasets
             self.train_dataset[name] = TraceEWDataset(
-                x_seq_tr, x_tok_tr, x_fix_tr, x_vert_tr, y_tr, train=True, ignore_snp=self.ignore_snp
+                x_seq_tr, x_tok_tr, x_fix_tr, x_vert_tr, y_tr, configs_tr, train=True, ignore_snp=self.ignore_snp
             )
             self.val_dataset[name] = TraceEWDataset(
-                x_seq_val, x_tok_val, x_fix_val, x_vert_val, y_val, ignore_snp=self.ignore_snp
+                x_seq_val, x_tok_val, x_fix_val, x_vert_val, y_val, configs_val, ignore_snp=self.ignore_snp
             )
 
         # final transform with fitted scalers

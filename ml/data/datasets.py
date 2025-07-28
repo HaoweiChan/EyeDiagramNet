@@ -73,6 +73,7 @@ class TraceEWDataset(Dataset):
         boundaries,
         vert_snps,
         eye_widths,
+        configs,
         train=False,
         ignore_snp=False
     ):
@@ -81,6 +82,7 @@ class TraceEWDataset(Dataset):
         self.trace_seqs = torch.from_numpy(trace_seqs.copy()).float()
         self.directions = torch.from_numpy(directions).int()
         self.boundaries = torch.from_numpy(boundaries).float()
+        self.configs = configs
 
         self.vert_snps = vert_snps
         self.vert_cache = SharedMemoryCache()
@@ -118,11 +120,12 @@ class TraceEWDataset(Dataset):
         direction = self.directions[seq_index, bnd_index]
         boundary = self.boundaries[seq_index, bnd_index]
         eye_width = self.eye_widths[seq_index, bnd_index]
+        config = self.configs[seq_index, bnd_index]
 
         if self.train and random.random() > 0.5 and not self.ignore_snp:
             trace_seq, direction, eye_width, vert_snp = \
                 self.augment(trace_seq, direction, eye_width, vert_snp)
-        return trace_seq, direction, boundary, vert_snp, eye_width
+        return trace_seq, direction, boundary, vert_snp, eye_width, config
 
     def transform(self, seq_scaler, fix_scaler):
         """Apply scaling transformations using semantic feature access."""
@@ -211,13 +214,19 @@ class InferenceTraceEWDataset(Dataset):
         drv_snp = torch.from_numpy(drv_snp).to(torch.complex64)
         odt_snp = torch.from_numpy(odt_snp).to(torch.complex64)
         self.vert_snp = torch.stack((drv_snp, flip_snp(odt_snp)))
+        self.config = {
+            'boundary': boundary,
+            'directions': direction,
+            'snp_drv': drv_snp.name,
+            'snp_odt': odt_snp.name
+        }
 
     def __len__(self):
         return len(self.trace_seqs)
 
     def __getitem__(self, index):
         trace_seq = self.trace_seqs[index]
-        return trace_seq, self.direction, self.boundary, self.vert_snp
+        return trace_seq, self.direction, self.boundary, self.vert_snp, self.config
 
     def transform(self, seq_scaler, fix_scaler):
         """Apply scaling transformations using semantic feature access."""
