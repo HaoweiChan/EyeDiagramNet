@@ -85,7 +85,7 @@ class EyeWidthRegressor(nn.Module):
         self,
         num_types,
         model_dim,
-        output_dim,
+        predict_logvar,
         num_heads,
         num_layers,
         dropout,
@@ -101,7 +101,8 @@ class EyeWidthRegressor(nn.Module):
         super().__init__()
 
         self.model_dim = model_dim
-        self.output_dim = output_dim
+        self.predict_logvar = predict_logvar
+        self.output_dim = 3 if predict_logvar else 2
         self.use_rope = use_rope
         self.use_gradient_checkpointing = use_gradient_checkpointing
         self.ignore_snp = ignore_snp
@@ -187,7 +188,7 @@ class EyeWidthRegressor(nn.Module):
         self.pred_head = nn.Sequential(
             nn.Linear(model_dim, model_dim),
             nn.GELU(),
-            nn.Linear(model_dim, output_dim),
+            nn.Linear(model_dim, self.output_dim),
         )
 
         # ----------  Laplace placeholders  ----------
@@ -293,7 +294,11 @@ class EyeWidthRegressor(nn.Module):
 
         # Predict eye width and open eye probabilities respectively
         output = self.pred_head(hidden_states_sig)
-        values, log_var, logits = torch.unbind(output, dim=-1)
+        if self.predict_logvar:
+            values, log_var, logits = torch.unbind(output, dim=-1)
+        else:
+            values, logits = torch.unbind(output, dim=-1)
+            log_var = torch.ones_like(values) * -1e6 # Return a very small log_var
 
         if output_hidden_states:
             return values, log_var, logits, hidden_states_sig
@@ -325,7 +330,10 @@ class EyeWidthRegressor(nn.Module):
         else:
             # Fallback to standard forward pass without uncertainty
             values, log_var, logits = self(trace_seq, direction, boundary, snp_vert)
-            aleatoric_var = torch.exp(log_var)
+            if self.predict_logvar:
+                aleatoric_var = torch.exp(log_var)
+            else:
+                aleatoric_var = torch.zeros_like(values)
             epistemic_var = torch.zeros_like(aleatoric_var)
             total_var = aleatoric_var
             return values, total_var, aleatoric_var, epistemic_var, logits
@@ -437,7 +445,10 @@ class EyeWidthRegressor(nn.Module):
 
         # Retrieve aleatoric variance from log_var head:
         _, log_var, logits = self(trace_seq, direction, boundary, snp_vert)
-        aleatoric_var = torch.exp(log_var)
+        if self.predict_logvar:
+            aleatoric_var = torch.exp(log_var)
+        else:
+            aleatoric_var = torch.zeros_like(pred)
         total_var = var + aleatoric_var
         epistemic_var = var
 

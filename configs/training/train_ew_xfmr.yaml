@@ -72,12 +72,13 @@ model:
     compile_model: false
     use_laplace_on_fit_end: false
     ignore_snp: true
+    predict_logvar: true
     model:
       class_path: ml.models.eye_width_model.EyeWidthRegressor
       init_args:
         num_types: 3 # (S, G, D)
         model_dim: 384
-        output_dim: 3
+        predict_logvar: true
         num_heads: 16
         num_layers: 12
         freq_length: 128

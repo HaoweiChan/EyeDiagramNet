@@ -73,6 +73,7 @@ class TraceEWModule(LightningModule):
         ew_threshold: float = 0.3,
         use_laplace_on_fit_end: bool = True,
         ignore_snp: bool = False,
+        predict_logvar: bool = True,
     ):
         super().__init__()
         self.save_hyperparameters(ignore=['model'])
@@ -411,10 +412,17 @@ class TraceEWModule(LightningModule):
         weight_prob = weight_prob / weight_prob.sum(dim=-1, keepdim=True)
         # ------------------------------------------------------------------------------
 
-        loss = self.weighted_loss({
-            'nll': losses.gaussian_nll_loss(pred_ew, item.true_ew, pred_logvar, mask=true_prob),
-            'bce': F.binary_cross_entropy_with_logits(pred_prob, true_prob, weight=weight_prob)
-        }, hidden_states)
+        if self.hparams.predict_logvar:
+            loss = self.weighted_loss({
+                'nll': losses.gaussian_nll_loss(pred_ew, item.true_ew, pred_logvar, mask=true_prob),
+                'bce': F.binary_cross_entropy_with_logits(pred_prob, true_prob, weight=weight_prob)
+            }, hidden_states)
+        else:
+            loss = self.weighted_loss({
+                'mse': F.mse_loss(pred_ew[true_prob.bool()], item.true_ew[true_prob.bool()]),
+                'bce': F.binary_cross_entropy_with_logits(pred_prob, true_prob, weight=weight_prob)
+            }, hidden_states)
+
 
         # Use the eval tensors (may come from MC/Laplace inference) for metrics
         pred_ew_eval, pred_logvar_eval, pred_prob_eval = forward_out["eval"]
