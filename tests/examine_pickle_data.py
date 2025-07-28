@@ -201,14 +201,14 @@ def main():
             print(f"  Closed eyes (EW < 0): {(line_ews_array < 0).sum()} / {line_ews_array.size}")
         
         # Examine SNP files
-        if sample_data.get('snp_txs'):
-            unique_tx = set(sample_data['snp_txs'])
-            unique_rx = set(sample_data['snp_rxs'])
+        if sample_data.get('snp_drvs'):
+            unique_drv = set(sample_data['snp_drvs'])
+            unique_odt = set(sample_data['snp_odts'])
             print(f"\nSNP Files:")
-            print(f"  Unique TX files: {len(unique_tx)}")
-            print(f"  Unique RX files: {len(unique_rx)}")
-            print(f"  Sample TX: {list(unique_tx)[0] if unique_tx else 'None'}")
-            print(f"  Sample RX: {list(unique_rx)[0] if unique_rx else 'None'}")
+            print(f"  Unique TX files: {len(unique_drv)}")
+            print(f"  Unique RX files: {len(unique_odt)}")
+            print(f"  Sample TX: {list(unique_drv)[0] if unique_drv else 'None'}")
+            print(f"  Sample RX: {list(unique_odt)[0] if unique_odt else 'None'}")
         
         # Examine directions
         if sample_data.get('directions'):
@@ -440,8 +440,8 @@ def main():
                     directions = np.array(data['directions'][sample_idx]) if data['directions'][sample_idx] else None
                     
                     # Get SNP file paths - use n_ports from meta to construct correct filename
-                    snp_tx = Path(data['snp_txs'][sample_idx])
-                    snp_rx = Path(data['snp_rxs'][sample_idx])
+                    snp_drv = Path(data['snp_drvs'][sample_idx])
+                    snp_odt = Path(data['snp_odts'][sample_idx])
                     
                     try:
                         # Reconstruct config object - handle both old and new formats
@@ -450,7 +450,7 @@ def main():
                         # Run simulation
                         result = legacy_snp_eyewidth_simulation(
                             config,
-                            (snp_horiz, snp_tx, snp_rx),
+                            (snp_horiz, snp_drv, snp_odt),
                             directions,
                             device="cpu"
                         )
@@ -473,8 +473,8 @@ def main():
                             'file_name': pfile.name,
                             'sample_index': sample_idx,
                             'config': config_dict,
-                            'snp_tx': str(snp_tx),
-                            'snp_rx': str(snp_rx),
+                            'snp_drv': str(snp_drv),
+                            'snp_odt': str(snp_odt),
                             'directions': directions.tolist() if directions is not None else None,
                             'pickle_ew': pickle_ew.tolist(),
                             'simulated_ew': simulated_ew.tolist(),
@@ -501,8 +501,8 @@ def main():
                         for k, v in config_dict.items():
                             print(f"      {k}: {v:.1e}")
                         print(f"    SNP horiz: {snp_horiz}")
-                        print(f"    SNP TX: {snp_tx}")
-                        print(f"    SNP RX: {snp_rx}")
+                        print(f"    SNP TX: {snp_drv}")
+                        print(f"    SNP RX: {snp_odt}")
                         print(f"    Directions: {', '.join(map(str, directions.tolist())) if directions is not None else 'None'}")
                         print(f"    Pickle EW: {pickle_ew}")
                         print(f"    Simulated EW:  {simulated_ew}")
@@ -525,8 +525,8 @@ def main():
                             'file_name': pfile.name,
                             'sample_index': sample_idx,
                             'config': config_dict,
-                            'snp_tx': str(snp_tx),
-                            'snp_rx': str(snp_rx),
+                            'snp_drv': str(snp_drv),
+                            'snp_odt': str(snp_odt),
                             'directions': directions.tolist() if directions is not None else None,
                             'pickle_ew': pickle_ew.tolist(),
                             'simulated_ew': None,
@@ -740,8 +740,8 @@ def main():
                         report.append(f"  {key}: {str(value)}")
             
             # SNP files and directions
-            report.append(f"SNP TX: {result['snp_tx']}")
-            report.append(f"SNP RX: {result['snp_rx']}")
+            report.append(f"SNP TX: {result['snp_drv']}")
+            report.append(f"SNP RX: {result['snp_odt']}")
             if result['directions']:
                 directions_str = str(result['directions'])
                 if len(directions_str) > 100:

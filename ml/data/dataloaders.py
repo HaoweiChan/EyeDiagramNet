@@ -14,7 +14,7 @@ from lightning.pytorch.utilities.rank_zero import rank_zero_info
 from ..utils.scaler import MinMaxScaler
 from .datasets import TraceDataset, TraceEWDataset, InferenceTraceDataset, InferenceTraceEWDataset, get_loader_from_dataset
 from .processors import CSVProcessor, TraceSequenceProcessor
-from simulation.parameters.bound_param import SampleResult
+from simulation.parameters.bound_param import SampleResult, to_new_param_name
 from common.signal_utils import parse_snps, read_snp
 
 class TraceSeqEWDataloader(LightningDataModule):
@@ -94,8 +94,13 @@ class TraceSeqEWDataloader(LightningDataModule):
                                    f"Skipping pickle file: {pkl_file.name}")
                     continue
 
+                # Handle backward compatibility for boundary parameter names
+                configs = loaded["configs"]
+                if isinstance(configs, list) and configs and isinstance(configs[0], dict):
+                    configs = [to_new_param_name(c) for c in configs]
+
                 labels[key] = (
-                    loaded["configs"],
+                    configs,
                     loaded["directions"],
                     loaded["line_ews"],
                     snp_vert,
@@ -221,7 +226,12 @@ class InferenceTraceSeqEWDataloader(LightningDataModule):
             loaded = json.load(f)
             directions = np.array(loaded['directions']) if 'directions' in loaded else np.ones(tx.s.shape[-1] // 2, dtype=int)
             ctle = loaded.get('CTLE', {"AC_gain": np.nan, "DC_gain": np.nan, "fp1": np.nan, "fp2": np.nan})
-            boundary = loaded['boundary'] | ctle
+            
+            # Handle backward compatibility for boundary parameter names
+            boundary = loaded['boundary']
+            if isinstance(boundary, dict):
+                boundary = to_new_param_name(boundary)
+            boundary = boundary | ctle
             self.boundary = SampleResult(**boundary)
 
         self.predict_dataset = []

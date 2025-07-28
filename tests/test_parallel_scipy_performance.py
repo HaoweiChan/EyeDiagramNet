@@ -443,12 +443,12 @@ class SimulationPerformanceTester:
         snp_file = snp_files[0]
         
         return {
-            "R_tx": 10.0,
-            "R_rx": 1.0e9,
-            "C_tx": 1e-13,
-            "C_rx": 1e-13,
-            "L_tx": 1e-10,
-            "L_rx": 1e-10,
+            "R_drv": 10.0,
+            "R_odt": 1.0e9,
+            "C_drv": 1e-13,
+            "C_odt": 1e-13,
+            "L_drv": 1e-10,
+            "L_odt": 1e-10,
             "pulse_amplitude": 0.4,
             "bits_per_sec": 6.4e9,
             "vmask": 0.04,

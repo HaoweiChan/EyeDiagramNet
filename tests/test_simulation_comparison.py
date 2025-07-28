@@ -43,11 +43,11 @@ def main():
 
     # Define paths to S-parameter files for the test
     snp_horiz = "/proj/siaiadm/AI_training_data/D2D/UCIe_Trace/pattern2/cowos_9mi/snp/UCIe_pattern2_cowos_9mi-1.s96p"
-    snp_tx    = "/proj/siaiadm/ew_predictor/data/add_ind/pattern2_cowos_9mi/auto_thru_96port.s96p"
-    snp_rx    = "/proj/siaiadm/ew_predictor/data/add_ind/pattern2_cowos_9mi/auto_thru_96port.s96p"
+    snp_drv    = "/proj/siaiadm/ew_predictor/data/add_ind/pattern2_cowos_9mi/auto_thru_96port.s96p"
+    snp_odt    = "/proj/siaiadm/ew_predictor/data/add_ind/pattern2_cowos_9mi/auto_thru_96port.s96p"
 
     # Verify that all required S-parameter files exist before proceeding
-    for f_path in [snp_horiz, snp_tx, snp_rx]:
+    for f_path in [snp_horiz, snp_drv, snp_odt]:
         if not os.path.exists(f_path):
             print(f"Error: Required S-parameter file not found: {f_path}")
             print("Please ensure the test data exists and paths are correct.")
@@ -55,18 +55,18 @@ def main():
 
     # Configuration dictionary for the simulation
     config_dict = {
-        "R_tx": 4e1,
-        "R_rx": 1.0e9,
-        "C_tx": 2e-13,
-        "C_rx": 2e-13,
-        "L_tx": 1.6e-9,
-        "L_rx": 0.,
+        "R_drv": 4e1,
+        "R_odt": 1.0e9,
+        "C_drv": 2e-13,
+        "C_odt": 2e-13,
+        "L_drv": 1.6e-9,
+        "L_odt": 0.,
         "pulse_amplitude": 0.9,
         "bits_per_sec": 2.6e10,
         "vmask": 0.03,
         "snp_horiz": snp_horiz,
-        "snp_tx": snp_tx,
-        "snp_rx": snp_rx,
+        "snp_drv": snp_drv,
+        "snp_odt": snp_odt,
         "directions": [1] * 48
         # "directions": [
         #     0, 0, 0, 0, 0, 0,
@@ -91,7 +91,7 @@ def main():
         print("\n1. Running legacy `snp_eyewidth_simulation`...")
         try:
             # The legacy function expects snp_files and directions passed as separate arguments.
-            snp_files = (config.snp_horiz, config.snp_tx, config.snp_rx)
+            snp_files = (config.snp_horiz, config.snp_drv, config.snp_odt)
             ew_legacy, _ = legacy_snp_eyewidth_simulation(config, snp_files, config.directions, device="cpu")
             results['legacy'] = np.array(ew_legacy)
             print(f"  Result: {results['legacy']}")

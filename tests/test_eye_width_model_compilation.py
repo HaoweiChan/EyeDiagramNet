@@ -92,7 +92,7 @@ class FakeDataGenerator:
         """Generate fake boundary condition data."""
         # Shape: (batch_size, boundary_dim)
         # StructuredGatedBoundaryProcessor expects 13 features:
-        # - Electrical (6): R_tx, R_rx, C_tx, C_rx, L_tx, L_rx
+        # - Electrical (6): R_drv, R_odt, C_drv, C_odt, L_drv, L_odt
         # - Signal (3): pulse_amplitude, bits_per_sec, vmask
         # - CTLE (4): AC_gain, DC_gain, fp1, fp2 (may contain NaNs)
         boundary_features = torch.randn(self.batch_size, 13, device=self.device)

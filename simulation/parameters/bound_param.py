@@ -400,6 +400,20 @@ def constraint_fp2_ge_fp1(sample):
 
 CTLE_PARAMS.add_constraint(constraint_fp2_ge_fp1)
 
+def to_new_param_name(d: dict):
+    """
+    Convert old parameter names to new ones for backward compatibility.
+    e.g. R_tx -> R_drv, R_rx -> R_odt
+    """
+    key_map = {
+        'R_tx': 'R_drv', 'C_tx': 'C_drv', 'L_tx': 'L_drv',
+        'R_rx': 'R_odt', 'C_rx': 'C_odt', 'L_rx': 'L_odt',
+    }
+    for old_key, new_key in key_map.items():
+        if old_key in d:
+            d[new_key] = d.pop(old_key)
+    return d
+
 PARAM_SETS_MAP = {
     'DDR_PARAMS': DDR_PARAMS,
     'HBM2_PARAMS': HBM2_PARAMS, 
