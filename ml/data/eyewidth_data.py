@@ -64,7 +64,7 @@ class TraceEWDataset(Dataset):
         boundaries,
         vert_snps,
         eye_widths,
-        configs,
+        meta,
         train=False,
         ignore_snp=False
     ):
@@ -73,7 +73,8 @@ class TraceEWDataset(Dataset):
         self.trace_seqs = torch.from_numpy(trace_seqs.copy()).float()
         self.directions = torch.from_numpy(directions).int()
         self.boundaries = torch.from_numpy(boundaries).float()
-        self.configs = configs
+        self.meta = meta
+        self.config_keys = self.meta.get('config_keys', [])
 
         self.vert_snps = vert_snps
         self.vert_cache = SharedMemoryCache()
@@ -111,7 +112,7 @@ class TraceEWDataset(Dataset):
         direction = self.directions[seq_index, bnd_index]
         boundary = self.boundaries[seq_index, bnd_index]
         eye_width = self.eye_widths[seq_index, bnd_index]
-        config = self.configs[seq_index, bnd_index]
+        config = dict(zip(self.config_keys, boundary.tolist()))
 
         if self.train and random.random() > 0.5 and not self.ignore_snp:
             trace_seq, direction, eye_width, vert_snp = \
@@ -336,32 +337,14 @@ class TraceSeqEWDataloader(LightningDataModule):
             sorted_vals = [labels[k] for k in sorted_keys]
 
             # all tensors must share same length along trace dim
-            min_len = min(len(v[0]) for v in sorted_vals if v[0])
-
-            configs, directions, eye_widths, snp_paths = [], [], [], []
-            for sample in sorted_vals:
-                sample_configs = sample[0]
-                if sample_configs and isinstance(sample_configs[0], list):
-                    # Handle malformed configs: list of lists instead of list of dicts
-                    sample_configs = [cfg[0] for cfg in sample_configs if cfg]
-
-                configs.append(sample_configs[:min_len])
-                directions.append(sample[1][:min_len])
-                eye_widths.append(sample[2][:min_len])
-                snp_paths.append(sample[3][:min_len])
-
-            # Convert list of dicts to numerical array for model input
-            config_keys = loaded['meta'].get('config_keys')
-            boundary_inputs = np.array(
-                [[SampleResult.from_dict(p if isinstance(p, dict) else {}).to_structured_array(keys=config_keys)
-                  for p in sample_configs] for sample_configs in configs]
+            min_len = min(len(v[0]) for v in sorted_vals if v[0]) if sorted_vals and sorted_vals[0] and sorted_vals[0][0] else 0
+            boundaries, directions, eye_widths, snp_paths = (
+                np.array([s[0][:min_len] for s in sorted_vals]),
+                np.array([s[1][:min_len] for s in sorted_vals]),
+                np.array([s[2][:min_len] for s in sorted_vals]),
+                np.array([s[3][:min_len] for s in sorted_vals]),
             )
-            directions = np.array(directions)
-            eye_widths = np.array(eye_widths)
-            snp_paths = np.array(snp_paths)
-            configs = np.array(configs, dtype=object)
-
-            eye_widths[eye_widths < 0] = 0 # Make -0.1 eye_widths to 0
+            eye_widths[eye_widths < 0] = 0
 
             rank_zero_info(f"{name}| input_seq {input_arr.shape} | eye_width {eye_widths.shape} | ignore_snp={self.ignore_snp}")
 
@@ -376,11 +359,10 @@ class TraceSeqEWDataloader(LightningDataModule):
 
             x_seq_tr, x_seq_val = _split(input_arr)
             x_tok_tr, x_tok_val = _split(directions)
-            x_fix_tr, x_fix_val = _split(boundary_inputs)
+            x_fix_tr, x_fix_val = _split(boundaries)
             x_vert_tr, x_vert_val = _split(snp_paths)
             y_tr, y_val = _split(eye_widths)
-            configs_tr, configs_val = _split(configs)
-
+            
             # fit scalers once on training data
             if fit_scaler:
                 # Use semantic processor to get scalable features for fitting
@@ -393,20 +375,21 @@ class TraceSeqEWDataloader(LightningDataModule):
 
             # build datasets
             self.train_dataset[name] = TraceEWDataset(
-                x_seq_tr, x_tok_tr, x_fix_tr, x_vert_tr, y_tr, configs_tr, train=True, ignore_snp=self.ignore_snp
+                x_seq_tr, x_tok_tr, x_fix_tr, x_vert_tr, y_tr, loaded['meta'], train=True, ignore_snp=self.ignore_snp
             )
             self.val_dataset[name] = TraceEWDataset(
-                x_seq_val, x_tok_val, x_fix_val, x_vert_val, y_val, configs_val, ignore_snp=self.ignore_snp
+                x_seq_val, x_tok_val, x_fix_val, x_vert_val, y_val, loaded['meta'], ignore_snp=self.ignore_snp
             )
-
+        
         # final transform with fitted scalers
-        for name in list(self.train_dataset.keys()):
-            self.train_dataset[name] = self.train_dataset[name].transform(
-                self.seq_scaler, self.fix_scaler
-            )
-            self.val_dataset[name] = self.val_dataset[name].transform(
-                self.seq_scaler, self.fix_scaler
-            )
+        if fit_scaler:
+            for name in list(self.train_dataset.keys()):
+                self.train_dataset[name] = self.train_dataset[name].transform(
+                    self.seq_scaler, self.fix_scaler
+                )
+                self.val_dataset[name] = self.val_dataset[name].transform(
+                    self.seq_scaler, self.fix_scaler
+                )
 
         # persist scalers for future runs
         if fit_scaler and self.trainer and self.trainer.is_global_zero and self.trainer.logger:

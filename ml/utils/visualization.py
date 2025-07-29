@@ -76,7 +76,20 @@ def plot_sparam_curve(outputs, metrics):
     # axs[1].plot(true_time.cpu())
     return fig
 
-def plot_ew_curve(outputs, metrics, ew_threshold, sigma=2):
+def _format_dict_for_plot(data_dict, title=""):
+    """Formats a dictionary into a string for plot display."""
+    if not data_dict:
+        return ""
+    
+    lines = [f"\n{title.upper()}:"]
+    for key, value in data_dict.items():
+        if isinstance(value, (int, float)):
+            lines.append(f"  {key:<12}: {value:.4f}")
+        else:
+            lines.append(f"  {key:<12}: {value}")
+    return "\n".join(lines)
+
+def plot_ew_curve(outputs, metrics, ew_threshold, sigma=2, meta=None):
     pred_ew = outputs['pred_ew'].float().detach().cpu()
     true_ew = outputs['true_ew'].float().cpu()
     pred_prob = outputs['pred_prob'].float().detach().cpu()
@@ -121,18 +134,8 @@ def plot_ew_curve(outputs, metrics, ew_threshold, sigma=2):
     pretty_string = f"{stage_key}\n\n" + '\n'.join(metric_lines)
 
     # Format config details
-    config_pretty_string = ""
-    if isinstance(config, dict):
-        for key, value in config.items():
-            if isinstance(value, dict):
-                config_pretty_string += f"\n{key.upper()}:\n"
-                for sub_key, sub_value in value.items():
-                    config_pretty_string += f"  {sub_key:<10}: {sub_value}\n"
-            elif isinstance(value, (list, np.ndarray)):
-                config_pretty_string += f"\n{key.upper()}: {value.tolist()}\n"
-            else:
-                config_pretty_string += f"\n{key.upper()}: {value}\n"
-    pretty_string += config_pretty_string
+    pretty_string += _format_dict_for_plot(config, "Sample Config")
+    pretty_string += _format_dict_for_plot(meta, "Dataset Meta")
 
     plt.close()
     fig = plt.figure(figsize=(10, 6))
