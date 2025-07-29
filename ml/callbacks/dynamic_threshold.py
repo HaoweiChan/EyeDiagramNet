@@ -87,7 +87,7 @@ class DynamicThresholdOptimizer(Callback):
             
         # Extract data from batch (assuming same structure as TraceEWModule)
         for name, raw in batch.items():
-            trace_seq, direction, boundary, snp_vert, true_ew, config = raw
+            trace_seq, direction, boundary, snp_vert, true_ew = raw
             
             # Get prediction probabilities 
             with torch.no_grad():
