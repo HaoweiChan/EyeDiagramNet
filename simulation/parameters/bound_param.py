@@ -138,38 +138,17 @@ class SampleResult:
     def to_array(self):
         return np.array(self.to_list())
 
-    def to_structured_array(self):
+    def to_structured_array(self, keys):
         """
-        Convert boundary conditions to structured array format for StructuredGatedBoundaryProcessor.
+        Convert boundary conditions to a structured numpy array based on the provided keys.
         
-        Expected order: [electrical(6), signal(3), ctle(4)]
-        - Electrical: R_drv, R_odt, C_drv, C_odt, L_drv, L_odt
-        - Signal: pulse_amplitude, bits_per_sec, vmask  
-        - CTLE: AC_gain, DC_gain, fp1, fp2
-        
+        Args:
+            keys (list): A list of parameter keys to include in the array, maintaining order.
+
         Returns:
-            numpy array of shape (13,) with structured boundary conditions
+            numpy.ndarray: An array with the structured boundary conditions.
         """
-        # Define expected parameter order
-        electrical_params = ['R_drv', 'R_odt', 'C_drv', 'C_odt', 'L_drv', 'L_odt']
-        signal_params = ['pulse_amplitude', 'bits_per_sec', 'vmask']
-        ctle_params = ['AC_gain', 'DC_gain', 'fp1', 'fp2']
-        
-        # Extract values in the correct order, filling with NaN if missing
-        structured_values = []
-        
-        # Electrical parameters
-        for param in electrical_params:
-            structured_values.append(self._data.get(param, np.nan))
-            
-        # Signal parameters  
-        for param in signal_params:
-            structured_values.append(self._data.get(param, np.nan))
-            
-        # CTLE parameters (these may be NaN if not present)
-        for param in ctle_params:
-            structured_values.append(self._data.get(param, np.nan))
-            
+        structured_values = [self._data.get(key, np.nan) for key in keys]
         return np.array(structured_values, dtype=np.float32)
 
     def is_within_range(self, parameter_set):

@@ -351,8 +351,10 @@ class TraceSeqEWDataloader(LightningDataModule):
                 snp_paths.append(sample[3][:min_len])
 
             # Convert list of dicts to numerical array for model input
+            config_keys = loaded['meta'].get('config_keys')
             boundary_inputs = np.array(
-                [[SampleResult.from_dict(p if isinstance(p, dict) else {}).to_structured_array() for p in sample_configs] for sample_configs in configs]
+                [[SampleResult.from_dict(p if isinstance(p, dict) else {}).to_structured_array(keys=config_keys)
+                  for p in sample_configs] for sample_configs in configs]
             )
             directions = np.array(directions)
             eye_widths = np.array(eye_widths)
