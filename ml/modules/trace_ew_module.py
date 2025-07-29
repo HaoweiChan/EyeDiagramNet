@@ -123,9 +123,9 @@ class TraceEWModule(LightningModule):
         if stage in ('fit', None):
             key = next(iter(dummy_batch.keys()))
             inputs = dummy_batch[key]
-            forward_args = inputs[:-1]
+            forward_args = inputs[:-2]
         else:
-            forward_args = dummy_batch
+            forward_args = dummy_batch[:-1]
 
         try:
             with torch.no_grad():
@@ -329,7 +329,7 @@ class TraceEWModule(LightningModule):
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
         # Model handles uncertainty method internally
-        trace_seq, direction, boundary, snp_vert = batch
+        trace_seq, direction, boundary, snp_vert, _ = batch
         pred_ew, _, _, _, pred_logits = self.model.predict_with_uncertainty(
             trace_seq, direction, boundary, snp_vert
         )

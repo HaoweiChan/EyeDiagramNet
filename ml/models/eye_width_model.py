@@ -101,8 +101,7 @@ class EyeWidthRegressor(nn.Module):
         super().__init__()
 
         self.model_dim = model_dim
-        self.predict_logvar = predict_logvar
-        self.output_dim = 3 if predict_logvar else 2
+        self._predict_logvar = predict_logvar
         self.use_rope = use_rope
         self.use_gradient_checkpointing = use_gradient_checkpointing
         self.ignore_snp = ignore_snp
@@ -183,17 +182,43 @@ class EyeWidthRegressor(nn.Module):
             signal_projection = torch.zeros_like(signal_projection)
         self.register_buffer('signal_projection', signal_projection)
 
-        # Prediction heads
-        # self.pred_head = PredictionHead(model_dim, output_dim, dropout)
+        # Build prediction head
+        self._build_prediction_head()
+        
+        # ----------  Laplace placeholders  ----------
+        self._laplace_model = None        
+        
+    @property
+    def predict_logvar(self):
+        return self._predict_logvar
+
+    @predict_logvar.setter
+    def predict_logvar(self, value):
+        if hasattr(self, '_predict_logvar') and self._predict_logvar != value:
+            self._predict_logvar = value
+            self._build_prediction_head()
+            # Move new head to the correct device
+            if hasattr(self, 'device'):
+                self.pred_head.to(self.device)
+        else:
+            self._predict_logvar = value
+
+    @property
+    def device(self):
+        return next(self.parameters()).device
+
+    @property
+    def output_dim(self):
+        return 3 if self.predict_logvar else 2
+
+    def _build_prediction_head(self):
+        """Builds or rebuilds the prediction head based on the current output_dim."""
         self.pred_head = nn.Sequential(
-            nn.Linear(model_dim, model_dim),
+            nn.Linear(self.model_dim, self.model_dim),
             nn.GELU(),
-            nn.Linear(model_dim, self.output_dim),
+            nn.Linear(self.model_dim, self.output_dim),
         )
 
-        # ----------  Laplace placeholders  ----------
-        self._laplace_model = None        # will hold Laplace object
-        
     def load_pretrained_snp(self, checkpoint_path, freeze=True):
         """Load pretrained SNP encoder weights"""
         from ..utils.weight_transfer import load_pretrained_snp_encoder
