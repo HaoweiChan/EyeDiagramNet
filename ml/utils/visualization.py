@@ -93,7 +93,8 @@ def plot_ew_curve(outputs, metrics, ew_threshold, sigma=2):
     pred_prob = pred_prob[sample_idx]
     true_prob = true_prob[sample_idx]
     pred_sigma = pred_sigma[sample_idx]
-    config = {k: (v[sample_idx] if isinstance(v, (list, np.ndarray)) else v) for k, v in config.items()}
+    if isinstance(config, dict):
+        config = {k: (v[sample_idx] if isinstance(v, (list, np.ndarray)) else v) for k, v in config.items()}
 
     # Conversions
     pred_mask = pred_ew > ew_threshold
@@ -121,15 +122,16 @@ def plot_ew_curve(outputs, metrics, ew_threshold, sigma=2):
 
     # Format config details
     config_pretty_string = ""
-    for key, value in config.items():
-        if isinstance(value, dict):
-            config_pretty_string += f"\n{key.upper()}:\n"
-            for sub_key, sub_value in value.items():
-                config_pretty_string += f"  {sub_key:<10}: {sub_value}\n"
-        elif isinstance(value, (list, np.ndarray)):
-            config_pretty_string += f"\n{key.upper()}: {value.tolist()}\n"
-        else:
-            config_pretty_string += f"\n{key.upper()}: {value}\n"
+    if isinstance(config, dict):
+        for key, value in config.items():
+            if isinstance(value, dict):
+                config_pretty_string += f"\n{key.upper()}:\n"
+                for sub_key, sub_value in value.items():
+                    config_pretty_string += f"  {sub_key:<10}: {sub_value}\n"
+            elif isinstance(value, (list, np.ndarray)):
+                config_pretty_string += f"\n{key.upper()}: {value.tolist()}\n"
+            else:
+                config_pretty_string += f"\n{key.upper()}: {value}\n"
     pretty_string += config_pretty_string
 
     plt.close()
