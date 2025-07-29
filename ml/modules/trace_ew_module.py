@@ -119,12 +119,13 @@ class TraceEWModule(LightningModule):
             loader = self.trainer.datamodule.predict_dataloader()
         
         dummy_batch, *_ = next(iter(loader))
-        if stage in ('fit', None):
-            key = next(iter(dummy_batch.keys()))
-            inputs = dummy_batch[key]
-            forward_args = inputs[:-2]
-        else:
-            forward_args = dummy_batch[:-1]
+        key = next(iter(dummy_batch.keys()))
+        inputs = dummy_batch[key]
+        
+        # The last element of the tuple from the dataloader is not part of the model's forward pass inputs.
+        # For training, it's the target `eye_width`.
+        # For prediction, it would be a config dict, which is also not a model input.
+        forward_args = inputs[:-1]
 
         try:
             with torch.no_grad():
