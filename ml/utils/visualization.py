@@ -120,7 +120,7 @@ def plot_ew_curve(outputs, metrics, ew_threshold, sigma=2, meta=None):
     lower_masked = np.ma.masked_where(~pred_mask, lower_bound)
 
     stage_key = next(iter(metrics)).split('_')[0].replace('/', '').capitalize()
-    metrics = {k.split('/')[1]: v for k, v in metrics.items() if v != 0}
+    metrics = {k.split('/')[1]: v for k, v in metrics.items() if v != 0 and not torch.isnan(v)}
     
     # Format values like the desired clean format
     def format_value(v):
@@ -131,11 +131,24 @@ def plot_ew_curve(outputs, metrics, ew_threshold, sigma=2, meta=None):
         return str(v)
     
     metric_lines = [f'{k:<8} : {format_value(v)}' for k, v in metrics.items()]
-    pretty_string = f"{stage_key}\n\n" + '\n'.join(metric_lines)
+    metrics_display_string = f"{stage_key}\n\n" + '\n'.join(metric_lines)
 
-    # Format config details
-    pretty_string += _format_dict_for_plot(config, "Sample Config")
-    pretty_string += _format_dict_for_plot(meta, "Dataset Meta")
+    # Config part (as reverted by user)
+    config_display_string = ""
+    if isinstance(config, dict):
+        config_display_string += "\nSAMPLE CONFIG:\n" # Add title here
+        for key, value in config.items():
+            if isinstance(value, dict):
+                config_display_string += f"  {key.upper()}:\n"
+                for sub_key, sub_value in value.items():
+                    config_display_string += f"    {sub_key:<10}: {sub_value}\n"
+            elif isinstance(value, (list, np.ndarray)):
+                config_display_string += f"  {key.upper()}: {value.tolist()}\n"
+            else:
+                config_display_string += f"  {key.upper()}: {value}\n"
+
+    # Meta part (using helper, for smaller font)
+    meta_display_string = _format_dict_for_plot(meta, "Dataset Meta")
 
     plt.close()
     fig = plt.figure(figsize=(10, 6))
@@ -162,7 +175,23 @@ def plot_ew_curve(outputs, metrics, ew_threshold, sigma=2, meta=None):
     # Right-hand text box
     ax_text = fig.add_subplot(gs[0, 1])
     ax_text.axis('off')
-    ax_text.text(0, 1, pretty_string, fontsize=11, family='monospace', verticalalignment='top', horizontalalignment='left', fontweight='bold')
+
+    # Calculate positions for each text block
+    y_offset = 1.0
+    line_spacing = 0.035 # Adjusted for better visual separation
+
+    # Display metrics string
+    ax_text.text(0, y_offset, metrics_display_string, fontsize=11, family='monospace', verticalalignment='top', horizontalalignment='left', fontweight='bold')
+    y_offset -= (metrics_display_string.count('\n') + 1) * line_spacing
+
+    # Display sample config string
+    if config_display_string:
+        ax_text.text(0, y_offset, config_display_string, fontsize=11, family='monospace', verticalalignment='top', horizontalalignment='left', fontweight='bold')
+        y_offset -= (config_display_string.count('\n') + 1) * line_spacing
+
+    # Display dataset meta string (smaller font)
+    if meta_display_string:
+        ax_text.text(0, y_offset, meta_display_string, fontsize=9, family='monospace', verticalalignment='top', horizontalalignment='left', fontweight='normal')
 
     fig.tight_layout()
     return fig
