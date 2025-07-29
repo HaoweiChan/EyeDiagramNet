@@ -4,9 +4,9 @@ import pickle
 import random
 import numpy as np
 from pathlib import Path
+from sklearn.model_selection import train_test_split
 
 import torch
-import torch.nn.functional as F
 import torch.multiprocessing as mp
 from torch.utils.data import Dataset, DataLoader
 
@@ -17,7 +17,7 @@ from lightning.pytorch.utilities.rank_zero import rank_zero_info
 from ..utils.scaler import MinMaxScaler
 from .processors import CSVProcessor, TraceSequenceProcessor
 from simulation.parameters.bound_param import SampleResult, to_new_param_name
-from common.signal_utils import parse_snps, read_snp, flip_snp
+from common.signal_utils import read_snp, flip_snp
 
 def get_loader_from_dataset(
     dataset: Dataset,
