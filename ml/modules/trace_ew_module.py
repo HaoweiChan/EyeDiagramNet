@@ -556,9 +556,10 @@ class TraceEWModule(LightningModule):
                 metric.update(loss)
             elif 'f1' in key or 'accuracy' in key:
                 metric.update(pred_prob.flatten(), true_prob.flatten())
-            elif 'cov' in key and key in coverage_metrics:
-                in_range_flat, true_mask_flat = coverage_metrics[key]
-                metric.update(in_range_flat, true_mask_flat)
+            elif 'cov' in key:
+                if key in coverage_metrics:
+                    in_range_flat, true_mask_flat = coverage_metrics[key]
+                    metric.update(in_range_flat, true_mask_flat)
             elif pred_ew_masked.numel() > 0:  # Only update if we have valid masked data
                 metric.update(pred_ew_masked, true_ew_masked)
 
