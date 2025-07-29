@@ -7,6 +7,39 @@ from lightning import LightningDataModule
 from torch.utils.data import Dataset, DataLoader, ConcatDataset
 from lightning.pytorch.utilities.rank_zero import rank_zero_info
 
+def collate_snp_batch(batch: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
+    """Custom collate function for SNP batches with variable port sizes"""
+    snp_list = [item['snp_vert'] for item in batch]
+    
+    # Check if all SNPs have the same shape
+    shapes = [snp.shape for snp in snp_list]
+    if len(set(shapes)) == 1:
+        # Same shape, can stack normally
+        return {'snp_vert': torch.stack(snp_list)}
+    else:
+        # Different shapes - pad to the maximum shape
+        # Find maximum dimensions
+        max_freq = max(s[0] for s in shapes)
+        max_p1 = max(s[1] for s in shapes)
+        max_p2 = max(s[2] for s in shapes)
+        
+        # Pad each tensor to the maximum shape
+        padded_snps = []
+        for snp in snp_list:
+            f, p1, p2 = snp.shape
+            # Calculate padding for each dimension (pad_left, pad_right)
+            pad_f = (0, max_freq - f)
+            pad_p1 = (0, max_p1 - p1)
+            pad_p2 = (0, max_p2 - p2)
+            
+            # Pad the real and imaginary parts separately
+            snp_real = torch.nn.functional.pad(snp.real, (pad_p2[0], pad_p2[1], pad_p1[0], pad_p1[1], pad_f[0], pad_f[1]), value=0)
+            snp_imag = torch.nn.functional.pad(snp.imag, (pad_p2[0], pad_p2[1], pad_p1[0], pad_p1[1], pad_f[0], pad_f[1]), value=0)
+            padded_snp = torch.complex(snp_real, snp_imag)
+            padded_snps.append(padded_snp)
+        
+        return {'snp_vert': torch.stack(padded_snps)}
+
 class SNPDataset(Dataset):
     """Dataset for loading S-parameter files with support for lazy loading and shape grouping."""
 
@@ -224,36 +257,3 @@ class SNPDataModule(LightningDataModule):
             persistent_workers=num_workers > 0,
             collate_fn=collate_snp_batch
         )
-
-def collate_snp_batch(batch: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
-    """Custom collate function for SNP batches with variable port sizes"""
-    snp_list = [item['snp_vert'] for item in batch]
-    
-    # Check if all SNPs have the same shape
-    shapes = [snp.shape for snp in snp_list]
-    if len(set(shapes)) == 1:
-        # Same shape, can stack normally
-        return {'snp_vert': torch.stack(snp_list)}
-    else:
-        # Different shapes - pad to the maximum shape
-        # Find maximum dimensions
-        max_freq = max(s[0] for s in shapes)
-        max_p1 = max(s[1] for s in shapes)
-        max_p2 = max(s[2] for s in shapes)
-        
-        # Pad each tensor to the maximum shape
-        padded_snps = []
-        for snp in snp_list:
-            f, p1, p2 = snp.shape
-            # Calculate padding for each dimension (pad_left, pad_right)
-            pad_f = (0, max_freq - f)
-            pad_p1 = (0, max_p1 - p1)
-            pad_p2 = (0, max_p2 - p2)
-            
-            # Pad the real and imaginary parts separately
-            snp_real = torch.nn.functional.pad(snp.real, (pad_p2[0], pad_p2[1], pad_p1[0], pad_p1[1], pad_f[0], pad_f[1]), value=0)
-            snp_imag = torch.nn.functional.pad(snp.imag, (pad_p2[0], pad_p2[1], pad_p1[0], pad_p1[1], pad_f[0], pad_f[1]), value=0)
-            padded_snp = torch.complex(snp_real, snp_imag)
-            padded_snps.append(padded_snp)
-        
-        return {'snp_vert': torch.stack(padded_snps)}
