@@ -130,7 +130,7 @@ class TraceSeqEWDataloader(LightningDataModule):
 
             # Convert list of dicts to numerical array for model input
             boundary_inputs = np.array(
-                [[SampleResult.from_dict(p).to_structured_array() for p in sample_configs] for sample_configs in configs]
+                [[SampleResult.from_dict(p if isinstance(p, dict) else {}).to_structured_array() for p in sample_configs] for sample_configs in configs]
             )
             directions = np.array(directions)
             eye_widths = np.array(eye_widths)
