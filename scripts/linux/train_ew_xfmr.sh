@@ -26,7 +26,7 @@ echo "OMP_NUM_THREADS: $OMP_NUM_THREADS"
 bhosts GPU_3090_4
 set python_cmd = ( \
     python3 -m ml.trainer fit --config configs/training/train_ew_xfmr.yaml \
-    --trainer.num_nodes 1
+    --trainer.num_nodes 1 \
 )
 
 if ( "$1" == "--debug" ) then

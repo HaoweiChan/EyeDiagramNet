@@ -53,6 +53,11 @@ trainer:
     - class_path: lightning.pytorch.callbacks.LearningRateMonitor
       init_args:
         logging_interval: epoch
+    - class_path: ml.callbacks.dynamic_threshold.DynamicThresholdOptimizer
+      init_args:
+        warm_up_epochs: 3
+        update_frequency: 1
+        grid_size: 101
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
         filename: 'ew-xfmr-epoch{epoch}-mae{hp_metric:.2f}'

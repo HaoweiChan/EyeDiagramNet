@@ -64,6 +64,12 @@ class BatchItem:
     config: dict
 
 class TraceEWModule(LightningModule):
+    """
+    TraceEWModule: Lightning module for eye width prediction.
+    
+    This module handles training and inference for eye width prediction models,
+    including support for uncertainty quantification and Laplace approximation.
+    """
     def __init__(
         self,
         model: nn.Module,
