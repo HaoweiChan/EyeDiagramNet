@@ -112,12 +112,11 @@ class TraceEWDataset(Dataset):
         direction = self.directions[seq_index, bnd_index]
         boundary = self.boundaries[seq_index, bnd_index]
         eye_width = self.eye_widths[seq_index, bnd_index]
-        config = dict(zip(self.config_keys, boundary.tolist()))
 
         if self.train and random.random() > 0.5 and not self.ignore_snp:
             trace_seq, direction, eye_width, vert_snp = \
                 self.augment(trace_seq, direction, eye_width, vert_snp)
-        return trace_seq, direction, boundary, vert_snp, eye_width, config
+        return trace_seq, direction, boundary, vert_snp, eye_width
 
     def transform(self, seq_scaler, fix_scaler):
         """Apply scaling transformations using semantic feature access."""
@@ -300,22 +299,19 @@ class TraceSeqEWDataloader(LightningDataModule):
                     rank_zero_info(f"Skipping malformed pickle: {pkl_file.name} ('snp_horiz' not found).")
                     continue
 
-                snp_file = Path(snp_horiz_path).stem.replace("-", "_")
-                
-                # Handle SNP vertical data based on ignore_snp flag
-                if self.ignore_snp:
-                    # Use dummy SNP data when ignoring SNPs
-                    snp_vert = (("dummy_drv.snp", "dummy_odt.snp"),)
-                else:
-                    snp_vert = tuple(zip(loaded["snp_drvs"], loaded["snp_odts"]))
-
                 # The key must match the case_id from the CSV file
                 try:
-                    key = int(snp_file.split("_")[-1].split(".")[0])
+                    key = int(Path(snp_horiz_path).stem.replace("-", "_").split("_")[-1].split(".")[0])
                 except (ValueError, IndexError):
-                    rank_zero_info(f"Could not parse case ID from snp_horiz: '{snp_file}'. "
+                    rank_zero_info(f"Could not parse case ID from snp_horiz: '{snp_horiz_path}'. "
                                    f"Skipping pickle file: {pkl_file.name}")
                     continue
+
+                # Handle SNP vertical data based on ignore_snp flag
+                if self.ignore_snp:
+                    snp_vert = (("dummy_drv.snp", "dummy_odt.snp"),) * len(loaded.get("directions", [0]))
+                else:
+                    snp_vert = tuple(zip(loaded["snp_drvs"], loaded["snp_odts"]))
 
                 # Handle backward compatibility for boundary parameter names
                 configs = loaded["configs"]
@@ -338,12 +334,17 @@ class TraceSeqEWDataloader(LightningDataModule):
 
             # all tensors must share same length along trace dim
             min_len = min(len(v[0]) for v in sorted_vals if v[0]) if sorted_vals and sorted_vals[0] and sorted_vals[0][0] else 0
-            boundaries, directions, eye_widths, snp_paths = (
-                np.array([s[0][:min_len] for s in sorted_vals]),
-                np.array([s[1][:min_len] for s in sorted_vals]),
-                np.array([s[2][:min_len] for s in sorted_vals]),
-                np.array([s[3][:min_len] for s in sorted_vals]),
-            )
+
+            if sorted_vals:
+                boundaries, directions, eye_widths, snp_paths = (
+                    np.array([s[0][:min_len] for s in sorted_vals]),
+                    np.array([s[1][:min_len] for s in sorted_vals]),
+                    np.array([s[2][:min_len] for s in sorted_vals]),
+                    np.array([s[3][:min_len] for s in sorted_vals]),
+                )
+            else:
+                boundaries, directions, eye_widths, snp_paths = [np.array([]) for _ in range(4)]
+
             eye_widths[eye_widths < 0] = 0
 
             rank_zero_info(f"{name}| input_seq {input_arr.shape} | eye_width {eye_widths.shape} | ignore_snp={self.ignore_snp}")
@@ -363,6 +364,8 @@ class TraceSeqEWDataloader(LightningDataModule):
             x_vert_tr, x_vert_val = _split(snp_paths)
             y_tr, y_val = _split(eye_widths)
             
+            meta = loaded.get('meta', {})
+
             # fit scalers once on training data
             if fit_scaler:
                 # Use semantic processor to get scalable features for fitting
@@ -375,10 +378,10 @@ class TraceSeqEWDataloader(LightningDataModule):
 
             # build datasets
             self.train_dataset[name] = TraceEWDataset(
-                x_seq_tr, x_tok_tr, x_fix_tr, x_vert_tr, y_tr, loaded['meta'], train=True, ignore_snp=self.ignore_snp
+                x_seq_tr, x_tok_tr, x_fix_tr, x_vert_tr, y_tr, meta, train=True, ignore_snp=self.ignore_snp
             )
             self.val_dataset[name] = TraceEWDataset(
-                x_seq_val, x_tok_val, x_fix_val, x_vert_val, y_val, loaded['meta'], ignore_snp=self.ignore_snp
+                x_seq_val, x_tok_val, x_fix_val, x_vert_val, y_val, meta, ignore_snp=self.ignore_snp
             )
         
         # final transform with fitted scalers

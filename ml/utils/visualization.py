@@ -138,7 +138,7 @@ def plot_ew_curve(outputs, metrics, ew_threshold, sigma=2, meta=None):
     pred_prob = outputs['pred_prob'].float().detach().cpu()
     true_prob = outputs['true_prob'].float().cpu()
     pred_sigma = outputs['pred_sigma'].float().detach().cpu()
-    config = outputs['config']
+    boundary = outputs.get('boundary')
 
     # Random sample one batch index to get (N,) arrays for plotting
     batch_size = pred_ew.shape[0]
@@ -149,8 +149,11 @@ def plot_ew_curve(outputs, metrics, ew_threshold, sigma=2, meta=None):
     pred_prob = pred_prob[sample_idx]
     true_prob = true_prob[sample_idx]
     pred_sigma = pred_sigma[sample_idx]
-    if isinstance(config, dict):
-        config = {k: (v[sample_idx] if isinstance(v, (list, np.ndarray)) else v) for k, v in config.items()}
+    
+    config = {}
+    if meta and 'config_keys' in meta and boundary is not None:
+        boundary_sample = boundary[sample_idx]
+        config = dict(zip(meta['config_keys'], boundary_sample.tolist()))
 
     # Conversions
     pred_mask = pred_ew > ew_threshold
@@ -176,22 +179,11 @@ def plot_ew_curve(outputs, metrics, ew_threshold, sigma=2, meta=None):
     metric_lines = [f'{k:<8} : {format_value(v)}' for k, v in metrics.items()]
     metrics_display_string = f"{stage_key}\n\n" + '\n'.join(metric_lines)
 
-    # Config part (as reverted by user)
-    config_display_string = ""
-    if isinstance(config, dict):
-        config_display_string += "\nSAMPLE CONFIG:\n" # Add title here
-        for key, value in config.items():
-            if isinstance(value, dict):
-                config_display_string += f"  {key.upper()}:\n"
-                for sub_key, sub_value in value.items():
-                    config_display_string += f"    {sub_key:<10}: {sub_value}\n"
-            elif isinstance(value, (list, np.ndarray)):
-                config_display_string += f"  {key.upper()}: {value.tolist()}\n"
-            else:
-                config_display_string += f"  {key.upper()}: {value}\n"
-
-    # Meta part (using helper, for smaller font)
-    meta_display_string = _format_dict_for_plot(meta, "Dataset Meta")
+    # Combine sample config with meta for a unified display
+    if config:
+        meta = (meta or {}) | {"sample_config": config}
+        
+    meta_display_string = _format_dict_for_plot(meta, "Metadata")
 
     plt.close()
     fig = plt.figure(figsize=(12, 8))  # Increased figure size to accommodate new subplot
@@ -227,9 +219,9 @@ def plot_ew_curve(outputs, metrics, ew_threshold, sigma=2, meta=None):
     ax_text.text(0, y_offset, metrics_display_string, fontsize=11, family='monospace', verticalalignment='top', horizontalalignment='left', fontweight='bold')
     y_offset -= (metrics_display_string.count('\n') + 1) * line_spacing
 
-    # Display sample config string
-    if config_display_string:
-        ax_text.text(0, y_offset, config_display_string, fontsize=11, family='monospace', verticalalignment='top', horizontalalignment='left', fontweight='bold')
+    # Display dataset meta string (smaller font)
+    if meta_display_string:
+        ax_text.text(0, y_offset, meta_display_string, fontsize=9, family='monospace', verticalalignment='top', horizontalalignment='left', fontweight='normal')
 
     # New subplot for metadata (bottom section)
     ax_meta = fig.add_subplot(gs[2, :])  # Span both columns in bottom row
