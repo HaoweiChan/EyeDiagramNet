@@ -1,3 +1,5 @@
+import io
+import math
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
@@ -5,7 +7,7 @@ import torch.nn.functional as F
 from PIL import Image
 from io import BytesIO
 from einops import rearrange, repeat
-import io
+
 
 def complex_to_db(x):
     if not torch.is_complex(x):
@@ -89,6 +91,47 @@ def _format_dict_for_plot(data_dict, title=""):
             lines.append(f"  {key:<12}: {value}")
     return "\n".join(lines)
 
+def _format_meta_for_subplot(meta_dict):
+    """Format metadata dictionary for clean display in subplot, converting tensors to readable format."""
+    if not meta_dict:
+        return ""
+    
+    formatted_lines = []
+    for key, value in meta_dict.items():
+        # Convert tensors and arrays to readable format
+        if torch.is_tensor(value):
+            if value.numel() == 1:
+                # Single value tensor
+                formatted_value = f"{value.item():.4f}" if value.dtype.is_floating_point else str(value.item())
+            else:
+                # Multi-value tensor - show as list
+                formatted_value = value.tolist()
+        elif isinstance(value, np.ndarray):
+            if value.size == 1:
+                formatted_value = f"{value.item():.4f}" if np.issubdtype(value.dtype, np.floating) else str(value.item())
+            else:
+                formatted_value = value.tolist()
+        elif isinstance(value, (list, tuple)):
+            # Already a list/tuple, but ensure nested tensors are converted
+            formatted_value = [item.tolist() if torch.is_tensor(item) else item for item in value]
+        elif isinstance(value, (int, float)):
+            formatted_value = f"{value:.4f}" if isinstance(value, float) else str(value)
+        else:
+            formatted_value = str(value)
+        
+        # Format the line
+        if isinstance(formatted_value, list):
+            if len(formatted_value) <= 5:
+                formatted_lines.append(f"{key}: {formatted_value}")
+            else:
+                # For long lists, show first few items and count
+                preview = formatted_value[:3]
+                formatted_lines.append(f"{key}: {preview}... ({len(formatted_value)} items)")
+        else:
+            formatted_lines.append(f"{key}: {formatted_value}")
+    
+    return "\n".join(formatted_lines)
+
 def plot_ew_curve(outputs, metrics, ew_threshold, sigma=2, meta=None):
     pred_ew = outputs['pred_ew'].float().detach().cpu()
     true_ew = outputs['true_ew'].float().cpu()
@@ -120,7 +163,7 @@ def plot_ew_curve(outputs, metrics, ew_threshold, sigma=2, meta=None):
     lower_masked = np.ma.masked_where(~pred_mask, lower_bound)
 
     stage_key = next(iter(metrics)).split('_')[0].replace('/', '').capitalize()
-    metrics = {k.split('/')[1]: v for k, v in metrics.items() if v != 0 and not torch.isnan(v)}
+    metrics = {k.split('/')[1]: v for k, v in metrics.items() if v != 0 and not math.isnan(v)}
     
     # Format values like the desired clean format
     def format_value(v):
@@ -151,15 +194,15 @@ def plot_ew_curve(outputs, metrics, ew_threshold, sigma=2, meta=None):
     meta_display_string = _format_dict_for_plot(meta, "Dataset Meta")
 
     plt.close()
-    fig = plt.figure(figsize=(10, 6))
-    gs = fig.add_gridspec(2, 2, width_ratios=[4, 1], height_ratios=[2, 1])
+    fig = plt.figure(figsize=(12, 8))  # Increased figure size to accommodate new subplot
+    gs = fig.add_gridspec(3, 2, width_ratios=[4, 1], height_ratios=[2, 1, 1])  # Added third row for metadata
 
     # First subplot for eye width
     ax1 = fig.add_subplot(gs[0, 0])
     ax1.set_title('Eye width')
     ax1.plot(pred_ew * pred_mask, color='#1777b4', alpha=0.8, label='Pred')
     if pred_sigma.abs().sum() > 1e-6:
-        ax1.fill_between(np.arange(len(pred_ew)), upper_mask, lower_masked, color='#aec7e8', alpha=0.3, label='\u00B1\u03C3')
+        ax1.fill_between(np.arange(len(pred_ew)), upper_mask, lower_masked, color='#aec7e8', alpha=0.3, label='±σ')
     ax1.plot(true_ew * true_prob, color='#111111', alpha=0.8, label='True')
     ax1.legend(loc='lower right')
 
@@ -172,8 +215,8 @@ def plot_ew_curve(outputs, metrics, ew_threshold, sigma=2, meta=None):
     ax2.yaxis.set_ticks([0, ew_threshold, 1])
     ax2.yaxis.set_ticklabels(['0', f'{ew_threshold:.1f}', '1'])
 
-    # Right-hand text box
-    ax_text = fig.add_subplot(gs[0, 1])
+    # Right-hand text box for metrics and config
+    ax_text = fig.add_subplot(gs[0:2, 1])  # Span first two rows
     ax_text.axis('off')
 
     # Calculate positions for each text block
@@ -187,11 +230,17 @@ def plot_ew_curve(outputs, metrics, ew_threshold, sigma=2, meta=None):
     # Display sample config string
     if config_display_string:
         ax_text.text(0, y_offset, config_display_string, fontsize=11, family='monospace', verticalalignment='top', horizontalalignment='left', fontweight='bold')
-        y_offset -= (config_display_string.count('\n') + 1) * line_spacing
 
-    # Display dataset meta string (smaller font)
-    if meta_display_string:
-        ax_text.text(0, y_offset, meta_display_string, fontsize=9, family='monospace', verticalalignment='top', horizontalalignment='left', fontweight='normal')
+    # New subplot for metadata (bottom section)
+    ax_meta = fig.add_subplot(gs[2, :])  # Span both columns in bottom row
+    ax_meta.axis('off')
+    
+    if meta:
+        meta_formatted = _format_meta_for_subplot(meta)
+        ax_meta.text(0.02, 0.95, f"DATASET METADATA:\n{meta_formatted}", 
+                    fontsize=9, family='monospace', 
+                    verticalalignment='top', horizontalalignment='left', 
+                    fontweight='normal', transform=ax_meta.transAxes)
 
     fig.tight_layout()
     return fig
