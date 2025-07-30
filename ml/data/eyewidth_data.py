@@ -73,8 +73,8 @@ class TraceEWDataset(Dataset):
         self.trace_seqs = torch.from_numpy(trace_seqs.copy()).float()
         self.directions = torch.from_numpy(directions).int()
         self.boundaries = torch.from_numpy(boundaries).float()
-        self.meta = meta
-        self.config_keys = self.meta.get('config_keys', [])
+        self.config_keys = meta[0]['config_keys']
+        self.meta = [{k: v for k, v in d.items() if k != 'config_keys'} for d in meta]
 
         self.vert_snps = vert_snps
         self.vert_cache = SharedMemoryCache()

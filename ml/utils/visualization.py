@@ -132,13 +132,13 @@ def _format_meta_for_subplot(meta_dict):
     
     return "\n".join(formatted_lines)
 
-def plot_ew_curve(outputs, metrics, ew_threshold, sigma=2, meta=None):
+def plot_ew_curve(outputs, metrics, ew_threshold, sigma=2):
     pred_ew = outputs['pred_ew'].float().detach().cpu()
     true_ew = outputs['true_ew'].float().cpu()
     pred_prob = outputs['pred_prob'].float().detach().cpu()
     true_prob = outputs['true_prob'].float().cpu()
     pred_sigma = outputs['pred_sigma'].float().detach().cpu()
-    boundary = outputs.get('boundary')
+    meta = outputs['meta']
 
     # Random sample one batch index to get (N,) arrays for plotting
     batch_size = pred_ew.shape[0]
@@ -150,11 +150,6 @@ def plot_ew_curve(outputs, metrics, ew_threshold, sigma=2, meta=None):
     true_prob = true_prob[sample_idx]
     pred_sigma = pred_sigma[sample_idx]
     
-    config = {}
-    if meta and 'config_keys' in meta and boundary is not None:
-        boundary_sample = boundary[sample_idx]
-        config = dict(zip(meta['config_keys'], boundary_sample.tolist()))
-
     # Conversions
     pred_mask = pred_ew > ew_threshold
 
@@ -178,12 +173,6 @@ def plot_ew_curve(outputs, metrics, ew_threshold, sigma=2, meta=None):
     
     metric_lines = [f'{k:<8} : {format_value(v)}' for k, v in metrics.items()]
     metrics_display_string = f"{stage_key}\n\n" + '\n'.join(metric_lines)
-
-    # Combine sample config with meta for a unified display
-    if config:
-        meta = (meta or {}) | {"sample_config": config}
-        
-    meta_display_string = _format_dict_for_plot(meta, "Metadata")
 
     plt.close()
     fig = plt.figure(figsize=(12, 8))  # Increased figure size to accommodate new subplot
@@ -219,17 +208,13 @@ def plot_ew_curve(outputs, metrics, ew_threshold, sigma=2, meta=None):
     ax_text.text(0, y_offset, metrics_display_string, fontsize=11, family='monospace', verticalalignment='top', horizontalalignment='left', fontweight='bold')
     y_offset -= (metrics_display_string.count('\n') + 1) * line_spacing
 
-    # Display dataset meta string (smaller font)
-    if meta_display_string:
-        ax_text.text(0, y_offset, meta_display_string, fontsize=9, family='monospace', verticalalignment='top', horizontalalignment='left', fontweight='normal')
-
     # New subplot for metadata (bottom section)
     ax_meta = fig.add_subplot(gs[2, :])  # Span both columns in bottom row
     ax_meta.axis('off')
     
     if meta:
         meta_formatted = _format_meta_for_subplot(meta)
-        ax_meta.text(0.02, 0.95, f"DATASET METADATA:\n{meta_formatted}", 
+        ax_meta.text(0.02, 0.95, f"METADATA:\n{meta_formatted}", 
                     fontsize=9, family='monospace', 
                     verticalalignment='top', horizontalalignment='left', 
                     fontweight='normal', transform=ax_meta.transAxes)

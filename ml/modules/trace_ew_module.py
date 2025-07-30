@@ -116,9 +116,11 @@ class TraceEWModule(LightningModule):
         # Warm up the model by performing a dummy forward pass
         if stage in ('fit', None):
             loader = self.trainer.datamodule.train_dataloader()
+            self.config_keys = self.trainer.datamodule.train_dataset[0].config_keys
         else:
             loader = self.trainer.datamodule.predict_dataloader()
-        
+            self.config_keys = self.trainer.datamodule.predict_dataset[0].config_keys
+
         dummy_batch, *_ = next(iter(loader))
         key = next(iter(dummy_batch.keys()))
         inputs = dummy_batch[key]
@@ -317,13 +319,13 @@ class TraceEWModule(LightningModule):
         log_metrics = self.compute_metrics("train_")
         if self.current_epoch % self.trainer.check_val_every_n_epoch == 0:
             for dataloader_idx, outputs in self.train_step_outputs.items():
-                self.plot_sparam_curve("train_", log_metrics, outputs[0], dataloader_idx)
+                self.plot_metrics_curve("train_", log_metrics, outputs[0], dataloader_idx)
         self.train_step_outputs.clear()
 
     def on_validation_epoch_end(self):
         log_metrics = self.compute_metrics("val")
         for dataloader_idx, outputs in self.val_step_outputs.items():
-            self.plot_sparam_curve("val", log_metrics, outputs[0], dataloader_idx)
+            self.plot_metrics_curve("val", log_metrics, outputs[0], dataloader_idx)
         self.val_step_outputs.clear()
 
     ############################ INFERENCE ############################
@@ -341,11 +343,6 @@ class TraceEWModule(LightningModule):
         return pred_ew
 
     ############################ PRIVATE METHODS ############################
-
-    def convert_metric_name(self, stage):
-        if stage == "train_":
-            return "train_"
-        return stage
 
     def metrics_factory(self):
         metrics = {
@@ -441,6 +438,8 @@ class TraceEWModule(LightningModule):
         true_ew_scaled = item.true_ew * self.ew_scaler
         pred_logvar_eval = pred_logvar_eval + 2 * self.log_ew_scaler.to(pred_logvar_eval.device)
         pred_sigma = torch.exp(0.5 * pred_logvar_eval)
+        
+        item.meta['boundary'] = {k: v.item() for k, v in zip(self.config_keys, item.boundary)}
 
         extras = {
             "pred_ew":   pred_ew_eval,
@@ -524,8 +523,6 @@ class TraceEWModule(LightningModule):
         true_prob: torch.Tensor,
         pred_sigma: torch.Tensor,
     ):
-        stage = self.convert_metric_name(stage)
-        
         # Pre-compute common values to avoid redundant operations
         mask = true_prob.bool()
         
@@ -563,7 +560,6 @@ class TraceEWModule(LightningModule):
                 metric.update(pred_ew_masked, true_ew_masked)
 
     def compute_metrics(self, stage):
-        stage = self.convert_metric_name(stage)
         log_metrics = {}
         for key, metric in self.metrics[stage].items():
             if not self.hparams.predict_logvar and 'cov' in key:
@@ -582,12 +578,11 @@ class TraceEWModule(LightningModule):
 
         if stage == "test":
             for key, metric in log_metrics.items():
-                self.log(key, metric, sync_dist=True)
+                self.log(key, metric, sync_dist=True)        
 
         return log_metrics
 
-    def plot_sparam_curve(self, stage, log_metrics, outputs, dataloader_idx):
-        tag = self.convert_metric_name(stage)
+    def plot_metrics_curve(self, stage, log_metrics, outputs, dataloader_idx):
         fig = plot_ew_curve(outputs, log_metrics, self.hparams.ew_threshold)
         if self.logger:
             tag = "_".join(['sparam', str(dataloader_idx)])
