@@ -149,6 +149,8 @@ def plot_ew_curve(outputs, metrics, ew_threshold, sigma=2):
     pred_prob = pred_prob[sample_idx]
     true_prob = true_prob[sample_idx]
     pred_sigma = pred_sigma[sample_idx]
+    meta = {k: v[sample_idx] for k, v in meta.items() if k != 'config_keys'}
+    meta['boundary'] = {k: v.item() for k, v in zip(meta['config_keys'], meta['boundary'])}
     
     # Conversions
     pred_mask = pred_ew > ew_threshold

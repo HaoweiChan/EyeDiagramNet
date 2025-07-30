@@ -441,10 +441,7 @@ class TraceEWModule(LightningModule):
         pred_sigma = torch.exp(0.5 * pred_logvar_eval)
         
         # Add boundary parameters to metadata for logging
-        meta_with_boundaries = [
-            {**m, 'boundary': {k: v.item() for k, v in zip(self.config_keys, b)}}
-            for m, b in zip(item.meta, item.boundary)
-        ]
+        meta = {**item.meta, 'boundary': item.boundary, 'config_keys': self.config_keys}
 
         extras = {
             "pred_ew": pred_ew_eval,
@@ -452,7 +449,7 @@ class TraceEWModule(LightningModule):
             "pred_prob": pred_prob_eval,
             "true_prob": true_prob,
             "pred_sigma": pred_sigma,
-            "meta": meta_with_boundaries,
+            "meta": meta,
         }
         return loss, extras
 
