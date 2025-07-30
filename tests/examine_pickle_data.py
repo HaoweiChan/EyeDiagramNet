@@ -205,8 +205,8 @@ def main():
             unique_drv = set(sample_data['snp_drvs'])
             unique_odt = set(sample_data['snp_odts'])
             print(f"\nSNP Files:")
-            print(f"  Unique TX files: {len(unique_drv)}")
-            print(f"  Unique RX files: {len(unique_odt)}")
+            print(f"  Unique DRV files: {len(unique_drv)}")
+            print(f"  Unique ODT files: {len(unique_odt)}")
             print(f"  Sample TX: {list(unique_drv)[0] if unique_drv else 'None'}")
             print(f"  Sample RX: {list(unique_odt)[0] if unique_odt else 'None'}")
         

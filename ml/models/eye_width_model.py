@@ -288,7 +288,7 @@ class EyeWidthRegressor(nn.Module):
         
         # Concatenate all hidden states
         if not self.ignore_snp:
-            hidden_states_vert = rearrange(hidden_states_vert, "b d p e -> b (d p) e") # concat tx and rx snp states
+            hidden_states_vert = rearrange(hidden_states_vert, "b d p e -> b (d p) e") # concat drv and odt snp states
             hidden_states = torch.cat((
                 hidden_states_seq,
                 hidden_states_vert,

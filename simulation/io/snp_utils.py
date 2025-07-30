@@ -123,7 +123,7 @@ def generate_vertical_snp_pairs(vertical_dirs, n_pairs, trace_snps=None, base_ou
         # Use the first trace_snp as a reference for port count
         thru_snp_path = generate_thru_snp(trace_snps[0], base_output_dir, trace_pattern_key)
         
-        # All pairs will use this single thru SNP for both TX and RX
+        # All pairs will use this single thru SNP for both DRV and RX
         selected_pairs = [(thru_snp_path, thru_snp_path)] * n_pairs
         
         return selected_pairs

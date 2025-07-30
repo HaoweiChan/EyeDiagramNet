@@ -36,9 +36,9 @@ class SNPEmbedding(nn.Module):
 
     def forward(self, snp_vert, drv_token=None, odt_token=None):
         """Encoder of snp for encoding vertical frequency responses"""
-        # For self-supervised learning, we may have shape (B, F, P1, P2) without tx/rx dimension
+        # For self-supervised learning, we may have shape (B, F, P1, P2) without drv/odt dimension
         if snp_vert.dim() == 4:
-            # No tx/rx dimension - add it for consistency
+            # No drv/odt dimension - add it for consistency
             b, f, p1, p2 = snp_vert.size()
             snp_vert = snp_vert.unsqueeze(1)  # (B, 1, F, P1, P2)
             d = 1
@@ -47,7 +47,7 @@ class SNPEmbedding(nn.Module):
             
             # Input validation moved to top for early exit
             if self.use_drv_odt_tokens and d != 2:
-                raise ValueError("Invalid input shape: snp_vert must have 2 snp tensors (tx and rx) in dimension 1.")
+                raise ValueError("Invalid input shape: snp_vert must have 2 snp tensors (drv and odt) in dimension 1.")
         
         if p1 != p2:
             raise ValueError("SNP matrix must be square (P x P)")
@@ -74,7 +74,7 @@ class SNPEmbedding(nn.Module):
         hidden_states_snp = self.snp_encoder(snp_vert)
         hidden_states_snp = rearrange(hidden_states_snp, "(b d p) e -> b d p e", b=b, d=d, p=half_p)
 
-        # Add tx and rx tokens if enabled and provided
+        # Add drv and odt tokens if enabled and provided
         if self.use_drv_odt_tokens and d == 2:
             if drv_token is None or odt_token is None:
                 raise ValueError("drv_token and odt_token must be provided when use_drv_odt_tokens is True.")
@@ -140,9 +140,9 @@ class OptimizedSNPEmbedding(nn.Module):
 
     def forward(self, snp_vert, drv_token=None, odt_token=None):
         """Memory-optimized forward pass with optional gradient checkpointing"""
-        # For self-supervised learning, we may have shape (B, F, P1, P2) without tx/rx dimension
+        # For self-supervised learning, we may have shape (B, F, P1, P2) without drv/odt dimension
         if snp_vert.dim() == 4:
-            # No tx/rx dimension - add it for consistency
+            # No drv/odt dimension - add it for consistency
             b, f, p1, p2 = snp_vert.size()
             snp_vert = snp_vert.unsqueeze(1)  # (B, 1, F, P1, P2)
             d = 1
@@ -150,7 +150,7 @@ class OptimizedSNPEmbedding(nn.Module):
             b, d, f, p1, p2 = snp_vert.size()
             
             if self.use_drv_odt_tokens and d != 2:
-                raise ValueError("Invalid input shape: snp_vert must have 2 snp tensors (tx and rx) in dimension 1.")
+                raise ValueError("Invalid input shape: snp_vert must have 2 snp tensors (drv and odt) in dimension 1.")
         
         if p1 != p2:
             raise ValueError("SNP matrix must be square (P x P)")
@@ -175,7 +175,7 @@ class OptimizedSNPEmbedding(nn.Module):
         
         hidden_states_snp = rearrange(hidden_states_snp, "(b d p) e -> b d p e", b=b, d=d, p=half_p)
         
-        # Add tx and rx tokens if enabled and provided
+        # Add drv and odt tokens if enabled and provided
         if self.use_drv_odt_tokens and d == 2:
             if drv_token is None or odt_token is None:
                 raise ValueError("drv_token and odt_token must be provided when use_drv_odt_tokens is True.")
@@ -280,7 +280,7 @@ class FasterSNPEmbedding(nn.Module):
             b, d, f, p1, p2 = snp_vert.size()
             if self.use_drv_odt_tokens and d != 2:
                 raise ValueError(
-                    "Input `snp_vert` must have 2 tensors (tx and rx) in dim 1."
+                    "Input `snp_vert` must have 2 tensors (drv and odt) in dim 1."
                 )
 
         if p1 != p2:

@@ -602,11 +602,11 @@ class EyeWidthSimulator:
         p2_indices = np.arange(num_lines, num_ports)
 
         # 3. Apply inductance to diagonal impedance elements using the masks.
-        # For forward lines, p1 is TX and p2 is RX.
+        # For forward lines, p1 is DRV and p2 is ODT.
         z_array[:, p1_indices[dir_is_forward], p1_indices[dir_is_forward]] += zL_drv
         z_array[:, p2_indices[dir_is_forward], p2_indices[dir_is_forward]] += zL_odt
 
-        # For flipped lines, p1 is RX and p2 is TX.
+        # For flipped lines, p1 is ODT and p2 is DRV.
         z_array[:, p1_indices[dir_is_flipped], p1_indices[dir_is_flipped]] += zL_odt
         z_array[:, p2_indices[dir_is_flipped], p2_indices[dir_is_flipped]] += zL_drv
         
@@ -726,7 +726,7 @@ class EyeWidthSimulator:
         return new_network
 
     def renorm(self, ntwk, R_drv, R_odt):
-        """Renormalize network for TX and RX impedances."""
+        """Renormalize network for DRV and ODT impedances."""
         n_port = ntwk.number_of_ports
         if n_port % 2 != 0:
             raise RuntimeError('Network should be 2n-port.')
@@ -1218,7 +1218,7 @@ class EyeWidthSimulator:
                 # Apply inductance before cascading
                 ntwk_horiz = self.add_inductance(ntwk_horiz, self.params.L_drv, self.params.L_odt)
                 
-                # Flip RX network for cascading
+                # Flip ODT network for cascading
                 ntwk_odt.flip()
                 
                 # Cascade the networks
@@ -1273,7 +1273,7 @@ def snp_eyewidth_simulation(config, snp_files=None, directions=None, use_optimiz
                 horiz_name = getattr(snp_files[0], 'name', str(snp_files[0]))
                 drv_name = getattr(snp_files[1], 'name', str(snp_files[1]))
                 odt_name = getattr(snp_files[2], 'name', str(snp_files[2]))
-                error_msg += f" (Files: horiz={horiz_name}, tx={drv_name}, rx={odt_name})"
+                error_msg += f" (Files: horiz={horiz_name}, drv={drv_name}, odt={odt_name})"
             else:
                 error_msg += f" (File: {snp_files})"
         

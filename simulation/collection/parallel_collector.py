@@ -691,7 +691,7 @@ def get_snp_from_cache(snp_path, cache_info):
                         self.frequency = MinimalFrequency(f.copy())
                     
                     def flip(self):
-                        """Flip the network ports for RX networks (in-place operation)"""
+                        """Flip the network ports for ODT networks (in-place operation)"""
                         n = self.nports
                         if n % 2 != 0:
                             raise ValueError("Cannot flip network with odd number of ports")
@@ -778,8 +778,8 @@ def format_error_metadata(trace_snp_path, snp_drv_path, snp_odt_path, combined_c
     
     Args:
         trace_snp_path: Path to horizontal trace SNP file
-        snp_drv_path: Path to TX vertical SNP file  
-        snp_odt_path: Path to RX vertical SNP file
+        snp_drv_path: Path to DRV vertical SNP file  
+        snp_odt_path: Path to ODT vertical SNP file
         combined_config: Parameter configuration that caused the error
         sim_directions: Directions array used in simulation
         sample_idx: Current sample index (0-based)

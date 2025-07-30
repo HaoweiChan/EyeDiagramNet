@@ -56,15 +56,15 @@ def build_snp(n_lines: int,
     for k, f in enumerate(freqs):
         # per-line insertion loss and delay
         for i, length in enumerate(lengths):
-            tx, rx = i, i + n_lines
+            drv, odt = i, i + n_lines
             alpha_db = alpha_db_per_m_1ghz * np.sqrt(f / 1e9) * length
             mag = 10 ** (-alpha_db / 20)
             phase = -2 * np.pi * f * length / velocity
             s_line = mag * np.exp(1j * phase)
-            S[k, rx, tx] = S[k, tx, rx] = s_line
+            S[k, odt, drv] = S[k, drv, odt] = s_line
             # More realistic reflection coefficients with some variation
             reflection_db = -15 + rng.uniform(-3, 3)  # -18dB to -12dB range
-            S[k, tx, tx] = S[k, rx, rx] = 10 ** (reflection_db / 20)
+            S[k, drv, drv] = S[k, odt, odt] = 10 ** (reflection_db / 20)
 
         # crosstalk terms
         for i in range(n_lines):

@@ -180,8 +180,8 @@ class OptimizedSequentialCollector:
         
         Args:
             trace_snp: Path to horizontal trace SNP file
-            snp_drv_path: Path to TX vertical SNP file  
-            snp_odt_path: Path to RX vertical SNP file
+            snp_drv_path: Path to DRV vertical SNP file  
+            snp_odt_path: Path to ODT vertical SNP file
             combined_config: Parameter configuration that caused the error
             sim_directions: Directions array used in simulation
             sample_idx: Current sample index (0-based)
