@@ -129,7 +129,7 @@ class TraceEWModule(LightningModule):
         # The last element of the tuple from the dataloader is not part of the model's forward pass inputs.
         # For training, it's the target `eye_width`.
         # For prediction, it would be a config dict, which is also not a model input.
-        forward_args = inputs[:-1]
+        forward_args = inputs[:-2]
 
         try:
             with torch.no_grad():
@@ -440,15 +440,19 @@ class TraceEWModule(LightningModule):
         pred_logvar_eval = pred_logvar_eval + 2 * self.log_ew_scaler.to(pred_logvar_eval.device)
         pred_sigma = torch.exp(0.5 * pred_logvar_eval)
         
-        item.meta['boundary'] = {k: v.item() for k, v in zip(self.config_keys, item.boundary)}
+        # Add boundary parameters to metadata for logging
+        meta_with_boundaries = [
+            {**m, 'boundary': {k: v.item() for k, v in zip(self.config_keys, b)}}
+            for m, b in zip(item.meta, item.boundary)
+        ]
 
         extras = {
-            "pred_ew":   pred_ew_eval,
-            "true_ew":   true_ew_scaled,
+            "pred_ew": pred_ew_eval,
+            "true_ew": true_ew_scaled,
             "pred_prob": pred_prob_eval,
             "true_prob": true_prob,
             "pred_sigma": pred_sigma,
-            "meta": item.meta
+            "meta": meta_with_boundaries,
         }
         return loss, extras
 

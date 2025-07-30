@@ -64,7 +64,7 @@ class TraceEWDataset(Dataset):
         boundaries,
         vert_snps,
         eye_widths,
-        meta,
+        metas,
         train=False,
         ignore_snp=False
     ):
@@ -73,8 +73,8 @@ class TraceEWDataset(Dataset):
         self.trace_seqs = torch.from_numpy(trace_seqs.copy()).float()
         self.directions = torch.from_numpy(directions).int()
         self.boundaries = torch.from_numpy(boundaries).float()
-        self.config_keys = meta[0]['config_keys']
-        self.meta = [{k: v for k, v in d.items() if k != 'config_keys'} for d in meta]
+        self.config_keys = metas[0]['config_keys']
+        self.metas = [{k: v for k, v in d.items() if k != 'config_keys'} for d in metas]
 
         self.vert_snps = vert_snps
         self.vert_cache = SharedMemoryCache()
@@ -96,6 +96,7 @@ class TraceEWDataset(Dataset):
         seq_index = index // self.repetition
         bnd_index = index % self.repetition
 
+        meta = self.metas[seq_index]
         trace_seq = self.trace_seqs[seq_index]
 
         if self.ignore_snp:
@@ -116,7 +117,7 @@ class TraceEWDataset(Dataset):
         if self.train and random.random() > 0.5 and not self.ignore_snp:
             trace_seq, direction, eye_width, vert_snp = \
                 self.augment(trace_seq, direction, eye_width, vert_snp)
-        return trace_seq, direction, boundary, vert_snp, eye_width
+        return trace_seq, direction, boundary, vert_snp, eye_width, meta
 
     def transform(self, seq_scaler, fix_scaler):
         """Apply scaling transformations using semantic feature access."""
@@ -362,6 +363,7 @@ class TraceSeqEWDataloader(LightningDataModule):
             x_vert_tr, x_vert_val = _split(snp_paths)
             y_tr, y_val = _split(eye_widths)
             metas_tr, metas_val = _split(metas)
+            print (x_fix_tr[:5])
             
             # fit scalers once on training data
             if fit_scaler:
@@ -390,6 +392,7 @@ class TraceSeqEWDataloader(LightningDataModule):
                 self.val_dataset[name] = self.val_dataset[name].transform(
                     self.seq_scaler, self.fix_scaler
                 )
+        print (self.train_dataset[name].boundaries[:5])
 
         # persist scalers for future runs
         if fit_scaler and self.trainer and self.trainer.is_global_zero and self.trainer.logger:
