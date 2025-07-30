@@ -127,8 +127,8 @@ class MinMaxScaler(BaseScaler):
             tensor_max = torch.where(values == self.ignore_value,
                                    torch.tensor(float('-inf')), values)
 
-        data_min = torch.min(tensor_min, dim=0).values
-        data_max = torch.max(tensor_max, dim=0).values
+        data_min = torch.nanmin(tensor_min, dim=0).values
+        data_max = torch.nanmax(tensor_max, dim=0).values
 
         if self.n_samples_seen_ == 0:
             self.min_ = data_min
