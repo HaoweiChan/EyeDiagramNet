@@ -38,19 +38,20 @@ class BaseScaler(ABC):
 
 
 class StandardScaler(BaseScaler):
-    def __init__(self, mean=None, std=None, epsilon=1e-7):
+    def __init__(self, mean=None, std=None, epsilon=1e-7, nan=0.0):
         """
         Standard Scaler that normalizes tensors using mean and standard deviation.
-
         Args:
             mean: The mean of the features (set after calling fit)
             std: The standard deviation of the features (set after calling fit)
             epsilon: Small constant to avoid divide-by-zero errors
+            nan: Value to use for replacing NaN values after transformation.
         """
         super().__init__()
         self.mean = mean
         self.std = std
         self.epsilon = epsilon
+        self.nan = nan
 
     def _reset(self):
         self.n_samples_seen_ = 0
@@ -61,16 +62,22 @@ class StandardScaler(BaseScaler):
         self._reset()
         if isinstance(values, (np.ndarray, np.generic)):
             values = torch.from_numpy(values)
+        
+        # Manually calculate mean and std ignoring NaNs
+        non_nan_values = values[~torch.isnan(values)]
         dims = list(range(values.dim() - 1))
-        self.mean = torch.mean(values, dim=dims)
-        self.std = torch.std(values, dim=dims)
+        
+        self.mean = torch.mean(non_nan_values, dim=dims)
+        self.std = torch.std(non_nan_values, dim=dims)
+        
         self.n_samples_seen_ = values.shape[0]
         return self
 
     def transform(self, values):
         if isinstance(values, (np.ndarray, np.generic)):
             values = torch.from_numpy(values)
-        return (values - self.mean) / (self.std + self.epsilon)
+        values_transformed = (values - self.mean) / (self.std + self.epsilon)
+        return torch.nan_to_num(values_transformed, nan=self.nan)
 
     def fit_transform(self, values):
         self.fit(values)
@@ -84,19 +91,18 @@ class StandardScaler(BaseScaler):
 
 
 class MinMaxScaler(BaseScaler):
-    def __init__(self, min_=None, max_=None, ignore_value=None):
+    def __init__(self, min_=None, max_=None, nan=0.0):
         """
         MinMax Scaler that scales tensors to a fixed range.
-
         Args:
             min_: Minimum value for scaling (set after calling fit)
             max_: Maximum value for scaling (set after calling fit)
-            ignore_value: Value to ignore during scaling
+            nan: Value to use for replacing NaN values after transformation.
         """
         super().__init__()
         self.min_ = min_
         self.max_ = max_
-        self.ignore_value = ignore_value
+        self.nan = nan
 
     def _reset(self):
         self.n_samples_seen_ = 0
@@ -115,20 +121,19 @@ class MinMaxScaler(BaseScaler):
         if isinstance(values, (np.ndarray, np.generic)):
             values = torch.from_numpy(values)
 
-        # Fix: Handle the case when ignore_value is None
-        if self.ignore_value is None:
-            # When ignore_value is None, no values should be ignored
-            tensor_min = values
-            tensor_max = values
-        else:
-            # Original logic for when ignore_value is not None
-            tensor_min = torch.where(values == self.ignore_value,
-                                   torch.tensor(float('inf')), values)
-            tensor_max = torch.where(values == self.ignore_value,
-                                   torch.tensor(float('-inf')), values)
+        # Create a mask for non-NaN values
+        not_nan_mask = ~torch.isnan(values)
 
-        data_min = torch.nanmin(tensor_min, dim=0).values
-        data_max = torch.nanmax(tensor_max, dim=0).values
+        # Initialize with extreme values
+        data_min = torch.full_like(values[0], float('inf'))
+        data_max = torch.full_like(values[0], float('-inf'))
+
+        # Iterate over each feature to find the min and max
+        for i in range(values.shape[1]):
+            valid_values = values[:, i][not_nan_mask[:, i]]
+            if valid_values.numel() > 0:
+                data_min[i] = torch.min(valid_values)
+                data_max[i] = torch.max(valid_values)
 
         if self.n_samples_seen_ == 0:
             self.min_ = data_min
@@ -145,15 +150,12 @@ class MinMaxScaler(BaseScaler):
         if isinstance(values, (np.ndarray, np.generic)):
             values = torch.from_numpy(values)
 
-        values_transformed = values.clone()
-        values_transformed[values == self.ignore_value] = torch.nan
-
         valid_scale = torch.where(self.scale_ == 0.0,
                                 torch.ones_like(self.scale_),
                                 self.scale_)
 
-        values_transformed = (values_transformed - self.min_) / valid_scale
-        return torch.nan_to_num(values_transformed, nan=self.ignore_value)
+        values_transformed = (values - self.min_) / valid_scale
+        return torch.nan_to_num(values_transformed, nan=self.nan)
 
     def fit_transform(self, values):
         self.fit(values)
@@ -167,15 +169,16 @@ class MinMaxScaler(BaseScaler):
 
 
 class MaxAbsScaler(BaseScaler):
-    def __init__(self, max_=None):
+    def __init__(self, max_=None, nan=0.0):
         """
         MaxAbs Scaler that scales tensors by their maximum absolute value.
-
         Args:
             max_: Maximum absolute value (set after calling fit)
+            nan: Value to use for replacing NaN values after transformation.
         """
         super().__init__()
         self.max_ = max_
+        self.nan = nan
 
     def _reset(self):
         self.n_samples_seen_ = 0
@@ -189,11 +192,14 @@ class MaxAbsScaler(BaseScaler):
         if isinstance(values, (np.ndarray, np.generic)):
             values = torch.from_numpy(values)
 
-        current_max = torch.max(torch.abs(values))
+        # Manually calculate max of absolute values ignoring NaNs
+        non_nan_abs_values = torch.abs(values[~torch.isnan(values)])
+        current_max = torch.max(non_nan_abs_values) if non_nan_abs_values.numel() > 0 else torch.tensor(float('-inf'))
+
         if self.n_samples_seen_ == 0:
             self.max_ = current_max
         else:
-            self.max_ = torch.max(self.max_, current_max)
+            self.max_ = torch.maximum(self.max_, current_max)
 
         self.n_samples_seen_ += len(values)
         return self
@@ -201,7 +207,9 @@ class MaxAbsScaler(BaseScaler):
     def transform(self, values):
         if isinstance(values, (np.ndarray, np.generic)):
             values = torch.from_numpy(values)
-        return values / (self.max_ + 1e-7)
+        
+        values_transformed = values / (self.max_ + 1e-7)
+        return torch.nan_to_num(values_transformed, nan=self.nan)
 
     def fit_transform(self, values):
         self.fit(values)

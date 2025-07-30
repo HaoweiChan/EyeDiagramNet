@@ -262,7 +262,7 @@ class TraceSeqEWDataloader(LightningDataModule):
         self.train_dataset: dict[str, TraceEWDataset] = {}
         self.val_dataset: dict[str, TraceEWDataset] = {}
 
-    def setup(self, stage: str | None = None, padding_value: int = -1):
+    def setup(self, stage: str | None = None, nan: int = -1):
         # Scalers
         fit_scaler = True
         try:
@@ -270,8 +270,8 @@ class TraceSeqEWDataloader(LightningDataModule):
             rank_zero_info(f"Loaded scalers from {self.scaler_path}")
             fit_scaler = False
         except (FileNotFoundError, AttributeError, EOFError):
-            self.seq_scaler = MinMaxScaler(ignore_value=padding_value)
-            self.fix_scaler = MinMaxScaler(ignore_value=padding_value)
+            self.seq_scaler = MinMaxScaler(nan=nan)
+            self.fix_scaler = MinMaxScaler(nan=nan)
             rank_zero_info("Could not find scalers on disk, creating new ones.")
 
         # locate every CSV once via processor
