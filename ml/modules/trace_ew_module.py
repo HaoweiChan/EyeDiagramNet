@@ -116,11 +116,12 @@ class TraceEWModule(LightningModule):
         # Warm up the model by performing a dummy forward pass
         if stage in ('fit', None):
             loader = self.trainer.datamodule.train_dataloader()
-            self.config_keys = self.trainer.datamodule.train_dataset[0].config_keys
+            # Since train_dataset is a dict, we can grab the first one.
+            self.config_keys = next(iter(self.trainer.datamodule.train_dataset.values())).config_keys
         else:
             loader = self.trainer.datamodule.predict_dataloader()
-            self.config_keys = self.trainer.datamodule.predict_dataset[0].config_keys
-
+            self.config_keys = self.trainer.datamodule.boundary.to_dict().keys()
+        
         dummy_batch, *_ = next(iter(loader))
         key = next(iter(dummy_batch.keys()))
         inputs = dummy_batch[key]
