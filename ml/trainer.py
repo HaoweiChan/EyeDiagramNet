@@ -60,6 +60,9 @@ def cli_main():
     cli = CustomLightningCLI(datamodule_class=None)
 
 if __name__ == "__main__":
+    import logging
+    logging.getLogger("tensorboardX").setLevel(logging.ERROR)
+
     warnings.filterwarnings('ignore')
     disable_possible_user_warnings()
     torch.set_float32_matmul_precision('medium')
