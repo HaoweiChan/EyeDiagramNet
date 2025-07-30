@@ -363,7 +363,6 @@ class TraceSeqEWDataloader(LightningDataModule):
             x_vert_tr, x_vert_val = _split(snp_paths)
             y_tr, y_val = _split(eye_widths)
             metas_tr, metas_val = _split(metas)
-            print (x_fix_tr[:5])
             
             # fit scalers once on training data
             if fit_scaler:
@@ -392,7 +391,6 @@ class TraceSeqEWDataloader(LightningDataModule):
                 self.val_dataset[name] = self.val_dataset[name].transform(
                     self.seq_scaler, self.fix_scaler
                 )
-        print (self.train_dataset[name].boundaries[:5])
 
         # persist scalers for future runs
         if fit_scaler and self.trainer and self.trainer.is_global_zero and self.trainer.logger:
