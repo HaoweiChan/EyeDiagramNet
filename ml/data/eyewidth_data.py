@@ -323,6 +323,7 @@ class TraceSeqEWDataloader(LightningDataModule):
                     loaded["directions"],
                     loaded["line_ews"],
                     snp_vert,
+                    loaded["meta"]
                 )
 
             # keep only indices present in labels
@@ -335,16 +336,13 @@ class TraceSeqEWDataloader(LightningDataModule):
             # all tensors must share same length along trace dim
             min_len = min(len(v[0]) for v in sorted_vals if v[0]) if sorted_vals and sorted_vals[0] and sorted_vals[0][0] else 0
 
-            if sorted_vals:
-                boundaries, directions, eye_widths, snp_paths = (
-                    np.array([s[0][:min_len] for s in sorted_vals]),
-                    np.array([s[1][:min_len] for s in sorted_vals]),
-                    np.array([s[2][:min_len] for s in sorted_vals]),
-                    np.array([s[3][:min_len] for s in sorted_vals]),
-                )
-            else:
-                boundaries, directions, eye_widths, snp_paths = [np.array([]) for _ in range(4)]
-
+            boundaries, directions, eye_widths, snp_paths, metas = (
+                np.array([s[0][:min_len] for s in sorted_vals]),
+                np.array([s[1][:min_len] for s in sorted_vals]),
+                np.array([s[2][:min_len] for s in sorted_vals]),
+                np.array([s[3][:min_len] for s in sorted_vals]),
+                np.array([s[4] for s in sorted_vals], dtype=object),
+            )
             eye_widths[eye_widths < 0] = 0
 
             rank_zero_info(f"{name}| input_seq {input_arr.shape} | eye_width {eye_widths.shape} | ignore_snp={self.ignore_snp}")
@@ -363,9 +361,8 @@ class TraceSeqEWDataloader(LightningDataModule):
             x_fix_tr, x_fix_val = _split(boundaries)
             x_vert_tr, x_vert_val = _split(snp_paths)
             y_tr, y_val = _split(eye_widths)
+            metas_tr, metas_val = _split(metas)
             
-            meta = loaded.get('meta', {})
-
             # fit scalers once on training data
             if fit_scaler:
                 # Use semantic processor to get scalable features for fitting
@@ -378,10 +375,10 @@ class TraceSeqEWDataloader(LightningDataModule):
 
             # build datasets
             self.train_dataset[name] = TraceEWDataset(
-                x_seq_tr, x_tok_tr, x_fix_tr, x_vert_tr, y_tr, meta, train=True, ignore_snp=self.ignore_snp
+                x_seq_tr, x_tok_tr, x_fix_tr, x_vert_tr, y_tr, metas_tr, train=True, ignore_snp=self.ignore_snp
             )
             self.val_dataset[name] = TraceEWDataset(
-                x_seq_val, x_tok_val, x_fix_val, x_vert_val, y_val, meta, ignore_snp=self.ignore_snp
+                x_seq_val, x_tok_val, x_fix_val, x_vert_val, y_val, metas_val, ignore_snp=self.ignore_snp
             )
         
         # final transform with fitted scalers
@@ -444,15 +441,15 @@ class InferenceTraceSeqEWDataloader(LightningDataModule):
         scalers = torch.load(self.scaler_path)
         rank_zero_info(f"Loaded scaler object from {self.scaler_path}")
 
-        tx = read_snp(Path(self.drv_snp))
-        rx = read_snp(Path(self.odt_snp))
-        assert tx.s.shape[-1] == rx.s.shape[-1], \
+        drv = read_snp(Path(self.drv_snp))
+        odt = read_snp(Path(self.odt_snp))
+        assert drv.s.shape[-1] == odt.s.shape[-1], \
             f"TX {self.drv_snp} and RX {self.odt_snp} must match ports."
 
         # Load boundary JSON
         with open(self.bound_path, 'r') as f:
             loaded = json.load(f)
-            directions = np.array(loaded['directions']) if 'directions' in loaded else np.ones(tx.s.shape[-1] // 2, dtype=int)
+            directions = np.array(loaded['directions']) if 'directions' in loaded else np.ones(drv.s.shape[-1] // 2, dtype=int)
             ctle = loaded.get('CTLE', {"AC_gain": np.nan, "DC_gain": np.nan, "fp1": np.nan, "fp2": np.nan})
             
             # Handle backward compatibility for boundary parameter names
@@ -467,7 +464,7 @@ class InferenceTraceSeqEWDataloader(LightningDataModule):
             case_id, input_arr = processor.parse(csv_path)
             rank_zero_info(f"Input array: {input_arr.shape}")
             # Use structured boundary array for the new processor
-            ds = InferenceTraceEWDataset(input_arr, directions, self.boundary.to_structured_array(), tx.s, rx.s)
+            ds = InferenceTraceEWDataset(input_arr, directions, self.boundary.to_structured_array(), drv.s, odt.s)
             self.predict_dataset.append(ds.transform(*scalers))
 
     def predict_dataloader(self):

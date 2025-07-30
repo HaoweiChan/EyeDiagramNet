@@ -61,6 +61,7 @@ class BatchItem:
     boundary: torch.Tensor
     snp_vert: torch.Tensor
     true_ew: torch.Tensor
+    meta: dict
 
 class TraceEWModule(LightningModule):
     """
@@ -316,15 +317,13 @@ class TraceEWModule(LightningModule):
         log_metrics = self.compute_metrics("train_")
         if self.current_epoch % self.trainer.check_val_every_n_epoch == 0:
             for dataloader_idx, outputs in self.train_step_outputs.items():
-                meta = self.trainer.datamodule.train_dataset[dataloader_idx].meta
-                self.plot_sparam_curve("train_", log_metrics, outputs[0], dataloader_idx, meta)
+                self.plot_sparam_curve("train_", log_metrics, outputs[0], dataloader_idx)
         self.train_step_outputs.clear()
 
     def on_validation_epoch_end(self):
         log_metrics = self.compute_metrics("val")
         for dataloader_idx, outputs in self.val_step_outputs.items():
-            meta = self.trainer.datamodule.val_dataset[dataloader_idx].meta
-            self.plot_sparam_curve("val", log_metrics, outputs[0], dataloader_idx, meta)
+            self.plot_sparam_curve("val", log_metrics, outputs[0], dataloader_idx)
         self.val_step_outputs.clear()
 
     ############################ INFERENCE ############################
@@ -376,9 +375,9 @@ class TraceEWModule(LightningModule):
 
     def _to_batch_item(self, raw) -> "BatchItem":
         """Convert the raw tuple coming from DataLoader into a BatchItem and apply EW scaling."""
-        trace_seq, direction, boundary, snp_vert, true_ew = raw
+        trace_seq, direction, boundary, snp_vert, true_ew, meta = raw
         true_ew = true_ew * self.ew_scaler_inv.to(true_ew.device)
-        return BatchItem(trace_seq, direction, boundary, snp_vert, true_ew)
+        return BatchItem(trace_seq, direction, boundary, snp_vert, true_ew, meta)
 
     def _run_model(self, item: "BatchItem", stage: str):
         """
@@ -449,7 +448,7 @@ class TraceEWModule(LightningModule):
             "pred_prob": pred_prob_eval,
             "true_prob": true_prob,
             "pred_sigma": pred_sigma,
-            "boundary": item.boundary
+            "meta": item.meta
         }
         return loss, extras
 
@@ -587,9 +586,9 @@ class TraceEWModule(LightningModule):
 
         return log_metrics
 
-    def plot_sparam_curve(self, stage, log_metrics, outputs, dataloader_idx, meta):
+    def plot_sparam_curve(self, stage, log_metrics, outputs, dataloader_idx):
         tag = self.convert_metric_name(stage)
-        fig = plot_ew_curve(outputs, log_metrics, self.hparams.ew_threshold, meta=meta)
+        fig = plot_ew_curve(outputs, log_metrics, self.hparams.ew_threshold)
         if self.logger:
             tag = "_".join(['sparam', str(dataloader_idx)])
             self.logger.experiment.add_image(f'{stage}/{tag}', image_to_buffer(fig), self.current_epoch)
