@@ -72,6 +72,7 @@ from common.signal_utils import read_snp
 from simulation.parameters.bound_param import PARAM_SETS_MAP
 from simulation.io.config_utils import load_config, resolve_trace_pattern, resolve_vertical_dirs, build_argparser
 from simulation.io.snp_utils import parse_snps, generate_vertical_snp_pairs
+from simulation.io.direction_utils import generate_directions
 from simulation.parameters.param_utils import parse_param_types, modify_params_for_inductance
 
 # Import performance monitoring
@@ -156,21 +157,6 @@ class SequentialCollector:
         print(f"\n[INTERRUPT] Received signal {signum}, shutting down gracefully...")
         _shutdown_event.set()
     
-    def _get_valid_block_sizes(self, n_lines: int) -> List[int]:
-        """Find divisors of n_lines that result in an even number of blocks"""
-        divisors = []
-        for i in range(1, int(n_lines**0.5) + 1):
-            if n_lines % i == 0:
-                if (n_lines // i) % 2 == 0:
-                    divisors.append(i)
-                if i * i != n_lines:
-                    j = n_lines // i
-                    if (n_lines // j) % 2 == 0:
-                        divisors.append(j)
-        if not divisors:  # Fallback for odd n_lines
-            divisors.append(1)
-        return divisors
-
     def _format_error_metadata(self, trace_snp, snp_drv_path, snp_odt_path, combined_config, 
                               sim_directions, sample_idx, samples_needed, error_msg):
         """
@@ -253,29 +239,7 @@ Metadata Error: {meta_error}
 ================================================================
 """
     
-    def _generate_directions(self, n_lines: int, enable_direction: bool) -> np.ndarray:
-        """Generate direction pattern for simulation"""
-        if not enable_direction:
-            return np.ones(n_lines, dtype=int)
-        
-        # Use block-wise pattern for better performance
-        valid_block_sizes = self._get_valid_block_sizes(n_lines)
-        block_size = np.random.choice(valid_block_sizes)
-        n_blocks = n_lines // block_size
-        
-        # Create equal number of 0 and 1 blocks
-        blocks = [0] * (n_blocks // 2) + [1] * (n_blocks // 2)
-        if n_blocks % 2 != 0:
-            blocks.append(np.random.randint(0, 2))
-        
-        np.random.shuffle(blocks)
-        directions = np.repeat(blocks, block_size)
-        
-        # Truncate if needed
-        if len(directions) > n_lines:
-            directions = directions[:n_lines]
-            
-        return directions
+
     
     def collect_data(self, trace_pattern_key: str, trace_pattern: str, vertical_dirs: List[str], 
                     output_dir: Path, param_types: List[str], max_samples: int, 
@@ -550,7 +514,7 @@ Metadata Error: {meta_error}
                     combined_config = combined_params.sample()
                     
                     # Generate directions
-                    sim_directions = self._generate_directions(n_lines, enable_direction)
+                    sim_directions = generate_directions(n_lines, enable_direction)
                     
                     # Run simulation
                     sim_start_time = time.time()
