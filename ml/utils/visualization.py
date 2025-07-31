@@ -1,12 +1,12 @@
 import io
 import math
-import torch
 import numpy as np
-import matplotlib.pyplot as plt
+import torch
 import torch.nn.functional as F
-from PIL import Image
-from io import BytesIO
+import matplotlib.pyplot as plt
 from einops import rearrange, repeat
+from io import BytesIO
+from PIL import Image
 
 
 def complex_to_db(x):
@@ -149,8 +149,11 @@ def plot_ew_curve(outputs, metrics, ew_threshold, sigma=2):
     pred_prob = pred_prob[sample_idx]
     true_prob = true_prob[sample_idx]
     pred_sigma = pred_sigma[sample_idx]
-    meta = {k: v[sample_idx] for k, v in meta.items() if k != 'config_keys'}
-    meta['boundary'] = {k: v.item() for k, v in zip(meta['config_keys'], meta['boundary'])}
+    config_keys = meta['config_keys']
+    param_types = [m[0] for m in meta['param_types']]
+    meta = {k: v[sample_idx] for k, v in meta.items() if k not in ['config_keys', 'param_types']}
+    meta['boundary'] = {k: v.item() for k, v in zip(config_keys, meta['boundary'])}
+    meta['param_types'] = param_types
     
     # Conversions
     pred_mask = pred_ew > ew_threshold
@@ -177,52 +180,102 @@ def plot_ew_curve(outputs, metrics, ew_threshold, sigma=2):
     metrics_display_string = f"{stage_key}\n\n" + '\n'.join(metric_lines)
 
     plt.close()
-    fig = plt.figure(figsize=(12, 8))  # Increased figure size to accommodate new subplot
-    gs = fig.add_gridspec(3, 2, width_ratios=[4, 1], height_ratios=[2, 1, 1])  # Added third row for metadata
+    fig = plt.figure(figsize=(14, 10))  # Increased figure size for better spacing
+    
+    # Create a more flexible grid layout with better proportions
+    gs = fig.add_gridspec(4, 3, width_ratios=[3, 0.5, 1], height_ratios=[2, 1, 0.8, 1.2], 
+                          hspace=0.3, wspace=0.1)  # Better spacing
 
-    # First subplot for eye width
+    # First subplot for eye width (top left)
     ax1 = fig.add_subplot(gs[0, 0])
-    ax1.set_title('Eye width')
-    ax1.plot(pred_ew * pred_mask, color='#1777b4', alpha=0.8, label='Pred')
+    ax1.set_title('Eye width', fontsize=12, fontweight='bold', pad=10)
+    ax1.plot(pred_ew * pred_mask, color='#1777b4', alpha=0.8, label='Pred', linewidth=1.5)
     if pred_sigma.abs().sum() > 1e-6:
         ax1.fill_between(np.arange(len(pred_ew)), upper_mask, lower_masked, color='#aec7e8', alpha=0.3, label='±σ')
-    ax1.plot(true_ew * true_prob, color='#111111', alpha=0.8, label='True')
-    ax1.legend(loc='lower right')
+    ax1.plot(true_ew * true_prob, color='#111111', alpha=0.8, label='True', linewidth=1.5)
+    ax1.legend(loc='lower right', fontsize=10)
+    ax1.grid(True, alpha=0.3)
 
-    # Second subplot for open-eye Probability
+    # Second subplot for prediction probability (middle left)
     ax2 = fig.add_subplot(gs[1, 0], sharex=ax1)
-    ax2.set_title('Prediction Probability')
-    ax2.plot(pred_prob, color='#1777b4', alpha=0.8)
-    ax2.axhline(ew_threshold, color='black', linestyle='--', linewidth=1)
-    ax2.set_ylim(-0.1, 1.1)  # Set y-axis limits to [0, 1]
+    ax2.set_title('Prediction Probability', fontsize=12, fontweight='bold', pad=10)
+    ax2.plot(pred_prob, color='#1777b4', alpha=0.8, linewidth=1.5)
+    ax2.axhline(ew_threshold, color='black', linestyle='--', linewidth=1, alpha=0.7)
+    ax2.set_ylim(-0.05, 1.05)  # Tighter y-axis limits
     ax2.yaxis.set_ticks([0, ew_threshold, 1])
     ax2.yaxis.set_ticklabels(['0', f'{ew_threshold:.1f}', '1'])
+    ax2.grid(True, alpha=0.3)
+    
+    # Remove x-axis labels from top plot to prevent overlap
+    ax1.set_xticklabels([])
 
-    # Right-hand text box for metrics and config
-    ax_text = fig.add_subplot(gs[0:2, 1])  # Span first two rows
+    # Right-hand text box for metrics (spans first two rows)
+    ax_text = fig.add_subplot(gs[0:2, 2])
     ax_text.axis('off')
+    
+    # Position metrics text closer to the plots
+    ax_text.text(0.05, 0.95, metrics_display_string, 
+                fontsize=11, family='monospace', 
+                verticalalignment='top', horizontalalignment='left', 
+                fontweight='bold', transform=ax_text.transAxes,
+                bbox=dict(boxstyle='round,pad=0.5', facecolor='lightgray', alpha=0.8))
 
-    # Calculate positions for each text block
-    y_offset = 1.0
-    line_spacing = 0.035 # Adjusted for better visual separation
-
-    # Display metrics string
-    ax_text.text(0, y_offset, metrics_display_string, fontsize=11, family='monospace', verticalalignment='top', horizontalalignment='left', fontweight='bold')
-    y_offset -= (metrics_display_string.count('\n') + 1) * line_spacing
-
-    # New subplot for metadata (bottom section)
-    ax_meta = fig.add_subplot(gs[2, :])  # Span both columns in bottom row
+    # Metadata section (bottom, spans all columns)
+    ax_meta = fig.add_subplot(gs[3, :])
     ax_meta.axis('off')
     
     if meta:
-        meta_formatted = _format_meta_for_subplot(meta)
+        meta_formatted = _format_meta_for_subplot_improved(meta)
         ax_meta.text(0.02, 0.95, f"METADATA:\n{meta_formatted}", 
                     fontsize=9, family='monospace', 
                     verticalalignment='top', horizontalalignment='left', 
-                    fontweight='normal', transform=ax_meta.transAxes)
+                    fontweight='normal', transform=ax_meta.transAxes,
+                    bbox=dict(boxstyle='round,pad=0.5', facecolor='lightblue', alpha=0.3))
 
-    fig.tight_layout()
     return fig
+
+
+def _format_meta_for_subplot_improved(meta_dict):
+    """Improved metadata formatting with better handling of nested structures."""
+    if not meta_dict:
+        return ""
+    
+    formatted_lines = []
+    for key, value in meta_dict.items():
+        if key == 'boundary' and isinstance(value, dict):
+            # Special handling for boundary dictionary
+            formatted_lines.append(f"{key}:")
+            for sub_key, sub_value in value.items():
+                if isinstance(sub_value, (int, float)):
+                    formatted_value = f"{sub_value:.6f}" if isinstance(sub_value, float) else str(sub_value)
+                else:
+                    formatted_value = str(sub_value)
+                formatted_lines.append(f"  {sub_key}: {formatted_value}")
+        else:
+            # Handle other values
+            if torch.is_tensor(value):
+                if value.numel() == 1:
+                    formatted_value = f"{value.item():.6f}" if value.dtype.is_floating_point else str(value.item())
+                else:
+                    formatted_value = f"[{', '.join([f'{v:.3f}' for v in value.tolist()[:5]])}{'...' if len(value) > 5 else ''}]"
+            elif isinstance(value, np.ndarray):
+                if value.size == 1:
+                    formatted_value = f"{value.item():.6f}" if np.issubdtype(value.dtype, np.floating) else str(value.item())
+                else:
+                    formatted_value = f"[{', '.join([f'{v:.3f}' for v in value.tolist()[:5]])}{'...' if len(value) > 5 else ''}]"
+            elif isinstance(value, (list, tuple)):
+                if len(value) <= 5:
+                    formatted_value = str(value)
+                else:
+                    formatted_value = f"{value[:3]}... ({len(value)} items)"
+            elif isinstance(value, (int, float)):
+                formatted_value = f"{value:.6f}" if isinstance(value, float) else str(value)
+            else:
+                formatted_value = str(value)
+            
+            formatted_lines.append(f"{key}: {formatted_value}")
+    
+    return "\n".join(formatted_lines)
 
 def tdr_analysis(s_parameters, time_signal, interp_scale=5):
     s_parameters = rearrange(s_parameters, 'b f -> b 1 f')

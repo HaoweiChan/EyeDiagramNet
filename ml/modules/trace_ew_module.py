@@ -437,8 +437,14 @@ class TraceEWModule(LightningModule):
         # Rescale / post-process for logging
         pred_ew_eval = pred_ew_eval * self.ew_scaler
         true_ew_scaled = item.true_ew * self.ew_scaler
-        pred_logvar_eval = pred_logvar_eval + 2 * self.log_ew_scaler.to(pred_logvar_eval.device)
-        pred_sigma = torch.exp(0.5 * pred_logvar_eval)
+        
+        # Handle uncertainty prediction based on predict_logvar setting
+        if self.hparams.predict_logvar:
+            pred_logvar_eval = pred_logvar_eval + 2 * self.log_ew_scaler.to(pred_logvar_eval.device)
+            pred_sigma = torch.exp(0.5 * pred_logvar_eval)
+        else:
+            # When predict_logvar is false, sigma should be zero
+            pred_sigma = torch.zeros_like(pred_ew_eval)
         
         # Add boundary parameters to metadata for logging
         meta = {**item.meta, 'boundary': item.boundary, 'config_keys': self.config_keys}
