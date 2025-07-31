@@ -446,8 +446,30 @@ class TraceEWModule(LightningModule):
             # When predict_logvar is false, sigma should be zero
             pred_sigma = torch.zeros_like(pred_ew_eval)
         
+        # Get the scaler from datamodule and inverse transform boundary data
+        fix_scaler = self.trainer.datamodule.fix_scaler
+        
+        # Reshape boundary data for inverse transform
+        boundary_reshaped = item.boundary.reshape(-1, item.boundary.shape[-1])
+        
+        # Apply inverse transform
+        boundary_inverse = fix_scaler.inverse_transform(boundary_reshaped)
+        
+        # Handle nan values - convert scaler.nan to torch.nan
+        boundary_inverse = torch.from_numpy(boundary_inverse)
+        boundary_inverse[boundary_inverse == fix_scaler.nan] = torch.nan
+        
+        # Reshape back to original shape
+        boundary_inverse = boundary_inverse.reshape(item.boundary.shape)
+        
+        # Convert to proper format for meta - create boundary dict for each item in batch
+        boundary_dicts = []
+        for i in range(len(item.meta)):
+            boundary_dict = {k: v.item() for k, v in zip(self.config_keys, boundary_inverse[i])}
+            boundary_dicts.append(boundary_dict)
+        
         # Add boundary parameters to metadata for logging
-        meta = {**item.meta, 'boundary': item.boundary, 'config_keys': self.config_keys}
+        meta = {**item.meta, 'boundary': boundary_dicts, 'config_keys': self.config_keys}
 
         extras = {
             "pred_ew": pred_ew_eval,
