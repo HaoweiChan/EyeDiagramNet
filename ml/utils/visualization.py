@@ -165,7 +165,8 @@ def plot_ew_curve(outputs, metrics, ew_threshold, sigma=2):
     upper_mask = np.ma.masked_where(~pred_mask, upper_bound)
     lower_masked = np.ma.masked_where(~pred_mask, lower_bound)
 
-    stage_key = next(iter(metrics)).split('_')[0].replace('/', '').capitalize()
+    stage_key = next(iter(metrics)).split('_')[0].replace('/', ' ').upper()
+    print (stage_key)
     metrics = {k.split('/')[1]: v for k, v in metrics.items() if v != 0 and not math.isnan(v)}
     
     # Format values like the desired clean format
@@ -177,17 +178,17 @@ def plot_ew_curve(outputs, metrics, ew_threshold, sigma=2):
         return str(v)
     
     metric_lines = [f'{k:<8} : {format_value(v)}' for k, v in metrics.items()]
-    metrics_display_string = f"{stage_key}\n\n" + '\n'.join(metric_lines)
+    metrics_display_string = f"{stage_key.replace('_', ' ')}\n\n" + '\n'.join(metric_lines)
 
     plt.close()
-    fig = plt.figure(figsize=(12, 8))  # Reduced figure size for more compact layout
+    fig = plt.figure(figsize=(10, 8))  # Reduced figure size for more compact layout
     
     # Create a more compact grid layout with tighter spacing
-    gs = fig.add_gridspec(3, 3, width_ratios=[2.5, 0.3, 1], height_ratios=[2, 1, 1], 
-                          hspace=0.15, wspace=0.05)  # Much tighter spacing
+    gs = fig.add_gridspec(3, 2, width_ratios=[1, 1], height_ratios=[2, 1, 1], 
+                          hspace=0.08, wspace=0.0)  # No gap between columns for bbox alignment
 
-    # First subplot for eye width (top left)
-    ax1 = fig.add_subplot(gs[0, 0])
+    # First subplot for eye width (top, spans both columns)
+    ax1 = fig.add_subplot(gs[0, :])
     ax1.set_title('Eye width', fontsize=11, fontweight='bold', pad=5)
     ax1.plot(pred_ew * pred_mask, color='#1777b4', alpha=0.8, label='Pred', linewidth=1.5)
     if pred_sigma.abs().sum() > 1e-6:
@@ -196,8 +197,8 @@ def plot_ew_curve(outputs, metrics, ew_threshold, sigma=2):
     ax1.legend(loc='lower right', fontsize=9)
     ax1.grid(True, alpha=0.3)
 
-    # Second subplot for prediction probability (middle left)
-    ax2 = fig.add_subplot(gs[1, 0], sharex=ax1)
+    # Second subplot for prediction probability (middle, spans both columns)
+    ax2 = fig.add_subplot(gs[1, :], sharex=ax1)
     ax2.set_title('Prediction Probability', fontsize=11, fontweight='bold', pad=5)
     ax2.plot(pred_prob, color='#1777b4', alpha=0.8, linewidth=1.5)
     ax2.axhline(ew_threshold, color='black', linestyle='--', linewidth=1, alpha=0.7)
@@ -209,24 +210,36 @@ def plot_ew_curve(outputs, metrics, ew_threshold, sigma=2):
     # Remove x-axis labels from top plot to prevent overlap
     ax1.set_xticklabels([])
 
-    # Right-hand text box for metrics (spans first two rows, positioned closer)
-    ax_text = fig.add_subplot(gs[0:2, 2])
-    ax_text.axis('off')
+    # Metrics box (bottom left)
+    ax_metrics = fig.add_subplot(gs[2, 0])
+    ax_metrics.axis('off')
     
-    # Position metrics text much closer to the plots
-    ax_text.text(0.02, 0.95, metrics_display_string, 
-                fontsize=10, family='monospace', 
+    # Equalize the line counts for consistent box height
+    meta_formatted = _format_meta_for_subplot_improved(meta)
+    meta_text = f"METADATA\n{'-' * 20}\n{meta_formatted}"
+    metrics_lines = metrics_display_string.count('\n')
+    meta_lines = meta_text.count('\n')
+    
+    if meta_lines > metrics_lines:
+        metrics_display_string_padded = metrics_display_string + '\n' * (meta_lines - metrics_lines)
+        meta_text_padded = meta_text
+    else:
+        meta_text_padded = meta_text + '\n' * (metrics_lines - meta_lines)
+        metrics_display_string_padded = metrics_display_string
+
+    # Position metrics text in bottom left
+    ax_metrics.text(0.02, 0.95, metrics_display_string_padded, 
+                fontsize=9, family='monospace', 
                 verticalalignment='top', horizontalalignment='left', 
-                fontweight='bold', transform=ax_text.transAxes,
+                fontweight='bold', transform=ax_metrics.transAxes,
                 bbox=dict(boxstyle='round,pad=0.3', facecolor='lightgray', alpha=0.8))
 
-    # Metadata section (bottom, spans all columns, more compact)
-    ax_meta = fig.add_subplot(gs[2, :])
+    # Metadata section (bottom right)
+    ax_meta = fig.add_subplot(gs[2, 1])
     ax_meta.axis('off')
     
     if meta:
-        meta_formatted = _format_meta_for_subplot_improved(meta)
-        ax_meta.text(0.02, 0.95, f"METADATA:\n{meta_formatted}", 
+        ax_meta.text(0.02, 0.95, meta_text_padded, 
                     fontsize=8, family='monospace', 
                     verticalalignment='top', horizontalalignment='left', 
                     fontweight='normal', transform=ax_meta.transAxes,
@@ -238,7 +251,7 @@ def plot_ew_curve(outputs, metrics, ew_threshold, sigma=2):
 
 
 def _format_meta_for_subplot_improved(meta_dict):
-    """Improved metadata formatting with better handling of nested structures."""
+    """Improved metadata formatting with better handling of nested structures and long text."""
     if not meta_dict:
         return ""
     
@@ -273,7 +286,24 @@ def _format_meta_for_subplot_improved(meta_dict):
             elif isinstance(value, (int, float)):
                 formatted_value = f"{value:.6f}" if isinstance(value, float) else str(value)
             else:
-                formatted_value = str(value)
+                # Handle long string values (like snp_horiz) with line breaks
+                if isinstance(value, str) and len(value) > 60:
+                    # Break long strings at reasonable points
+                    words = value.split('/')
+                    formatted_value = ''
+                    current_line = ''
+                    for i, word in enumerate(words):
+                        if i == 0:
+                            current_line = word
+                        else:
+                            if len(current_line + '/' + word) > 60:
+                                formatted_value += current_line + '\n'
+                                current_line = word
+                            else:
+                                current_line += '/' + word
+                    formatted_value += current_line
+                else:
+                    formatted_value = str(value)
             
             formatted_lines.append(f"{key}: {formatted_value}")
     
