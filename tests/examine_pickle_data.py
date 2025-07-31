@@ -99,6 +99,55 @@ def reconstruct_config(data, sample_idx):
     raise ValueError(f"No valid config data found for sample {sample_idx}. "
                     f"Expected 'configs' list with 'config_keys' in meta, or 'config_dicts'.")
 
+def convert_config_to_legacy_format(config):
+    """
+    Convert new config format to legacy format for compatibility with legacy simulator.
+    
+    Args:
+        config: Config object (SampleResult or dict) with new naming convention
+        
+    Returns:
+        Config object with legacy naming convention
+    """
+    # Define the mapping from new to old naming convention
+    name_mapping = {
+        'L_drv': 'L_tx',
+        'L_odt': 'L_rx',
+        'C_drv': 'C_tx',
+        'C_odt': 'C_rx',
+        'R_drv': 'R_tx',
+        'R_odt': 'R_rx',
+    }
+    
+    if hasattr(config, 'to_dict'):
+        # SampleResult object
+        config_dict = config.to_dict()
+        legacy_dict = {}
+        
+        for key, value in config_dict.items():
+            if key in name_mapping:
+                legacy_dict[name_mapping[key]] = value
+            else:
+                legacy_dict[key] = value
+        
+        # Create new SampleResult with legacy naming
+        if VALIDATION_AVAILABLE:
+            from simulation.parameters.bound_param import SampleResult
+            return SampleResult.from_dict(legacy_dict)
+        else:
+            return legacy_dict
+    else:
+        # Dictionary
+        legacy_dict = {}
+        
+        for key, value in config.items():
+            if key in name_mapping:
+                legacy_dict[name_mapping[key]] = value
+            else:
+                legacy_dict[key] = value
+        
+        return legacy_dict
+
 def main():
     """Main function to run the complete analysis"""
     # Parse command line arguments
@@ -447,9 +496,12 @@ def main():
                         # Reconstruct config object - handle both old and new formats
                         config = reconstruct_config(data, sample_idx)
                         
+                        # Convert new config to legacy format for compatibility
+                        legacy_config = convert_config_to_legacy_format(config)
+                        
                         # Run simulation
                         result = legacy_snp_eyewidth_simulation(
-                            config,
+                            legacy_config,
                             (snp_horiz, snp_drv, snp_odt),
                             directions,
                             device="cpu"
@@ -468,7 +520,7 @@ def main():
                         rel_error = np.abs(diff) / (np.abs(pickle_ew) + 1e-10)
                         
                         # Store detailed validation result
-                        config_dict = config if isinstance(config, dict) else config.to_dict()
+                        config_dict = legacy_config if isinstance(legacy_config, dict) else legacy_config.to_dict()
                         validation_result = {
                             'file_name': pfile.name,
                             'sample_index': sample_idx,
@@ -497,7 +549,7 @@ def main():
                         
                         # Print sample comparison
                         print("    Config:")
-                        config_dict = config if isinstance(config, dict) else config.to_dict()
+                        config_dict = legacy_config if isinstance(legacy_config, dict) else legacy_config.to_dict()
                         for k, v in config_dict.items():
                             print(f"      {k}: {v:.1e}")
                         print(f"    SNP horiz: {snp_horiz}")
@@ -517,7 +569,8 @@ def main():
                         # Store failed validation result
                         try:
                             config = reconstruct_config(data, sample_idx)
-                            config_dict = config if isinstance(config, dict) else config.to_dict()
+                            legacy_config = convert_config_to_legacy_format(config)
+                            config_dict = legacy_config if isinstance(legacy_config, dict) else legacy_config.to_dict()
                         except:
                             config_dict = {"error": "Could not reconstruct config"}
                         
