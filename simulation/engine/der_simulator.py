@@ -17,7 +17,7 @@ from simulation.parameters.bound_param import DER_PARAMS
 
 # Absolute path where the `from_enzo` package resides.
 # Adjust as necessary if the directory moves.
-DEFAULT_MODULE_ROOT = Path("/proj/siaiadm/ddr_peak_distorsion_analysis/enzo/20250623_to_willy/from_enzo")
+DEFAULT_MODULE_ROOT = Path("/proj/siaiadm/ddr_peak_distorsion_analysis/enzo/20250623_to_willy")
 
 
 # -------------------------------------------------
@@ -79,7 +79,7 @@ def _parse_csv(csv_path: Path) -> pd.DataFrame:
 def run_der_simulation(
     snp_path: str | Path,
     der_params: Dict[str, Any] | None = None,
-    algorithm: str = "der_spara_pattern_to_wave",
+    algorithm: str = "from_enzo.der_spara_pattern_to_wave",
     python_executable: str | None = None,
     module_roots: List[str | Path] | None = None,
 ) -> pd.DataFrame:
@@ -97,7 +97,7 @@ def run_der_simulation(
         ``DER_PARAMS`` is used.
     algorithm
         The fully-qualified module path to the external simulation entry
-        point. Defaults to ``der_spara_pattern_to_wave``.
+        point. Defaults to ``from_enzo.der_spara_pattern_to_wave``.
     python_executable
         Python interpreter to use. Defaults to ``sys.executable``.
     module_roots
@@ -137,17 +137,17 @@ def run_der_simulation(
         cmd = [python_exec, "-m", algorithm, str(config_path)]
 
         # Prepare environment with optional extra PYTHONPATH entries so that the
-        # external module can be resolved even if it is not installed
+        # external *from_enzo* module can be resolved even if it is not installed
         # in the current environment.
         env = os.environ.copy()
         # Default to the hard-coded module root if caller didn't provide one
         module_roots = module_roots or [DEFAULT_MODULE_ROOT]
         
-        # Validate that the DEFAULT_MODULE_ROOT exists
+        # Validate that the DEFAULT_MODULE_ROOT indeed contains 'from_enzo'
         for root in module_roots:
-            if Path(root) == DEFAULT_MODULE_ROOT and not DEFAULT_MODULE_ROOT.exists():
+            if Path(root) == DEFAULT_MODULE_ROOT and not (DEFAULT_MODULE_ROOT / "from_enzo").exists():
                 raise FileNotFoundError(
-                    f"DEFAULT_MODULE_ROOT ({DEFAULT_MODULE_ROOT}) does not exist. "
+                    f"DEFAULT_MODULE_ROOT ({DEFAULT_MODULE_ROOT}) does not contain the expected 'from_enzo' directory. "
                     f"Please ensure the external module path is correct and accessible."
                 )
 
