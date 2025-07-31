@@ -116,7 +116,7 @@ def convert_config_to_legacy_format(config):
         'C_drv': 'C_tx',
         'C_odt': 'C_rx',
         'R_drv': 'R_tx',
-        'R_odt': 'R_rx',
+        'R_odt': 'R_rx'
     }
     
     if hasattr(config, 'to_dict'):
@@ -147,6 +147,30 @@ def convert_config_to_legacy_format(config):
                 legacy_dict[key] = value
         
         return legacy_dict
+
+def get_snp_file_paths(data, sample_idx):
+    """
+    Get SNP file paths handling both new and legacy naming conventions.
+    
+    Args:
+        data: Pickle data dictionary
+        sample_idx: Sample index
+        
+    Returns:
+        tuple: (snp_drv_path, snp_odt_path) where paths are converted to legacy format
+    """
+    # Try new naming convention first
+    if 'snp_drvs' in data and 'snp_odts' in data:
+        snp_drv = Path(data['snp_drvs'][sample_idx])
+        snp_odt = Path(data['snp_odts'][sample_idx])
+    # Fall back to legacy naming convention
+    elif 'snp_txs' in data and 'snp_rxs' in data:
+        snp_drv = Path(data['snp_txs'][sample_idx])
+        snp_odt = Path(data['snp_rxs'][sample_idx])
+    else:
+        raise KeyError("No SNP file paths found in data. Expected 'snp_drvs'/'snp_odts' or 'snp_txs'/'snp_rxs'")
+    
+    return snp_drv, snp_odt
 
 def main():
     """Main function to run the complete analysis"""
@@ -415,11 +439,11 @@ def main():
             traceback.print_exc()
     
     if inconsistent_files:
-        print(f"\n⚠️  Found {len(inconsistent_files)} files with inconsistent data lengths:")
+        print(f"\n  Found {len(inconsistent_files)} files with inconsistent data lengths:")
         for fname, lengths in inconsistent_files:
             print(f"  {fname}: {lengths}")
     else:
-        print("✅ All files have consistent data lengths")
+        print(" All files have consistent data lengths")
     
     # Check for missing or corrupted data
     if all_line_ews:
@@ -489,8 +513,7 @@ def main():
                     directions = np.array(data['directions'][sample_idx]) if data['directions'][sample_idx] else None
                     
                     # Get SNP file paths - use n_ports from meta to construct correct filename
-                    snp_drv = Path(data['snp_drvs'][sample_idx])
-                    snp_odt = Path(data['snp_odts'][sample_idx])
+                    snp_drv, snp_odt = get_snp_file_paths(data, sample_idx)
                     
                     try:
                         # Reconstruct config object - handle both old and new formats
