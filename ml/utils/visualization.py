@@ -180,25 +180,25 @@ def plot_ew_curve(outputs, metrics, ew_threshold, sigma=2):
     metrics_display_string = f"{stage_key}\n\n" + '\n'.join(metric_lines)
 
     plt.close()
-    fig = plt.figure(figsize=(14, 10))  # Increased figure size for better spacing
+    fig = plt.figure(figsize=(12, 8))  # Reduced figure size for more compact layout
     
-    # Create a more flexible grid layout with better proportions
-    gs = fig.add_gridspec(4, 3, width_ratios=[3, 0.5, 1], height_ratios=[2, 1, 0.8, 1.2], 
-                          hspace=0.3, wspace=0.1)  # Better spacing
+    # Create a more compact grid layout with tighter spacing
+    gs = fig.add_gridspec(3, 3, width_ratios=[2.5, 0.3, 1], height_ratios=[2, 1, 1], 
+                          hspace=0.15, wspace=0.05)  # Much tighter spacing
 
     # First subplot for eye width (top left)
     ax1 = fig.add_subplot(gs[0, 0])
-    ax1.set_title('Eye width', fontsize=12, fontweight='bold', pad=10)
+    ax1.set_title('Eye width', fontsize=11, fontweight='bold', pad=5)
     ax1.plot(pred_ew * pred_mask, color='#1777b4', alpha=0.8, label='Pred', linewidth=1.5)
     if pred_sigma.abs().sum() > 1e-6:
         ax1.fill_between(np.arange(len(pred_ew)), upper_mask, lower_masked, color='#aec7e8', alpha=0.3, label='±σ')
     ax1.plot(true_ew * true_prob, color='#111111', alpha=0.8, label='True', linewidth=1.5)
-    ax1.legend(loc='lower right', fontsize=10)
+    ax1.legend(loc='lower right', fontsize=9)
     ax1.grid(True, alpha=0.3)
 
     # Second subplot for prediction probability (middle left)
     ax2 = fig.add_subplot(gs[1, 0], sharex=ax1)
-    ax2.set_title('Prediction Probability', fontsize=12, fontweight='bold', pad=10)
+    ax2.set_title('Prediction Probability', fontsize=11, fontweight='bold', pad=5)
     ax2.plot(pred_prob, color='#1777b4', alpha=0.8, linewidth=1.5)
     ax2.axhline(ew_threshold, color='black', linestyle='--', linewidth=1, alpha=0.7)
     ax2.set_ylim(-0.05, 1.05)  # Tighter y-axis limits
@@ -209,29 +209,31 @@ def plot_ew_curve(outputs, metrics, ew_threshold, sigma=2):
     # Remove x-axis labels from top plot to prevent overlap
     ax1.set_xticklabels([])
 
-    # Right-hand text box for metrics (spans first two rows)
+    # Right-hand text box for metrics (spans first two rows, positioned closer)
     ax_text = fig.add_subplot(gs[0:2, 2])
     ax_text.axis('off')
     
-    # Position metrics text closer to the plots
-    ax_text.text(0.05, 0.95, metrics_display_string, 
-                fontsize=11, family='monospace', 
+    # Position metrics text much closer to the plots
+    ax_text.text(0.02, 0.95, metrics_display_string, 
+                fontsize=10, family='monospace', 
                 verticalalignment='top', horizontalalignment='left', 
                 fontweight='bold', transform=ax_text.transAxes,
-                bbox=dict(boxstyle='round,pad=0.5', facecolor='lightgray', alpha=0.8))
+                bbox=dict(boxstyle='round,pad=0.3', facecolor='lightgray', alpha=0.8))
 
-    # Metadata section (bottom, spans all columns)
-    ax_meta = fig.add_subplot(gs[3, :])
+    # Metadata section (bottom, spans all columns, more compact)
+    ax_meta = fig.add_subplot(gs[2, :])
     ax_meta.axis('off')
     
     if meta:
         meta_formatted = _format_meta_for_subplot_improved(meta)
         ax_meta.text(0.02, 0.95, f"METADATA:\n{meta_formatted}", 
-                    fontsize=9, family='monospace', 
+                    fontsize=8, family='monospace', 
                     verticalalignment='top', horizontalalignment='left', 
                     fontweight='normal', transform=ax_meta.transAxes,
-                    bbox=dict(boxstyle='round,pad=0.5', facecolor='lightblue', alpha=0.3))
+                    bbox=dict(boxstyle='round,pad=0.3', facecolor='lightblue', alpha=0.3))
 
+    # Use constrained_layout instead of tight_layout for better compatibility
+    fig.set_constrained_layout(True)
     return fig
 
 
