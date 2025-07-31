@@ -3,19 +3,21 @@ import sys
 import json
 import uuid
 import tempfile
+import argparse
+import dataclasses
 import subprocess
 import skrf as rf
 import pandas as pd
-from pathlib import Path
 from contextlib import contextmanager
 from dataclasses import dataclass, fields
-from typing import Any, Dict, List, Iterator, Optional
+from pathlib import Path
+from typing import Any, Dict, Iterator, List, Optional
 
 from simulation.parameters.bound_param import DER_PARAMS
 
 # Absolute path where the `from_enzo` package resides.
 # Adjust as necessary if the directory moves.
-DEFAULT_MODULE_ROOT = Path("/proj/siaiadm/ddr_peak_distorsion_analysis/enzo/20250623_to_willy")
+DEFAULT_MODULE_ROOT = Path("/proj/siaiadm/ddr_peak_distorsion_analysis/enzo/20250623_to_willy/from_enzo")
 
 
 # -------------------------------------------------
@@ -25,7 +27,11 @@ DEFAULT_MODULE_ROOT = Path("/proj/siaiadm/ddr_peak_distorsion_analysis/enzo/2025
 @contextmanager
 def temp_snp_file(network: rf.Network) -> Iterator[Path]:
     """Context manager to temporarily save an skrf.Network to a file."""
-    with tempfile.NamedTemporaryFile(suffix=".s2p", delete=False) as fp:
+    # Determine the correct suffix based on S-parameter shape
+    n_ports = network.nports
+    suffix = f".s{n_ports}p"
+    
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as fp:
         tmp_path = Path(fp.name)
     try:
         network.write_touchstone(tmp_path)
@@ -48,11 +54,7 @@ def _map_der_params_to_config(der_params: Dict[str, Any]) -> Dict[str, Any]:
         "R_odt": "r_odt",
         "C_drv": "c_drv",
         "C_odt": "c_odt",
-        "L_drv": "l_drv",
-        "L_odt": "l_odt",
         "bits_per_sec": "bit_num_per_sec",
-        "pulse_amplitude": "vp",
-        # The remaining keys in DER_PARAMS already match their JSON names.
     }
 
     cfg: Dict[str, Any] = {}
@@ -77,7 +79,7 @@ def _parse_csv(csv_path: Path) -> pd.DataFrame:
 def run_der_simulation(
     snp_path: str | Path,
     der_params: Dict[str, Any] | None = None,
-    algorithm: str = "from_enzo.der_spara_pattern_to_wave",
+    algorithm: str = "der_spara_pattern_to_wave",
     python_executable: str | None = None,
     module_roots: List[str | Path] | None = None,
 ) -> pd.DataFrame:
@@ -95,7 +97,7 @@ def run_der_simulation(
         ``DER_PARAMS`` is used.
     algorithm
         The fully-qualified module path to the external simulation entry
-        point. Defaults to ``from_enzo.der_spara_pattern_to_wave``.
+        point. Defaults to ``der_spara_pattern_to_wave``.
     python_executable
         Python interpreter to use. Defaults to ``sys.executable``.
     module_roots
@@ -135,17 +137,17 @@ def run_der_simulation(
         cmd = [python_exec, "-m", algorithm, str(config_path)]
 
         # Prepare environment with optional extra PYTHONPATH entries so that the
-        # external *from_enzo* module can be resolved even if it is not installed
+        # external module can be resolved even if it is not installed
         # in the current environment.
         env = os.environ.copy()
         # Default to the hard-coded module root if caller didn't provide one
         module_roots = module_roots or [DEFAULT_MODULE_ROOT]
         
-        # Validate that the DEFAULT_MODULE_ROOT indeed contains 'from_enzo'
+        # Validate that the DEFAULT_MODULE_ROOT exists
         for root in module_roots:
-            if Path(root) == DEFAULT_MODULE_ROOT and not (DEFAULT_MODULE_ROOT / "from_enzo").exists():
+            if Path(root) == DEFAULT_MODULE_ROOT and not DEFAULT_MODULE_ROOT.exists():
                 raise FileNotFoundError(
-                    f"DEFAULT_MODULE_ROOT ({DEFAULT_MODULE_ROOT}) does not contain the expected 'from_enzo' directory. "
+                    f"DEFAULT_MODULE_ROOT ({DEFAULT_MODULE_ROOT}) does not exist. "
                     f"Please ensure the external module path is correct and accessible."
                 )
 
@@ -239,6 +241,7 @@ class DERCollectorSimulator:
                 ntwk_drv = rf.Network(ntwk_drv)
             if isinstance(ntwk_odt, (str, Path)):
                 ntwk_odt = rf.Network(ntwk_odt)
+                ntwk_odt.flip()
 
             # Cascade the networks
             ntwk = ntwk_drv ** ntwk_horiz ** ntwk_odt
@@ -249,7 +252,6 @@ class DERCollectorSimulator:
 
     def run_simulation(self) -> pd.DataFrame:
         """Run the DER simulation and return the results."""
-        import dataclasses
         der_params = dataclasses.asdict(self.params)
 
         # Clean up None values and network objects before passing
@@ -258,11 +260,19 @@ class DERCollectorSimulator:
             if v is not None and k not in ['snp_horiz', 'snp_drv', 'snp_odt']
         }
         
-        with temp_snp_file(self.ntwk) as snp_path:
-            df = run_der_simulation(
-                snp_path=snp_path,
-                der_params=params_to_pass
-            )
+        # Use the original SNP path instead of creating a temporary file
+        if isinstance(self.params.snp_horiz, (str, Path)):
+            snp_path = self.params.snp_horiz
+        else:
+            # If snp_horiz is already a Network object, we need to save it temporarily
+            # This is a fallback for when the original path is not available
+            with temp_snp_file(self.ntwk) as tmp_path:
+                snp_path = tmp_path
+        
+        df = run_der_simulation(
+            snp_path=snp_path,
+            der_params=params_to_pass
+        )
         return df
 
 
@@ -298,13 +308,15 @@ def main() -> None:
     -------
     python -m simulation.engine.der_simulator --snp_path my.s96p
     """
-    import argparse
-
     parser = argparse.ArgumentParser(description="Run DER simulation via subprocess")
     parser.add_argument("--snp_path", required=True, help="Path to the SNP file")
     args = parser.parse_args()
 
-    df = run_der_simulation(args.snp_path)
+    # Randomly sample parameters from DER_PARAMS
+    der_params = DER_PARAMS.sample().to_dict()
+    print(f"Using sampled parameters: {der_params}")
+    
+    df = run_der_simulation(args.snp_path, der_params=der_params)
     print(df.head())
 
 if __name__ == "__main__":

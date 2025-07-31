@@ -70,7 +70,6 @@ optimize_blas_for_sequential(num_threads=_thread_args.num_threads)
 # Now import numerical libraries with optimized settings
 from common.signal_utils import read_snp
 from simulation.parameters.bound_param import PARAM_SETS_MAP
-from simulation.engine.sbr_simulator import snp_eyewidth_simulation
 from simulation.io.config_utils import load_config, resolve_trace_pattern, resolve_vertical_dirs, build_argparser
 from simulation.io.snp_utils import parse_snps, generate_vertical_snp_pairs
 from simulation.parameters.param_utils import parse_param_types, modify_params_for_inductance
@@ -479,6 +478,7 @@ Metadata Error: {meta_error}
             from simulation.engine.der_simulator import snp_der_simulation
             simulation_func = snp_der_simulation
         else: # Default to sbr
+            from simulation.engine.sbr_simulator import snp_eyewidth_simulation
             simulation_func = snp_eyewidth_simulation
 
         # Load trace SNP (will be cached automatically)
