@@ -31,13 +31,34 @@ def temp_snp_file(network: rf.Network) -> Iterator[Path]:
     n_ports = network.nports
     suffix = f".s{n_ports}p"
     
-    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as fp:
-        tmp_path = Path(fp.name)
+    # Use DEFAULT_MODULE_ROOT for temporary files instead of system temp
+    # to avoid permission issues with /tmp/
     try:
+        # Ensure DEFAULT_MODULE_ROOT exists
+        DEFAULT_MODULE_ROOT.mkdir(parents=True, exist_ok=True)
+        
+        # Create unique filename
+        unique_id = uuid.uuid4().hex[:8]
+        tmp_path = DEFAULT_MODULE_ROOT / f"temp_{unique_id}{suffix}"
+        
+        # Write the network to the file
         network.write_touchstone(tmp_path)
         yield tmp_path
+    except (PermissionError, OSError) as e:
+        # Fallback to system temp if DEFAULT_MODULE_ROOT is not writable
+        print(f"Warning: Could not write to DEFAULT_MODULE_ROOT ({DEFAULT_MODULE_ROOT}): {e}")
+        print("Falling back to system temp directory")
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as fp:
+            fallback_path = Path(fp.name)
+        try:
+            network.write_touchstone(fallback_path)
+            yield fallback_path
+        finally:
+            if fallback_path.exists():
+                fallback_path.unlink()
     finally:
-        if tmp_path.exists():
+        # Clean up the file in DEFAULT_MODULE_ROOT
+        if 'tmp_path' in locals() and tmp_path.exists():
             tmp_path.unlink()
 
 def _map_der_params_to_config(der_params: Dict[str, Any]) -> Dict[str, Any]:
