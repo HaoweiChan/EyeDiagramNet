@@ -19,6 +19,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from pathlib import Path
+from datetime import datetime
 warnings.filterwarnings('ignore')
 
 # Try to import seaborn, make it optional
@@ -186,6 +187,14 @@ def main():
                         help='Maximum number of samples per file to validate (default: 5)')
     args = parser.parse_args()
     
+    # Create output directory for validation results
+    pickle_dir = Path(args.pickle_dir)
+    date_str = datetime.now().strftime('%Y%m%d_%H%M%S')
+    output_dir = Path(f'{pickle_dir.stem}_{date_str}')
+    output_dir.mkdir(exist_ok=True)
+    
+    print(f"Validation results will be saved to: {output_dir}")
+    
     print("EYE DIAGRAM TRAINING DATA EXAMINATION")
     print("="*60)
     
@@ -193,7 +202,6 @@ def main():
     print("\n1. LOADING AND EXAMINING PICKLE FILES")
     print("="*40)
     
-    pickle_dir = Path(args.pickle_dir)
     print(f"Looking for pickle files in: {pickle_dir}")
     
     pickle_files = list(pickle_dir.rglob("*.pkl"))
@@ -707,14 +715,14 @@ def main():
                     axes[1,2].set_title('Differences by File (N/A)')
                 
                 plt.tight_layout()
-                plt.savefig('validation_comparison.png', dpi=300, bbox_inches='tight')
-                print("\nValidation plots saved as: validation_comparison.png")
+                plt.savefig(output_dir / 'validation_comparison.png', dpi=300, bbox_inches='tight')
+                print(f"\nValidation plots saved as: {output_dir / 'validation_comparison.png'}")
                 plt.show()
                 
                 # Save detailed comparison
                 detailed_comparison = pd.DataFrame(detailed_validation_results)
-                detailed_comparison.to_csv('validation_comparison_details.csv', index=False, float_format='%.8f')
-                print("Detailed comparison saved to: validation_comparison_details.csv")
+                detailed_comparison.to_csv(output_dir / 'validation_comparison_details.csv', index=False, float_format='%.8f')
+                print(f"Detailed comparison saved to: {output_dir / 'validation_comparison_details.csv'}")
                 
             except Exception as e:
                 print(f"Error creating validation plots: {e}")
@@ -859,20 +867,20 @@ def main():
     report_text = "\n".join(report)
     print(report_text)
     
-    report_file = Path("training_data_summary.txt")
+    report_file = output_dir / "training_data_summary.txt"
     with open(report_file, 'w') as f:
         f.write(report_text)
     
     # Save detailed validation results as JSON
     if detailed_validation_results:
-        json_file = Path("detailed_validation_results.json")
+        json_file = output_dir / "detailed_validation_results.json"
         with open(json_file, 'w') as f:
             json.dump(detailed_validation_results, f, indent=2, default=str)
         print(f"Detailed validation results saved to: {json_file}")
         
     print(f"Report saved to: {report_file}")
     if len(comparison_data.get('differences', [])) > 0:
-        print(f"Validation summary saved to: validation_comparison_details.csv")
+        print(f"Validation summary saved to: {output_dir / 'validation_comparison_details.csv'}")
     
     print("\nAnalysis completed successfully!")
 
