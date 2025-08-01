@@ -201,8 +201,8 @@ class OptimizedSequentialCollector:
 === SEQUENTIAL SIMULATION ERROR METADATA ===
 Error Message: {error_msg}
 Trace File: {trace_snp.name} (Full path: {trace_snp})
-Vertical TX: {Path(snp_drv_path).name} (Full path: {snp_drv_path})
-Vertical RX: {Path(snp_odt_path).name} (Full path: {snp_odt_path})
+Vertical DRV: {Path(snp_drv_path).name} (Full path: {snp_drv_path})
+Vertical ODT: {Path(snp_odt_path).name} (Full path: {snp_odt_path})
 Sample: {sample_idx + 1}/{samples_needed}
 Directions: {sim_directions.tolist() if hasattr(sim_directions, 'tolist') else sim_directions}
 Number of Lines: {len(sim_directions) if sim_directions is not None else 'Unknown'}
@@ -248,8 +248,8 @@ Parameter Configuration:
 === SEQUENTIAL SIMULATION ERROR (METADATA FORMATTING FAILED) ===
 Error Message: {error_msg}
 Trace File: {trace_snp}
-Vertical TX: {snp_drv_path}
-Vertical RX: {snp_odt_path}
+Vertical DRV: {snp_drv_path}
+Vertical ODT: {snp_odt_path}
 Sample: {sample_idx + 1}/{samples_needed}
 Metadata Error: {meta_error}
 ================================================================

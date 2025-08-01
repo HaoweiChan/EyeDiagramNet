@@ -207,8 +207,8 @@ def main():
             print(f"\nSNP Files:")
             print(f"  Unique DRV files: {len(unique_drv)}")
             print(f"  Unique ODT files: {len(unique_odt)}")
-            print(f"  Sample TX: {list(unique_drv)[0] if unique_drv else 'None'}")
-            print(f"  Sample RX: {list(unique_odt)[0] if unique_odt else 'None'}")
+            print(f"  Sample DRV: {list(unique_drv)[0] if unique_drv else 'None'}")
+            print(f"  Sample ODT: {list(unique_odt)[0] if unique_odt else 'None'}")
         
         # Examine directions
         if sample_data.get('directions'):
@@ -501,8 +501,8 @@ def main():
                         for k, v in config_dict.items():
                             print(f"      {k}: {v:.1e}")
                         print(f"    SNP horiz: {snp_horiz}")
-                        print(f"    SNP TX: {snp_drv}")
-                        print(f"    SNP RX: {snp_odt}")
+                        print(f"    SNP DRV: {snp_drv}")
+                        print(f"    SNP ODT: {snp_odt}")
                         print(f"    Directions: {', '.join(map(str, directions.tolist())) if directions is not None else 'None'}")
                         print(f"    Pickle EW: {pickle_ew}")
                         print(f"    Simulated EW:  {simulated_ew}")
@@ -740,8 +740,8 @@ def main():
                         report.append(f"  {key}: {str(value)}")
             
             # SNP files and directions
-            report.append(f"SNP TX: {result['snp_drv']}")
-            report.append(f"SNP RX: {result['snp_odt']}")
+            report.append(f"SNP DRV: {result['snp_drv']}")
+            report.append(f"SNP ODT: {result['snp_odt']}")
             if result['directions']:
                 directions_str = str(result['directions'])
                 if len(directions_str) > 100:

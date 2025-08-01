@@ -445,7 +445,7 @@ class InferenceTraceSeqEWDataloader(LightningDataModule):
         drv = read_snp(Path(self.drv_snp))
         odt = read_snp(Path(self.odt_snp))
         assert drv.s.shape[-1] == odt.s.shape[-1], \
-            f"TX {self.drv_snp} and RX {self.odt_snp} must match ports."
+            f"DRV {self.drv_snp} and ODT {self.odt_snp} must match ports."
 
         # Load boundary JSON
         with open(self.bound_path, 'r') as f:

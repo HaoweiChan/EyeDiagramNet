@@ -799,8 +799,8 @@ def format_error_metadata(trace_snp_path, snp_drv_path, snp_odt_path, combined_c
 === SIMULATION ERROR METADATA ===
 Error Message: {error_msg}
 Trace File: {trace_snp_path.name} (Full path: {trace_snp_path})
-Vertical TX: {Path(snp_drv_path).name} (Full path: {snp_drv_path})
-Vertical RX: {Path(snp_odt_path).name} (Full path: {snp_odt_path})
+Vertical DRV: {Path(snp_drv_path).name} (Full path: {snp_drv_path})
+Vertical ODT: {Path(snp_odt_path).name} (Full path: {snp_odt_path})
 Sample: {sample_idx + 1}/{total_samples}
 Directions: {sim_directions.tolist() if hasattr(sim_directions, 'tolist') else sim_directions}
 Number of Lines: {len(sim_directions) if sim_directions is not None else 'Unknown'}
@@ -846,8 +846,8 @@ Parameter Configuration:
 === SIMULATION ERROR (METADATA FORMATTING FAILED) ===
 Error Message: {error_msg}
 Trace File: {trace_snp_path}
-Vertical TX: {snp_drv_path}
-Vertical RX: {snp_odt_path}
+Vertical DRV: {snp_drv_path}
+Vertical ODT: {snp_odt_path}
 Sample: {sample_idx + 1}/{total_samples}
 Metadata Error: {meta_error}
 =====================================================
@@ -930,7 +930,7 @@ def collect_trace_simulation_data(trace_snp_file, vertical_pairs_with_counts, co
         # Check if files are in cache for performance monitoring
         drv_cached = str(snp_drv_path) in _vertical_cache_info
         odt_cached = str(snp_odt_path) in _vertical_cache_info
-        cache_status = f"TX:{'cache' if drv_cached else 'disk'}, RX:{'cache' if odt_cached else 'disk'}"
+        cache_status = f"DRV:{'cache' if drv_cached else 'disk'}, ODT:{'cache' if odt_cached else 'disk'}"
         
         profile_print(f"Worker {worker_id} loading vertical SNPs ({cache_status}): {Path(snp_drv_path).name}, {Path(snp_odt_path).name}")
         
