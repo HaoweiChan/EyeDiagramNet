@@ -419,9 +419,8 @@ def main():
             axes[1,1].grid(True, alpha=0.3)
             
             plt.tight_layout()
-            plt.savefig('eye_width_distributions.png', dpi=300, bbox_inches='tight')
+            plt.savefig(output_dir / 'eye_width_distributions.png', dpi=300, bbox_inches='tight')
             print("\nDistribution plots saved as: eye_width_distributions.png")
-            plt.show()
         except Exception as e:
             print(f"Error creating plots: {e}")
             traceback.print_exc()
@@ -717,7 +716,6 @@ def main():
                 plt.tight_layout()
                 plt.savefig(output_dir / 'validation_comparison.png', dpi=300, bbox_inches='tight')
                 print(f"\nValidation plots saved as: {output_dir / 'validation_comparison.png'}")
-                plt.show()
                 
                 # Save detailed comparison
                 detailed_comparison = pd.DataFrame(detailed_validation_results)
