@@ -190,7 +190,7 @@ def main():
     # Create output directory for validation results
     pickle_dir = Path(args.pickle_dir)
     date_str = datetime.now().strftime('%Y%m%d_%H%M%S')
-    output_dir = Path(f'{pickle_dir.stem}_{date_str}')
+    output_dir = Path("tests") / f'{pickle_dir.stem}_{date_str}'
     output_dir.mkdir(exist_ok=True)
     
     print(f"Validation results will be saved to: {output_dir}")
