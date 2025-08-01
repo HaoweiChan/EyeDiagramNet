@@ -6,7 +6,7 @@ This test isolates and debugs torch.compile issues with the EyeWidthRegressor mo
 by using fake data and testing various compilation modes and configurations.
 
 Usage:
-    python test_eye_width_model_compilation.py [--no-compile] [--verbose]
+    python test_eyewidth_model_compilation.py [--no-compile] [--verbose]
 """
 
 import argparse
@@ -31,7 +31,7 @@ os.environ['TORCH_COMPILE_DISABLE'] = '0'  # Ensure compilation is enabled
 torch._dynamo.config.suppress_errors = True
 
 try:
-    from ml.models.eye_width_model import EyeWidthRegressor
+    from ml.models.eyewidth_model import EyeWidthRegressor
     from ml.models.layers import RMSNorm, positional_encoding_1d
     MODEL_IMPORTS_AVAILABLE = True
 except ImportError as e:

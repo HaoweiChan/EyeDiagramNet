@@ -79,7 +79,7 @@ model:
     ignore_snp: true
     predict_logvar: false
     model:
-      class_path: ml.models.eye_width_model.EyeWidthRegressor
+      class_path: ml.models.eyewidth_model.EyeWidthRegressor
       init_args:
         num_types: 3 # (S, G, D)
         model_dim: 384
