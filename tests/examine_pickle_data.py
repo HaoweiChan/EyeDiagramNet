@@ -264,21 +264,27 @@ def main():
         # Examine configs
         if sample_data.get('configs'):
             config_array = np.array(sample_data['configs'])
+            nan_count = np.isnan(config_array).sum()
+            nan_ratio = nan_count / config_array.size
             print(f"\nConfigs:")
             print(f"  Shape: {config_array.shape}")
-            print(f"  Min values: {config_array.min(axis=0)[:10]}...")
-            print(f"  Max values: {config_array.max(axis=0)[:10]}...")
-            print(f"  Mean values: {config_array.mean(axis=0)[:10]}...")
+            print(f"  NaN values: {nan_count} ({nan_ratio:.2%})")
+            print(f"  Min values: {np.nanmin(config_array, axis=0)[:10]}...")
+            print(f"  Max values: {np.nanmax(config_array, axis=0)[:10]}...")
+            print(f"  Mean values: {np.nanmean(config_array, axis=0)[:10]}...")
         
         # Examine line eye widths
         if sample_data.get('line_ews'):
             line_ews_array = np.array(sample_data['line_ews'])
+            nan_count = np.isnan(line_ews_array).sum()
+            nan_ratio = nan_count / line_ews_array.size
             print(f"\nLine Eye Widths:")
             print(f"  Shape: {line_ews_array.shape}")
-            print(f"  Min: {line_ews_array.min():.3f}")
-            print(f"  Max: {line_ews_array.max():.3f}")
-            print(f"  Mean: {line_ews_array.mean():.3f}")
-            print(f"  Std: {line_ews_array.std():.3f}")
+            print(f"  NaN values: {nan_count} ({nan_ratio:.2%})")
+            print(f"  Min: {np.nanmin(line_ews_array):.3f}")
+            print(f"  Max: {np.nanmax(line_ews_array):.3f}")
+            print(f"  Mean: {np.nanmean(line_ews_array):.3f}")
+            print(f"  Std: {np.nanstd(line_ews_array):.3f}")
             print(f"  Closed eyes (EW < 0): {(line_ews_array < 0).sum()} / {line_ews_array.size}")
         
         # Examine SNP files
@@ -356,15 +362,18 @@ def main():
     
     if all_line_ews:
         line_ews_array = np.array(all_line_ews)
+        nan_count = np.isnan(line_ews_array).sum()
+        nan_ratio = nan_count / line_ews_array.size
         
         print(f"Eye Width Analysis:")
         print(f"  Total measurements: {line_ews_array.size}")
         print(f"  Shape: {line_ews_array.shape}")
-        print(f"  Min: {line_ews_array.min():.3f}")
-        print(f"  Max: {line_ews_array.max():.3f}")
-        print(f"  Mean: {line_ews_array.mean():.3f}")
-        print(f"  Median: {np.median(line_ews_array):.3f}")
-        print(f"  Std: {line_ews_array.std():.3f}")
+        print(f"  NaN values: {nan_count} ({nan_ratio:.2%})")
+        print(f"  Min: {np.nanmin(line_ews_array):.3f}")
+        print(f"  Max: {np.nanmax(line_ews_array):.3f}")
+        print(f"  Mean: {np.nanmean(line_ews_array):.3f}")
+        print(f"  Median: {np.nanmedian(line_ews_array):.3f}")
+        print(f"  Std: {np.nanstd(line_ews_array):.3f}")
         
         # Analyze closed eyes
         closed_eyes = line_ews_array < 0
@@ -383,8 +392,8 @@ def main():
             axes[0,0].set_title('Overall Eye Width Distribution')
             axes[0,0].set_xlabel('Eye Width')
             axes[0,0].set_ylabel('Frequency')
-            axes[0,0].axvline(line_ews_array.mean(), color='red', linestyle='--', 
-                             label=f'Mean: {line_ews_array.mean():.2f}')
+            axes[0,0].axvline(np.nanmean(line_ews_array), color='red', linestyle='--', 
+                             label=f'Mean: {np.nanmean(line_ews_array):.2f}')
             axes[0,0].legend()
             
             # Distribution excluding closed eyes
@@ -394,8 +403,8 @@ def main():
                 axes[0,1].set_title('Eye Width Distribution (Open Eyes Only)')
                 axes[0,1].set_xlabel('Eye Width')
                 axes[0,1].set_ylabel('Frequency')
-                axes[0,1].axvline(open_eyes.mean(), color='red', linestyle='--', 
-                                 label=f'Mean: {open_eyes.mean():.2f}')
+                axes[0,1].axvline(np.nanmean(open_eyes), color='red', linestyle='--', 
+                                 label=f'Mean: {np.nanmean(open_eyes):.2f}')
                 axes[0,1].legend()
             
             # Box plot by line (if multiple lines)
@@ -452,15 +461,17 @@ def main():
     else:
         print(" All files have consistent data lengths")
     
-    # Check for missing or corrupted data
+            # Check for missing or corrupted data
     if all_line_ews:
         line_ews_array = np.array(all_line_ews)
         nan_count = np.isnan(line_ews_array).sum()
         inf_count = np.isinf(line_ews_array).sum()
+        nan_ratio = nan_count / line_ews_array.size
+        inf_ratio = inf_count / line_ews_array.size
         
         print(f"\nData integrity:")
-        print(f"  NaN values: {nan_count}")
-        print(f"  Infinite values: {inf_count}")
+        print(f"  NaN values: {nan_count} ({nan_ratio:.2%})")
+        print(f"  Infinite values: {inf_count} ({inf_ratio:.2%})")
         print(f"  Values < -1 (suspicious): {(line_ews_array < -1).sum()}")
         print(f"  Values > 100 (suspicious): {(line_ews_array > 100).sum()}")
     
@@ -468,10 +479,10 @@ def main():
     file_sizes = [pfile.stat().st_size / 1024 for pfile in pickle_files]  # KB
     if file_sizes:
         print(f"\nFile sizes:")
-        print(f"  Average: {np.mean(file_sizes):.1f} KB")
-        print(f"  Min: {np.min(file_sizes):.1f} KB")
-        print(f"  Max: {np.max(file_sizes):.1f} KB")
-        print(f"  Total: {np.sum(file_sizes):.1f} KB ({np.sum(file_sizes)/1024:.1f} MB)")
+        print(f"  Average: {np.nanmean(file_sizes):.1f} KB")
+        print(f"  Min: {np.nanmin(file_sizes):.1f} KB")
+        print(f"  Max: {np.nanmax(file_sizes):.1f} KB")
+        print(f"  Total: {np.nansum(file_sizes):.1f} KB ({np.nansum(file_sizes)/1024:.1f} MB)")
     
     # 6. Validation (if requested and available)
     comparison_data = {}
@@ -635,13 +646,19 @@ def main():
         if len(comparison_data['differences']) > 0:
             differences = np.array(comparison_data['differences'])
             rel_errors = np.array(comparison_data['relative_errors'])
+            diff_nan_count = np.isnan(differences).sum()
+            diff_nan_ratio = diff_nan_count / differences.size
+            rel_err_nan_count = np.isnan(rel_errors).sum()
+            rel_err_nan_ratio = rel_err_nan_count / rel_errors.size
             
             print(f"\nOverall Validation Statistics:")
-            print(f"  Mean absolute difference: {np.abs(differences).mean():.6f}")
-            print(f"  Max absolute difference: {np.abs(differences).max():.6f}")
-            print(f"  RMS difference: {np.sqrt((differences**2).mean()):.6f}")
-            print(f"  Mean relative error: {rel_errors.mean():.6f}")
-            print(f"  Max relative error: {rel_errors.max():.6f}")
+            print(f"  NaN values in differences: {diff_nan_count} ({diff_nan_ratio:.2%})")
+            print(f"  NaN values in relative errors: {rel_err_nan_count} ({rel_err_nan_ratio:.2%})")
+            print(f"  Mean absolute difference: {np.nanmean(np.abs(differences)):.6f}")
+            print(f"  Max absolute difference: {np.nanmax(np.abs(differences)):.6f}")
+            print(f"  RMS difference: {np.sqrt(np.nanmean(differences**2)):.6f}")
+            print(f"  Mean relative error: {np.nanmean(rel_errors):.6f}")
+            print(f"  Max relative error: {np.nanmax(rel_errors):.6f}")
             print(f"  Differences > 1e-3: {(np.abs(differences) > 1e-3).sum()}")
             print(f"  Relative errors > 1%: {(rel_errors > 0.01).sum()}")
             
@@ -654,8 +671,8 @@ def main():
                 
                 # Scatter plot: Pickle vs Simulated
                 axes[0,0].scatter(pickle_ews, simulated_ews, alpha=0.6, s=20)
-                axes[0,0].plot([pickle_ews.min(), pickle_ews.max()], 
-                              [pickle_ews.min(), pickle_ews.max()], 'r--', label='Perfect match')
+                axes[0,0].plot([np.nanmin(pickle_ews), np.nanmax(pickle_ews)], 
+                              [np.nanmin(pickle_ews), np.nanmax(pickle_ews)], 'r--', label='Perfect match')
                 axes[0,0].set_xlabel('Pickle Eye Width')
                 axes[0,0].set_ylabel('Simulated Eye Width')
                 axes[0,0].set_title('Pickle vs Simulated Eye Width')
@@ -665,8 +682,8 @@ def main():
                 # Histogram of differences
                 axes[0,1].hist(differences, bins=30, alpha=0.7, edgecolor='black')
                 axes[0,1].axvline(0, color='red', linestyle='--', label='Zero difference')
-                axes[0,1].axvline(differences.mean(), color='orange', linestyle='--', 
-                                 label=f'Mean: {differences.mean():.6f}')
+                axes[0,1].axvline(np.nanmean(differences), color='orange', linestyle='--', 
+                                 label=f'Mean: {np.nanmean(differences):.6f}')
                 axes[0,1].set_xlabel('Difference (Simulated - Pickle)')
                 axes[0,1].set_ylabel('Frequency')
                 axes[0,1].set_title('Distribution of Differences')
@@ -675,8 +692,8 @@ def main():
                 
                 # Histogram of relative errors
                 axes[0,2].hist(rel_errors, bins=30, alpha=0.7, edgecolor='black', color='green')
-                axes[0,2].axvline(rel_errors.mean(), color='red', linestyle='--', 
-                                 label=f'Mean: {rel_errors.mean():.6f}')
+                axes[0,2].axvline(np.nanmean(rel_errors), color='red', linestyle='--', 
+                                 label=f'Mean: {np.nanmean(rel_errors):.6f}')
                 axes[0,2].set_xlabel('Relative Error')
                 axes[0,2].set_ylabel('Frequency')
                 axes[0,2].set_title('Distribution of Relative Errors')
@@ -754,11 +771,14 @@ def main():
     # Eye width statistics
     if len(all_line_ews) > 0:
         line_ews_array = np.array(all_line_ews)
+        nan_count = np.isnan(line_ews_array).sum()
+        nan_ratio = nan_count / line_ews_array.size
         report.append("EYE WIDTH STATISTICS:")
-        report.append(f"  Mean: {line_ews_array.mean():.3f}")
-        report.append(f"  Std: {line_ews_array.std():.3f}")
-        report.append(f"  Min: {line_ews_array.min():.3f}")
-        report.append(f"  Max: {line_ews_array.max():.3f}")
+        report.append(f"  NaN values: {nan_count} ({nan_ratio:.2%})")
+        report.append(f"  Mean: {np.nanmean(line_ews_array):.3f}")
+        report.append(f"  Std: {np.nanstd(line_ews_array):.3f}")
+        report.append(f"  Min: {np.nanmin(line_ews_array):.3f}")
+        report.append(f"  Max: {np.nanmax(line_ews_array):.3f}")
         report.append(f"  Closed eyes: {(line_ews_array < 0).sum()} ({(line_ews_array < 0).mean()*100:.1f}%)")
         report.append("")
     
@@ -775,23 +795,29 @@ def main():
     if len(comparison_data.get('differences', [])) > 0:
         differences = np.array(comparison_data['differences'])
         rel_errors = np.array(comparison_data['relative_errors'])
+        diff_nan_count = np.isnan(differences).sum()
+        diff_nan_ratio = diff_nan_count / differences.size
+        rel_err_nan_count = np.isnan(rel_errors).sum()
+        rel_err_nan_ratio = rel_err_nan_count / rel_errors.size
         report.append("VALIDATION RESULTS (Pickle vs Simulated):")
         report.append(f"  Samples compared: {len(differences)}")
-        report.append(f"  Mean absolute difference: {np.abs(differences).mean():.6f}")
-        report.append(f"  Max absolute difference: {np.abs(differences).max():.6f}")
-        report.append(f"  RMS difference: {np.sqrt((differences**2).mean()):.6f}")
-        report.append(f"  Mean relative error: {rel_errors.mean():.6f}")
-        report.append(f"  Max relative error: {rel_errors.max():.6f}")
+        report.append(f"  NaN values in differences: {diff_nan_count} ({diff_nan_ratio:.2%})")
+        report.append(f"  NaN values in relative errors: {rel_err_nan_count} ({rel_err_nan_ratio:.2%})")
+        report.append(f"  Mean absolute difference: {np.nanmean(np.abs(differences)):.6f}")
+        report.append(f"  Max absolute difference: {np.nanmax(np.abs(differences)):.6f}")
+        report.append(f"  RMS difference: {np.sqrt(np.nanmean(differences**2)):.6f}")
+        report.append(f"  Mean relative error: {np.nanmean(rel_errors):.6f}")
+        report.append(f"  Max relative error: {np.nanmax(rel_errors):.6f}")
         report.append(f"  Perfect matches: {(differences == 0).sum()}")
         report.append(f"  Large differences (>1e-3): {(np.abs(differences) > 1e-3).sum()}")
         report.append(f"  Large relative errors (>1%): {(rel_errors > 0.01).sum()}")
         
         # Add interpretation
-        if np.abs(differences).max() < 1e-6:
+        if np.nanmax(np.abs(differences)) < 1e-6:
             report.append("  INTERPRETATION: Excellent agreement - differences within numerical precision")
-        elif np.abs(differences).max() < 1e-3:
+        elif np.nanmax(np.abs(differences)) < 1e-3:
             report.append("  INTERPRETATION: Very good agreement - small numerical differences")
-        elif np.abs(differences).max() < 1e-1:
+        elif np.nanmax(np.abs(differences)) < 1e-1:
             report.append("  INTERPRETATION: Good agreement - some differences may need investigation")
         else:
             report.append("  INTERPRETATION: Significant differences detected - investigate further")
