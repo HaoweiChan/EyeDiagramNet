@@ -67,15 +67,15 @@ def plot_ew_curve(outputs, metrics, ew_threshold, sigma=2):
     metrics_display_string = f"{stage_key.replace('_', ' ')}\n\n" + '\n'.join(metric_lines)
 
     plt.close()
-    fig = plt.figure(figsize=(10, 8))  # Reduced figure size for more compact layout
+    fig = plt.figure(figsize=(12, 9))  # Increased figure size for better layout
     
-    # Create a more compact grid layout with tighter spacing
-    gs = fig.add_gridspec(3, 2, width_ratios=[1, 1], height_ratios=[2, 1, 1], 
-                          hspace=0.08, wspace=0.0)  # No gap between columns for bbox alignment
+    # Create a 3x3 grid layout with proper spacing
+    gs = fig.add_gridspec(3, 3, width_ratios=[1, 1, 1], height_ratios=[2, 1.5, 1], 
+                          hspace=0.25, wspace=0.15)  # Increased spacing to prevent overlap
 
-    # First subplot for eye width (top, spans both columns)
+    # First subplot for eye width (top, spans all 3 columns)
     ax1 = fig.add_subplot(gs[0, :])
-    ax1.set_title('Eye width', fontsize=11, fontweight='bold', pad=5)
+    ax1.set_title('Eye width', fontsize=12, fontweight='bold', pad=15)  # Increased pad
     ax1.plot(pred_ew * pred_mask, color='#1777b4', alpha=0.8, label='Pred', linewidth=1.5)
     if pred_sigma.abs().sum() > 1e-6:
         ax1.fill_between(np.arange(len(pred_ew)), upper_mask, lower_masked, color='#aec7e8', alpha=0.3, label='±σ')
@@ -83,9 +83,9 @@ def plot_ew_curve(outputs, metrics, ew_threshold, sigma=2):
     ax1.legend(loc='lower right', fontsize=9)
     ax1.grid(True, alpha=0.3)
 
-    # Second subplot for prediction probability (middle, spans both columns)
+    # Second subplot for prediction probability (middle, spans all 3 columns)
     ax2 = fig.add_subplot(gs[1, :], sharex=ax1)
-    ax2.set_title('Prediction Probability', fontsize=11, fontweight='bold', pad=5)
+    ax2.set_title('Prediction Probability', fontsize=12, fontweight='bold', pad=15)  # Increased pad
     ax2.plot(pred_prob, color='#1777b4', alpha=0.8, linewidth=1.5)
     ax2.axhline(ew_threshold, color='black', linestyle='--', linewidth=1, alpha=0.7)
     ax2.set_ylim(-0.05, 1.05)  # Tighter y-axis limits
@@ -96,42 +96,34 @@ def plot_ew_curve(outputs, metrics, ew_threshold, sigma=2):
     # Remove x-axis labels from top plot to prevent overlap
     ax1.set_xticklabels([])
 
-    # Metrics box (bottom left)
+    # Metrics box (bottom left - uses only first column, 1/3 width)
     ax_metrics = fig.add_subplot(gs[2, 0])
     ax_metrics.axis('off')
     
-    # Equalize the line counts for consistent box height
+    # Metadata section (bottom right - uses last two columns, 2/3 width)
+    ax_meta = fig.add_subplot(gs[2, 1:])
+    ax_meta.axis('off')
+    
+    # Format metadata
     meta_formatted = _format_meta_for_subplot_improved(meta)
     meta_text = f"METADATA\n{'-' * 20}\n{meta_formatted}"
-    metrics_lines = metrics_display_string.count('\n')
-    meta_lines = meta_text.count('\n')
     
-    if meta_lines > metrics_lines:
-        metrics_display_string_padded = metrics_display_string + '\n' * (meta_lines - metrics_lines)
-        meta_text_padded = meta_text
-    else:
-        meta_text_padded = meta_text + '\n' * (metrics_lines - meta_lines)
-        metrics_display_string_padded = metrics_display_string
-
-    # Position metrics text in bottom left
-    ax_metrics.text(0.02, 0.95, metrics_display_string_padded, 
+    # Position metrics text in bottom left (1/3 width)
+    ax_metrics.text(0.05, 0.95, metrics_display_string, 
                 fontsize=9, family='monospace', 
                 verticalalignment='top', horizontalalignment='left', 
                 fontweight='bold', transform=ax_metrics.transAxes)
 
-    # Metadata section (bottom right)
-    ax_meta = fig.add_subplot(gs[2, 1])
-    ax_meta.axis('off')
-    
+    # Position metadata text in bottom right (2/3 width)
     if meta:
-        ax_meta.text(0.02, 0.95, meta_text_padded, 
+        ax_meta.text(0.02, 0.95, meta_text, 
                     fontsize=8, family='monospace', 
                     verticalalignment='top', horizontalalignment='left', 
                     fontweight='normal', transform=ax_meta.transAxes,
                     bbox=dict(boxstyle='round,pad=0.3', facecolor='lightblue', alpha=0.3))
 
-    # Use constrained_layout instead of tight_layout for better compatibility
-    fig.set_constrained_layout(True)
+    # Use subplots_adjust for precise control over layout
+    plt.subplots_adjust(left=0.08, right=0.95, top=0.92, bottom=0.08, hspace=0.3, wspace=0.15)
     return fig
 
 
@@ -161,7 +153,6 @@ def _format_meta_value(key, value):
         return f"{value:.6f}".rstrip('0').rstrip('.')
     
     return str(value)
-
 
 def _format_meta_for_subplot_improved(meta_dict):
     """Improved metadata formatting with better handling of nested structures and long text."""
@@ -219,11 +210,6 @@ def _format_meta_for_subplot_improved(meta_dict):
             formatted_lines.append(f"{key}: {formatted_value_str}")
     
     return "\n".join(formatted_lines)
-
-
-
-
-
 
 def plot_sparam_reconstruction(
     freqs: np.ndarray,
