@@ -464,12 +464,12 @@ class TraceEWModule(LightningModule):
         
         # Convert to proper format for meta - create boundary dict for each item in batch
         boundary_dicts = []
-        for i in range(len(item.meta)):
+        for i in range(len(boundary_inverse)):
             boundary_dict = {k: v.item() for k, v in zip(self.config_keys, boundary_inverse[i])}
             boundary_dicts.append(boundary_dict)
         
         # Add boundary parameters to metadata for logging
-        meta = {**item.meta, 'boundary': boundary_dicts, 'config_keys': self.config_keys}
+        meta = {**item.meta, 'boundary': boundary_dicts}
 
         extras = {
             "pred_ew": pred_ew_eval,
