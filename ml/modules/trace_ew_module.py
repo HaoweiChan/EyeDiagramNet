@@ -456,7 +456,6 @@ class TraceEWModule(LightningModule):
         boundary_inverse = fix_scaler.inverse_transform(boundary_reshaped)
         
         # Handle nan values - convert scaler.nan to torch.nan
-        boundary_inverse = torch.from_numpy(boundary_inverse)
         boundary_inverse[boundary_inverse == fix_scaler.nan] = torch.nan
         
         # Reshape back to original shape

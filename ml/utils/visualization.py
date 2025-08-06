@@ -53,7 +53,6 @@ def plot_ew_curve(outputs, metrics, ew_threshold, sigma=2):
     lower_masked = np.ma.masked_where(~pred_mask, lower_bound)
 
     stage_key = next(iter(metrics)).split('_')[0].replace('/', ' ').upper()
-    print (stage_key)
     metrics = {k.split('/')[1]: v for k, v in metrics.items() if v != 0 and not math.isnan(v)}
     
     # Format values like the desired clean format
