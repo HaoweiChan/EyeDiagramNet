@@ -38,6 +38,8 @@ def plot_ew_curve(outputs, metrics, ew_threshold, sigma=2):
     for k, v in meta.items():
         if isinstance(v, (list, torch.Tensor)) and len(v) == batch_size:
             sampled_meta[k] = v[sample_idx]
+        elif k == 'param_types':
+            sampled_meta[k] = [t[0] for t in v]
         else:
             sampled_meta[k] = v  # Keep non-batched metadata as is
     meta = sampled_meta
