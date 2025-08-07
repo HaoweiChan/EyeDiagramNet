@@ -18,6 +18,8 @@ from simulation.parameters.bound_param import DER_PARAMS
 # Absolute path where the `from_enzo` package resides.
 # Adjust as necessary if the directory moves.
 DEFAULT_MODULE_ROOT = Path("/proj/siaiadm/ddr_peak_distorsion_analysis/enzo/20250623_to_willy")
+# Per-user temporary directory for intermediate files
+USER_TEMP_DIR = Path("~/tmp/der_sim").expanduser()
 
 
 # -------------------------------------------------
@@ -30,35 +32,21 @@ def temp_snp_file(network: rf.Network) -> Iterator[Path]:
     # Determine the correct suffix based on S-parameter shape
     n_ports = network.nports
     suffix = f".s{n_ports}p"
-    
-    # Use DEFAULT_MODULE_ROOT for temporary files instead of system temp
-    # to avoid permission issues with /tmp/
+
+    # Use a user-specific directory to avoid permission issues
+    USER_TEMP_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Create unique filename
+    unique_id = uuid.uuid4().hex[:8]
+    tmp_path = USER_TEMP_DIR / f"temp_{unique_id}{suffix}"
+
     try:
-        # Ensure DEFAULT_MODULE_ROOT exists
-        DEFAULT_MODULE_ROOT.mkdir(parents=True, exist_ok=True)
-        
-        # Create unique filename
-        unique_id = uuid.uuid4().hex[:8]
-        tmp_path = DEFAULT_MODULE_ROOT / f"temp_{unique_id}{suffix}"
-        
         # Write the network to the file
         network.write_touchstone(tmp_path)
         yield tmp_path
-    except (PermissionError, OSError) as e:
-        # Fallback to system temp if DEFAULT_MODULE_ROOT is not writable
-        print(f"Warning: Could not write to DEFAULT_MODULE_ROOT ({DEFAULT_MODULE_ROOT}): {e}")
-        print("Falling back to system temp directory")
-        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as fp:
-            fallback_path = Path(fp.name)
-        try:
-            network.write_touchstone(fallback_path)
-            yield fallback_path
-        finally:
-            if fallback_path.exists():
-                fallback_path.unlink()
     finally:
-        # Clean up the file in DEFAULT_MODULE_ROOT
-        if 'tmp_path' in locals() and tmp_path.exists():
+        # Clean up the file
+        if tmp_path.exists():
             tmp_path.unlink()
 
 def _map_der_params_to_config(der_params: Dict[str, Any]) -> Dict[str, Any]:
@@ -131,7 +119,7 @@ def run_der_simulation(
     """
     snp_path = Path(snp_path)
 
-    with tempfile.TemporaryDirectory(prefix="der_sim_") as tmpdir:
+    with tempfile.TemporaryDirectory(prefix="der_sim_", dir=USER_TEMP_DIR) as tmpdir:
         output_dir = Path(tmpdir)
         sim_id = uuid.uuid4().hex[:8]
         der_params = der_params or DER_PARAMS.sample().to_dict()
@@ -281,19 +269,13 @@ class DERCollectorSimulator:
             if v is not None and k not in ['snp_horiz', 'snp_drv', 'snp_odt']
         }
         
-        # Use the original SNP path instead of creating a temporary file
-        if isinstance(self.params.snp_horiz, (str, Path)):
-            snp_path = self.params.snp_horiz
-        else:
-            # If snp_horiz is already a Network object, we need to save it temporarily
-            # This is a fallback for when the original path is not available
-            with temp_snp_file(self.ntwk) as tmp_path:
-                snp_path = tmp_path
-        
-        df = run_der_simulation(
-            snp_path=snp_path,
-            der_params=params_to_pass
-        )
+        # If snp_horiz is a Network object, save it to a temporary file
+        # because the external simulator expects a file path.
+        with temp_snp_file(self.ntwk) as tmp_path:
+            df = run_der_simulation(
+                snp_path=tmp_path,
+                der_params=params_to_pass
+            )
         return df
 
 
