@@ -334,16 +334,23 @@ class TraceSeqEWDataloader(LightningDataModule):
             sorted_keys = [case_ids[i] for i in keep_idx]
             sorted_vals = [labels[k] for k in sorted_keys]
 
-            # all tensors must share same length along trace dim
-            min_len = min(len(v[0]) for v in sorted_vals if v[0]) if sorted_vals and sorted_vals[0] and sorted_vals[0][0] else 0
+            # Align tensors by selecting entries that match the maximum length
+            lengths = [len(v[0]) for v in sorted_vals if v and v[0] is not None]
+            if not lengths:
+                rank_zero_info(f"No valid label entries for {name}; skipping.")
+                continue
+            max_len = max(lengths)
 
-            boundaries, directions, eye_widths, snp_paths, metas = (
-                np.array([s[0][:min_len] for s in sorted_vals]),
-                np.array([s[1][:min_len] for s in sorted_vals]),
-                np.array([s[2][:min_len] for s in sorted_vals]),
-                np.array([s[3][:min_len] for s in sorted_vals]),
-                np.array([s[4] for s in sorted_vals], dtype=object),
+            keep_indices = [i for i, s in enumerate(sorted_vals) if len(s[0]) == max_len]
+            sorted_vals = [sorted_vals[i] for i in keep_indices]
+            input_arr = input_arr[keep_indices]
+
+            boundaries_list, directions_list, eye_widths_list, snp_paths_list, metas_list = zip(*sorted_vals)
+            boundaries, directions, eye_widths = map(
+                np.array, (boundaries_list, directions_list, eye_widths_list)
             )
+            snp_paths = np.array(snp_paths_list, dtype=object)
+            metas = np.array(metas_list, dtype=object)
             eye_widths[eye_widths < 0] = 0
 
             rank_zero_info(f"{name}| input_seq {input_arr.shape} | eye_width {eye_widths.shape} | ignore_snp={self.ignore_snp}")
