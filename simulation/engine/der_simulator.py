@@ -2,16 +2,16 @@ import os
 import sys
 import json
 import uuid
-import tempfile
-import argparse
-import dataclasses
-import subprocess
 import skrf as rf
 import pandas as pd
+import tempfile
+import argparse
+import subprocess
+import dataclasses
+from typing import Any, Dict, Iterator, List, Optional
+from pathlib import Path
 from contextlib import contextmanager
 from dataclasses import dataclass, fields
-from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional
 
 from simulation.parameters.bound_param import DER_PARAMS
 
@@ -287,18 +287,13 @@ def snp_der_simulation(config, snp_files=None) -> List[float]:
         simulator = DERCollectorSimulator(config, snp_files)
         df = simulator.run_simulation()
 
-        # Extract a single metric from the result DataFrame.
-        # Assuming the CSV has a column 'der_metric' and we need one value per line
-        # For now, just return the first value of the first column.
-        # This part might need adjustment based on the actual CSV format.
-        if not df.empty and 'der_metric' in df.columns:
-             return df['der_metric'].tolist()
+        # Require 'EW' column in results
+        if df.empty:
+            raise ValueError("DER simulation returned an empty DataFrame; expected 'EW' column with values")
+        if 'EW' not in df.columns:
+            raise ValueError(f"DER simulation output missing required 'EW' column. Available columns: {list(df.columns)}")
 
-        # Fallback: if no 'der_metric' column, return first value of first column
-        if not df.empty:
-            return [df.iloc[0, 0]]
-            
-        return [-1.0] # Return a default value for failure
+        return df['EW'].tolist()
 
     except Exception as e:
         print(f"DER simulation failed: {str(e)}")
