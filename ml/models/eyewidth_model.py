@@ -219,6 +219,108 @@ class EyeWidthRegressor(nn.Module):
             nn.Linear(self.model_dim, self.output_dim),
         )
 
+    def encode_trace_tokens(self, trace_seq: torch.Tensor) -> torch.Tensor:
+        """
+        Encode trace sequence into per-trace token embeddings (before direction/boundary/SNP fusion).
+
+        Args:
+            trace_seq: (B, L, D)
+
+        Returns:
+            hidden_states_seq: (B, P, M) per-signal-trace embeddings
+        """
+        if self.use_gradient_checkpointing and self.training:
+            hidden_states_seq = torch.utils.checkpoint.checkpoint(
+                self.trace_encoder, trace_seq, use_reentrant=False
+            )
+        else:
+            hidden_states_seq = self.trace_encoder(trace_seq)
+        return hidden_states_seq
+
+    def decode_from_tokens(
+        self,
+        tokens: torch.Tensor,
+        direction: torch.Tensor,
+        boundary: torch.Tensor,
+        snp_vert: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Decode per-trace token embeddings into predictions using the remainder of the model.
+
+        Args:
+            tokens: (B, P, M) per-trace token embeddings
+            direction: (B, P) direction indices (0/1)
+            boundary: (B, F_b) boundary features
+            snp_vert: (B, 2, F, P, P) vertical S-parameters (ignored if self.ignore_snp)
+
+        Returns:
+            values, log_var, logits: tensors with shapes matching forward()
+        """
+        hidden_states_seq = tokens  # (B, P, M)
+
+        # Boundary processor
+        hidden_states_fix = self.boundary_processor(boundary).unsqueeze(1)
+        hidden_states_fix = hidden_states_fix + self.fix_token
+
+        # SNP encoder (optional)
+        if not self.ignore_snp and self.snp_encoder is not None:
+            if self.use_gradient_checkpointing and self.training:
+                hidden_states_vert = torch.utils.checkpoint.checkpoint(
+                    self.snp_encoder, snp_vert, self.drv_token, self.odt_token, use_reentrant=False
+                )
+            else:
+                hidden_states_vert = self.snp_encoder(
+                    snp_vert, drv_token=self.drv_token, odt_token=self.odt_token
+                )
+
+        # Direction projection and add to tokens
+        hidden_states_dir = self.dir_projection(direction)
+        hidden_states_seq = hidden_states_seq + hidden_states_dir
+        hidden_states_seq = self.norm_trace_seq(hidden_states_seq)
+
+        num_signals = hidden_states_seq.size(1)
+
+        # Positional embeddings for signals
+        signal_embeds = self.signal_projection[:num_signals].unsqueeze(0)
+        hidden_states_seq = hidden_states_seq + signal_embeds
+        if not self.ignore_snp:
+            hidden_states_vert = hidden_states_vert + signal_embeds.unsqueeze(0)
+
+        # Concatenate tokens
+        if not self.ignore_snp:
+            hidden_states_vert = rearrange(hidden_states_vert, "b d p e -> b (d p) e")
+            hidden_states = torch.cat(
+                (hidden_states_seq, hidden_states_vert, hidden_states_fix), dim=1
+            )
+        else:
+            hidden_states = torch.cat((hidden_states_seq, hidden_states_fix), dim=1)
+
+        # Final norm and transformer
+        hidden_states = self.norm_concat_tokens(hidden_states)
+        if self.use_gradient_checkpointing and self.training:
+            hidden_states_sig = torch.utils.checkpoint.checkpoint(
+                self.signal_encoder, hidden_states, use_reentrant=False
+            )
+        else:
+            hidden_states_sig = self.signal_encoder(hidden_states)
+        hidden_states_sig = hidden_states_sig[:, :num_signals]
+
+        # Head
+        output = self.pred_head(hidden_states_sig)
+        if self.predict_logvar:
+            values, log_var, logits = output.split([1, 1, 1], dim=-1)
+            values, log_var, logits = (
+                values.squeeze(-1),
+                log_var.squeeze(-1),
+                logits.squeeze(-1),
+            )
+        else:
+            values, logits = output.split([1, 1], dim=-1)
+            values, logits = values.squeeze(-1), logits.squeeze(-1)
+            log_var = torch.zeros_like(values)
+
+        return values, log_var, logits
+
     def load_pretrained_snp(self, checkpoint_path, freeze=True):
         """Load pretrained SNP encoder weights"""
         from ..utils.weight_transfer import load_pretrained_snp_encoder
