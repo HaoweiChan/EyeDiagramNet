@@ -87,6 +87,11 @@ class TraceEWModule(LightningModule):
         graph_smooth_k: int = 8,
         graph_smooth_sigma: float = 0.25,
         graph_smooth_weight: float = 0.0,
+        # In-batch theta pairing (optional)
+        pair_enable: bool = False,
+        pair_k: int = 2,
+        pair_min_delta: float = 0.05,
+        pair_theta_keys: list[str] | None = None,
     ):
         super().__init__()
         self.save_hyperparameters(ignore=['model'])
@@ -474,6 +479,23 @@ class TraceEWModule(LightningModule):
                 # Be robust: if anything goes wrong, skip graph penalty for this step
                 rank_zero_info(f"Graph smoothness penalty skipped due to error: {e}")
 
+        # Optional: in-batch theta pairing (pairs are used by downstream tasks/losses)
+        theta_pairs = None
+        if getattr(self.hparams, 'pair_enable', False):
+            try:
+                theta_pairs = self._find_theta_pairs(item.boundary)
+                if theta_pairs is not None:
+                    self.log(
+                        'num_theta_pairs',
+                        float(theta_pairs[0].numel()),
+                        on_step=True,
+                        logger=False,
+                        prog_bar=False,
+                        sync_dist=True,
+                    )
+            except Exception as e:
+                rank_zero_info(f"Theta pairing skipped due to error: {e}")
+
 
         # Use the eval tensors (may come from MC/Laplace inference) for metrics
         pred_ew_eval, pred_logvar_eval, pred_prob_eval = forward_out["eval"]
@@ -521,8 +543,94 @@ class TraceEWModule(LightningModule):
             "true_prob": true_prob,
             "pred_sigma": pred_sigma,
             "meta": meta,
+            "theta_pairs": theta_pairs,
         }
         return loss, extras
+
+    # -------------------------------------------------------------------
+    # In-batch theta pairing helpers
+    # -------------------------------------------------------------------
+    def _get_theta_indices(self) -> torch.Tensor | None:
+        keys = getattr(self.hparams, 'pair_theta_keys', None)
+        if not keys:
+            return None
+        # Ensure we have config_keys from datamodule
+        if not hasattr(self, 'config_keys'):
+            return None
+        indices = []
+        name_to_idx = {name: i for i, name in enumerate(self.config_keys)}
+        for k in keys:
+            if k in name_to_idx:
+                indices.append(name_to_idx[k])
+        if not indices:
+            return None
+        return torch.tensor(indices, dtype=torch.long)
+
+    def _find_theta_pairs(self, boundary: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor] | None:
+        """
+        Identify pairs of samples within a batch that have similar geometry but
+        sufficiently different theta values.
+
+        Returns:
+            (src_idx, tgt_idx) as LongTensors of equal length, or None if none found.
+        """
+        B, Fb = boundary.shape
+        if B <= 1:
+            return None
+
+        theta_idx = self._get_theta_indices()
+        device = boundary.device
+        dtype = boundary.dtype
+
+        # Geometry dims are those not in theta_idx (if provided)
+        if theta_idx is not None:
+            all_idx = torch.arange(Fb, device=device)
+            mask = torch.ones(Fb, dtype=torch.bool, device=device)
+            mask[theta_idx] = False
+            geom = boundary[:, mask]
+            theta_vec = boundary[:, theta_idx]
+        else:
+            # Fallback: use full boundary as geometry and theta_vec as last column
+            geom = boundary
+            theta_vec = boundary[:, -1:].to(dtype=dtype)
+
+        # Normalize geometry features per-dimension
+        g_mean = geom.mean(dim=0, keepdim=True)
+        g_std = geom.std(dim=0, keepdim=True)
+        geom_norm = (geom - g_mean) / (g_std + 1e-6)
+
+        # Build KNN graph over geometry
+        k = max(1, int(getattr(self.hparams, 'pair_k', 2)))
+        idx, _ = knn_graph(geom_norm, k=k, sigma=0.5)
+
+        # For each i, choose first neighbor j with theta difference >= min_delta
+        min_delta = float(getattr(self.hparams, 'pair_min_delta', 0.05))
+        src_list: list[int] = []
+        tgt_list: list[int] = []
+
+        for i in range(B):
+            neigh = idx[i] if idx.dim() == 2 else idx[i]
+            for j in neigh.tolist():
+                if j < 0 or j >= B or j == i:
+                    continue
+                # Theta difference criterion
+                delta = (theta_vec[i] - theta_vec[j]).abs()
+                # If multi-dim theta, use L2 norm
+                if delta.numel() > 1:
+                    delta_val = torch.linalg.vector_norm(delta, ord=2).item()
+                else:
+                    delta_val = float(delta.item())
+                if delta_val >= min_delta:
+                    src_list.append(i)
+                    tgt_list.append(j)
+                    break
+
+        if not src_list:
+            return None
+        return (
+            torch.tensor(src_list, dtype=torch.long, device=device),
+            torch.tensor(tgt_list, dtype=torch.long, device=device),
+        )
 
     def _maybe_collect_samples(self, stage: str, name: str, batch_idx: int, extras: dict):
         """Keep a few random samples around for plotting at epoch-end."""

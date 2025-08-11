@@ -83,6 +83,12 @@ model:
     graph_smooth_k: 8
     graph_smooth_sigma: 0.25
     graph_smooth_weight: 0.0
+    # In-batch theta pairing (disabled by default)
+    pair_enable: false
+    pair_k: 2
+    pair_min_delta: 0.05
+    # Names must exist in datamodule config_keys to activate selective theta dims
+    pair_theta_keys: null
     model:
       class_path: ml.models.eyewidth_model.EyeWidthRegressor
       init_args:
