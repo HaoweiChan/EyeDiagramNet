@@ -14,6 +14,7 @@ from ..utils import losses
 from ..utils.init_weights import init_weights
 from ..utils.visualization import image_to_buffer, plot_ew_curve
 from ..utils.graph_smooth import knn_graph, graph_laplacian_penalty
+from ..models.token_shift import DeltaTokenModulator
 
 @torch.jit.script
 def _augment_sequence_jit(seq: torch.Tensor, insert_frac: int = 10) -> torch.Tensor:
@@ -92,6 +93,11 @@ class TraceEWModule(LightningModule):
         pair_k: int = 2,
         pair_min_delta: float = 0.05,
         pair_theta_keys: list[str] | None = None,
+        # Token-shift supervision (optional)
+        enable_token_shift: bool = False,
+        lambda_tokens: float = 0.0,
+        token_mod_hidden: int | None = None,
+        token_mod_num_f: int = 6,
     ):
         super().__init__()
         self.save_hyperparameters(ignore=['model'])
@@ -117,6 +123,9 @@ class TraceEWModule(LightningModule):
         # self.weighted_loss = UncertaintyWeightedLoss(['nll', 'bce'])
         self.weighted_loss = LearnableLossWeighting(['nll', 'bce'])
         
+        # Token-shift modulator (lazy init when shapes are known)
+        self.token_modulator: DeltaTokenModulator | None = None
+
         # NOTE: GradNormLossBalancer uses second-order gradients which are incompatible 
         # with torch.compile. If you want to use torch.compile, switch to:
         # self.weighted_loss = LearnableLossWeighting(['nll', 'bce'])  # Simple learnable weights
@@ -149,6 +158,9 @@ class TraceEWModule(LightningModule):
             rank_zero_info(traceback.format_exc())
             raise
         self.apply(init_weights('xavier'))
+
+        # Lazy-init token modulator once we know boundary dimension and model dims
+        self._maybe_init_token_modulator(sample_boundary=inputs[2])
 
         # load model checkpoint
         if self.hparams.ckpt_path is not None:
@@ -354,6 +366,78 @@ class TraceEWModule(LightningModule):
         pred_ew[pred_prob < self.hparams.ew_threshold] = -0.1
         return pred_ew
 
+    # --------------------- One-Shot Theta Sweep Inference ---------------------
+    @torch.no_grad()
+    def one_shot_sweep(
+        self,
+        trace_seq: torch.Tensor,
+        direction: torch.Tensor,
+        snp_vert: torch.Tensor,
+        theta_ref: torch.Tensor,
+        theta_grid: torch.Tensor,
+        batch_size: int = 64,
+    ) -> dict:
+        """
+        Perform one-shot sweep over theta values by reusing encoded tokens and
+        modulating them with DeltaTokenModulator, then decoding to predictions.
+
+        Args:
+            trace_seq: (B, L, D) trace sequence
+            direction: (B, P) directions
+            snp_vert: (B, 2, F, P, P)
+            theta_ref: (B, T) reference theta for each sample
+            theta_grid: (G, T) grid of target theta values
+            batch_size: chunk size for processing theta grid
+
+        Returns:
+            dict with key 'values' -> (B, G, P) predictions across theta grid
+        """
+        device = next(self.parameters()).device
+        trace_seq = trace_seq.to(device)
+        direction = direction.to(device)
+        snp_vert = snp_vert.to(device)
+        theta_ref = theta_ref.to(device)
+        theta_grid = theta_grid.to(device)
+
+        # Encode reference tokens once
+        tokens_ref = self.model.encode_trace_tokens(trace_seq)  # (B, P, M)
+
+        # Initialize modulator if needed
+        self._maybe_init_token_modulator(sample_boundary=theta_ref)
+        if self.token_modulator is None:
+            raise RuntimeError("DeltaTokenModulator is not initialized. Enable token-shift or call during training once.")
+
+        B, P, M = tokens_ref.shape
+        G = theta_grid.size(0)
+        outputs = []
+
+        # Expand reference thetas to batch dimension
+        theta_ref_b = theta_ref
+
+        for start in range(0, G, batch_size):
+            end = min(start + batch_size, G)
+            thetas_batch = theta_grid[start:end]  # (g, T)
+            g = thetas_batch.size(0)
+
+            # Repeat for all B samples
+            z_ref_rep = tokens_ref.repeat_interleave(g, dim=0)  # (B*g, P, M)
+            theta_ref_rep = theta_ref_b.repeat_interleave(g, dim=0)  # (B*g, T)
+            theta_tgt_rep = thetas_batch.repeat(B, 1)  # (B*g, T)
+
+            # Predict tokens and decode
+            z_hat = self.token_modulator(z_ref_rep, theta_ref_rep, theta_tgt_rep)
+            vals, _, _ = self.model.decode_from_tokens(
+                tokens=z_hat,
+                direction=direction.repeat_interleave(g, dim=0),
+                boundary=theta_tgt_rep,  # use theta as boundary subset for decoding path
+                snp_vert=snp_vert.repeat_interleave(g, dim=0),
+            )
+            vals = vals.view(B, g, P)
+            outputs.append(vals)
+
+        values = torch.cat(outputs, dim=1)  # (B, G, P)
+        return {"values": values}
+
     ############################ PRIVATE METHODS ############################
 
     def metrics_factory(self):
@@ -496,6 +580,64 @@ class TraceEWModule(LightningModule):
             except Exception as e:
                 rank_zero_info(f"Theta pairing skipped due to error: {e}")
 
+        # Optional token-shift supervision loss
+        if getattr(self.hparams, 'enable_token_shift', False):
+            try:
+                # Ensure modulator is initialized
+                self._maybe_init_token_modulator(sample_boundary=item.boundary)
+
+                if theta_pairs is None:
+                    token_loss = pred_ew.new_tensor(0.0)
+                    num_pairs = 0
+                else:
+                    src_idx, tgt_idx = theta_pairs
+                    num_pairs = int(src_idx.numel())
+                    if num_pairs == 0:
+                        token_loss = pred_ew.new_tensor(0.0)
+                    else:
+                        # Encode tokens for all samples: (B, P, M)
+                        tokens_all = self.model.encode_trace_tokens(item.trace_seq)
+                        # Gather reference/target tokens by pair indices
+                        z_ref = tokens_all.index_select(0, src_idx)
+                        z_tgt = tokens_all.index_select(0, tgt_idx)
+
+                        # Extract theta vectors with selected dims
+                        theta_idx = self._get_theta_indices()
+                        if theta_idx is None:
+                            theta_ref = item.boundary.index_select(0, src_idx)[:, -1:].to(dtype=z_ref.dtype)
+                            theta_tgt = item.boundary.index_select(0, tgt_idx)[:, -1:].to(dtype=z_ref.dtype)
+                        else:
+                            theta_ref = item.boundary.index_select(0, src_idx)[:, theta_idx].to(dtype=z_ref.dtype)
+                            theta_tgt = item.boundary.index_select(0, tgt_idx)[:, theta_idx].to(dtype=z_ref.dtype)
+
+                        # Predict target tokens
+                        z_hat = self.token_modulator(z_ref, theta_ref, theta_tgt)
+                        token_loss = F.mse_loss(z_hat, z_tgt)
+
+                # Log token loss and number of pairs
+                self.log(
+                    'token_loss',
+                    token_loss.detach(),
+                    on_step=True,
+                    logger=False,
+                    prog_bar=False,
+                    sync_dist=True,
+                )
+                self.log(
+                    'num_token_pairs',
+                    float(num_pairs),
+                    on_step=True,
+                    logger=False,
+                    prog_bar=False,
+                    sync_dist=True,
+                )
+
+                # Add to total loss only during training
+                if self.training and self.hparams.lambda_tokens > 0.0:
+                    loss = loss + float(self.hparams.lambda_tokens) * token_loss
+            except Exception as e:
+                rank_zero_info(f"Token-shift loss skipped due to error: {e}")
+
 
         # Use the eval tensors (may come from MC/Laplace inference) for metrics
         pred_ew_eval, pred_logvar_eval, pred_prob_eval = forward_out["eval"]
@@ -512,29 +654,21 @@ class TraceEWModule(LightningModule):
             # When predict_logvar is false, sigma should be zero
             pred_sigma = torch.zeros_like(pred_ew_eval)
         
-        # Get the scaler from datamodule and inverse transform boundary data
-        fix_scaler = self.trainer.datamodule.fix_scaler
-        
-        # Reshape boundary data for inverse transform
-        boundary_reshaped = item.boundary.reshape(-1, item.boundary.shape[-1])
-        
-        # Apply inverse transform
-        boundary_inverse = fix_scaler.inverse_transform(boundary_reshaped)
-        
-        # Handle nan values - convert scaler.nan to torch.nan
-        boundary_inverse[boundary_inverse == fix_scaler.nan] = torch.nan
-        
-        # Reshape back to original shape
-        boundary_inverse = boundary_inverse.reshape(item.boundary.shape)
-        
-        # Convert to proper format for meta - create boundary dict for each item in batch
-        boundary_dicts = []
-        for i in range(len(boundary_inverse)):
-            boundary_dict = {k: v.item() for k, v in zip(self.config_keys, boundary_inverse[i])}
-            boundary_dicts.append(boundary_dict)
-        
-        # Add boundary parameters to metadata for logging
-        meta = {**item.meta, 'boundary': boundary_dicts}
+        # Add boundary parameters to metadata for logging (only if trainer/datamodule available)
+        # Avoid touching Lightning's `trainer` property when unattached
+        if getattr(self, '_trainer', None) is not None and getattr(self._trainer, 'datamodule', None) is not None:
+            fix_scaler = self._trainer.datamodule.fix_scaler
+            boundary_reshaped = item.boundary.reshape(-1, item.boundary.shape[-1])
+            boundary_inverse = fix_scaler.inverse_transform(boundary_reshaped)
+            boundary_inverse[boundary_inverse == fix_scaler.nan] = torch.nan
+            boundary_inverse = boundary_inverse.reshape(item.boundary.shape)
+            boundary_dicts = []
+            for i in range(len(boundary_inverse)):
+                boundary_dict = {k: v.item() for k, v in zip(self.config_keys, boundary_inverse[i])}
+                boundary_dicts.append(boundary_dict)
+            meta = {**item.meta, 'boundary': boundary_dicts}
+        else:
+            meta = item.meta
 
         extras = {
             "pred_ew": pred_ew_eval,
@@ -632,8 +766,36 @@ class TraceEWModule(LightningModule):
             torch.tensor(tgt_list, dtype=torch.long, device=device),
         )
 
+    # -------------------------------------------------------------------
+    # Token modulator initialization helper
+    # -------------------------------------------------------------------
+    def _maybe_init_token_modulator(self, sample_boundary: torch.Tensor | None = None):
+        if not getattr(self.hparams, 'enable_token_shift', False):
+            return
+        if self.token_modulator is not None:
+            return
+        # Determine theta dimension
+        theta_idx = self._get_theta_indices()
+        if theta_idx is not None:
+            theta_dim = int(theta_idx.numel())
+        else:
+            # Default to using the last boundary dimension as theta scalar
+            theta_dim = 1
+
+        # Token dimension from model
+        token_dim = getattr(self.model, 'model_dim', None)
+        if token_dim is None:
+            # Fallback: infer by running one step of encode if possible
+            return
+        hidden = int(self.hparams.token_mod_hidden) if self.hparams.token_mod_hidden else int(token_dim)
+        num_f = int(self.hparams.token_mod_num_f)
+        self.token_modulator = DeltaTokenModulator(token_dim=token_dim, theta_dim=theta_dim, hidden=hidden, num_f=num_f)
+
     def _maybe_collect_samples(self, stage: str, name: str, batch_idx: int, extras: dict):
         """Keep a few random samples around for plotting at epoch-end."""
+        # Skip when not attached to a Trainer (e.g., unit tests calling step directly)
+        if getattr(self, '_trainer', None) is None:
+            return
         if batch_idx in self.get_output_steps(stage):
             if stage == "train_":
                 self.train_step_outputs.setdefault(name, []).append(extras)

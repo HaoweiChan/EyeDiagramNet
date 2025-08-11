@@ -173,6 +173,7 @@ ENV/
 Thumbs.db 
 
 # ==== Custom ====
+.env*
 *.txt
 !requirements.txt
 runs/*
@@ -195,8 +196,8 @@ simulation/engine/der/
 *.s*p
 *.pkl
 *.csv
+*.png
 *.json
-
 
 # Logs
 logs

@@ -89,6 +89,11 @@ model:
     pair_min_delta: 0.05
     # Names must exist in datamodule config_keys to activate selective theta dims
     pair_theta_keys: null
+    # Token-shift supervision (disabled by default)
+    enable_token_shift: false
+    lambda_tokens: 0.0
+    token_mod_hidden: null
+    token_mod_num_f: 6
     model:
       class_path: ml.models.eyewidth_model.EyeWidthRegressor
       init_args:
