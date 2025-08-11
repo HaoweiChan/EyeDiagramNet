@@ -78,6 +78,11 @@ model:
     use_laplace_on_fit_end: false
     ignore_snp: true
     predict_logvar: false
+    # Graph smoothness configuration (disabled by default)
+    graph_smooth_enable: false
+    graph_smooth_k: 8
+    graph_smooth_sigma: 0.25
+    graph_smooth_weight: 0.0
     model:
       class_path: ml.models.eyewidth_model.EyeWidthRegressor
       init_args:

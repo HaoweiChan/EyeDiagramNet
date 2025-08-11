@@ -13,6 +13,7 @@ from ..models.layers import LearnableLossWeighting
 from ..utils import losses
 from ..utils.init_weights import init_weights
 from ..utils.visualization import image_to_buffer, plot_ew_curve
+from ..utils.graph_smooth import knn_graph, graph_laplacian_penalty
 
 @torch.jit.script
 def _augment_sequence_jit(seq: torch.Tensor, insert_frac: int = 10) -> torch.Tensor:
@@ -81,6 +82,11 @@ class TraceEWModule(LightningModule):
         use_laplace_on_fit_end: bool = True,
         ignore_snp: bool = False,
         predict_logvar: bool = True,
+        # Graph smoothness (optional)
+        graph_smooth_enable: bool = False,
+        graph_smooth_k: int = 8,
+        graph_smooth_sigma: float = 0.25,
+        graph_smooth_weight: float = 0.0,
     ):
         super().__init__()
         self.save_hyperparameters(ignore=['model'])
@@ -429,6 +435,44 @@ class TraceEWModule(LightningModule):
                 'mse': F.mse_loss(pred_ew[true_prob.bool()], item.true_ew[true_prob.bool()]),
                 'bce': F.binary_cross_entropy_with_logits(pred_prob, true_prob, weight=weight_prob)
             })
+
+        # Optional graph Laplacian smoothness regularization across batch
+        if (
+            self.training
+            and getattr(self.hparams, 'graph_smooth_enable', False)
+            and getattr(self.hparams, 'graph_smooth_weight', 0.0) > 0.0
+        ):
+            try:
+                # Normalize theta (boundary) across batch to unit variance per feature
+                theta = item.boundary
+                theta_mean = theta.mean(dim=0, keepdim=True)
+                theta_std = theta.std(dim=0, keepdim=True)
+                theta_norm = (theta - theta_mean) / (theta_std + 1e-6)
+
+                # Build KNN graph over samples in the batch
+                idx, w = knn_graph(
+                    theta_norm,
+                    k=int(getattr(self.hparams, 'graph_smooth_k', 8)),
+                    sigma=float(getattr(self.hparams, 'graph_smooth_sigma', 0.25)),
+                )
+
+                # Penalize variation of predictions across neighbors (per-port treated as feature dims)
+                graph_pen = graph_laplacian_penalty(pred_ew, idx, w)
+                weighted_pen = float(self.hparams.graph_smooth_weight) * graph_pen
+                loss = loss + weighted_pen
+
+                # Lightweight logging for monitoring
+                self.log(
+                    'graph_penalty',
+                    graph_pen.detach(),
+                    on_step=True,
+                    logger=False,
+                    prog_bar=False,
+                    sync_dist=True,
+                )
+            except Exception as e:
+                # Be robust: if anything goes wrong, skip graph penalty for this step
+                rank_zero_info(f"Graph smoothness penalty skipped due to error: {e}")
 
 
         # Use the eval tensors (may come from MC/Laplace inference) for metrics
