@@ -372,10 +372,12 @@ class TraceEWModule(LightningModule):
         self,
         trace_seq: torch.Tensor,
         direction: torch.Tensor,
+        boundary: torch.Tensor,
         snp_vert: torch.Tensor,
         theta_ref: torch.Tensor,
         theta_grid: torch.Tensor,
         batch_size: int = 64,
+        use_autocast: bool = True,
     ) -> dict:
         """
         Perform one-shot sweep over theta values by reusing encoded tokens and
@@ -384,10 +386,12 @@ class TraceEWModule(LightningModule):
         Args:
             trace_seq: (B, L, D) trace sequence
             direction: (B, P) directions
+            boundary: (B, F_b) full boundary vector used by decoder; theta dims will be replaced per grid
             snp_vert: (B, 2, F, P, P)
             theta_ref: (B, T) reference theta for each sample
             theta_grid: (G, T) grid of target theta values
             batch_size: chunk size for processing theta grid
+            use_autocast: enable autocast on CUDA for speed
 
         Returns:
             dict with key 'values' -> (B, G, P) predictions across theta grid
@@ -395,6 +399,7 @@ class TraceEWModule(LightningModule):
         device = next(self.parameters()).device
         trace_seq = trace_seq.to(device)
         direction = direction.to(device)
+        boundary = boundary.to(device)
         snp_vert = snp_vert.to(device)
         theta_ref = theta_ref.to(device)
         theta_grid = theta_grid.to(device)
@@ -402,8 +407,15 @@ class TraceEWModule(LightningModule):
         # Encode reference tokens once
         tokens_ref = self.model.encode_trace_tokens(trace_seq)  # (B, P, M)
 
-        # Initialize modulator if needed
-        self._maybe_init_token_modulator(sample_boundary=theta_ref)
+        # Initialize modulator if needed (allow init even if training flag disabled)
+        if self.token_modulator is None:
+            # Temporarily allow init by emulating enable flag
+            original_flag = getattr(self.hparams, 'enable_token_shift', False)
+            try:
+                object.__setattr__(self.hparams, 'enable_token_shift', True)
+                self._maybe_init_token_modulator(sample_boundary=theta_ref)
+            finally:
+                object.__setattr__(self.hparams, 'enable_token_shift', original_flag)
         if self.token_modulator is None:
             raise RuntimeError("DeltaTokenModulator is not initialized. Enable token-shift or call during training once.")
 
@@ -413,6 +425,12 @@ class TraceEWModule(LightningModule):
 
         # Expand reference thetas to batch dimension
         theta_ref_b = theta_ref
+        theta_idx = self._get_theta_indices()
+
+        amp_ctx = (
+            torch.autocast(device_type=device.type, enabled=True) if (device.type == 'cuda' and use_autocast)
+            else torch.no_grad()
+        )
 
         for start in range(0, G, batch_size):
             end = min(start + batch_size, G)
@@ -424,14 +442,23 @@ class TraceEWModule(LightningModule):
             theta_ref_rep = theta_ref_b.repeat_interleave(g, dim=0)  # (B*g, T)
             theta_tgt_rep = thetas_batch.repeat(B, 1)  # (B*g, T)
 
+            # Build boundary targets by replacing theta dims on the base boundary
+            boundary_rep = boundary.repeat_interleave(g, dim=0).clone()
+            if theta_idx is None:
+                # Assume last dim is theta scalar
+                boundary_rep[:, -1] = theta_tgt_rep.squeeze(-1)
+            else:
+                boundary_rep[:, theta_idx] = theta_tgt_rep
+
             # Predict tokens and decode
-            z_hat = self.token_modulator(z_ref_rep, theta_ref_rep, theta_tgt_rep)
-            vals, _, _ = self.model.decode_from_tokens(
-                tokens=z_hat,
-                direction=direction.repeat_interleave(g, dim=0),
-                boundary=theta_tgt_rep,  # use theta as boundary subset for decoding path
-                snp_vert=snp_vert.repeat_interleave(g, dim=0),
-            )
+            with amp_ctx:
+                z_hat = self.token_modulator(z_ref_rep, theta_ref_rep, theta_tgt_rep)
+                vals, _, _ = self.model.decode_from_tokens(
+                    tokens=z_hat,
+                    direction=direction.repeat_interleave(g, dim=0),
+                    boundary=boundary_rep,
+                    snp_vert=snp_vert.repeat_interleave(g, dim=0),
+                )
             vals = vals.view(B, g, P)
             outputs.append(vals)
 
