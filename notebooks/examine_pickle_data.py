@@ -7,6 +7,7 @@
 # Imports and setup
 # ------------------------------------------------------------
 import pickle
+import argparse
 import warnings
 import numpy as np
 import pandas as pd
@@ -42,9 +43,11 @@ def estimate_block_size(direction_array: np.ndarray) -> int:
 # ------------------------------------------------------------
 # 1. Load and Examine Pickle Files
 # ------------------------------------------------------------
-# Configure the path to your pickle files
-# Adjust this path based on your actual output directory structure
-pickle_dir = Path("./data/training_data")  # Update this path as needed
+# Configure the path to your pickle files via argv
+parser = argparse.ArgumentParser(description="Examine training pickle data and analyze directions block sizes.")
+parser.add_argument("pickle_dir")
+args = parser.parse_args()
+pickle_dir = Path(args.pickle_dir).expanduser()
 
 # Find all pickle files
 pickle_files = list(pickle_dir.rglob("*.pkl"))
