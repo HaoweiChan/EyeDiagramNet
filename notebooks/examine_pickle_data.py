@@ -7,23 +7,36 @@
 # Imports and setup
 # ------------------------------------------------------------
 import pickle
+import warnings
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 import seaborn as sns
+import matplotlib.pyplot as plt
 from pathlib import Path
-from collections import Counter
-import warnings
 warnings.filterwarnings('ignore')
 
-# Import simulation functions for comparison
-from simulation.engine.sparam_to_ew import snp_eyewidth_simulation
-from simulation.parameters.bound_param import ParameterSet
+# Direction utilities
+from simulation.io.direction_utils import get_valid_block_sizes
 
 # Set up plotting style
 plt.style.use('default')
 sns.set_palette("husl")
 plt.rcParams['figure.figsize'] = (12, 8)
+
+
+# ------------------------------------------------------------
+# Helper utilities
+# ------------------------------------------------------------
+def estimate_block_size(direction_array: np.ndarray) -> int:
+    """Estimate the smallest consecutive run length (block size) in a 0/1 array."""
+    arr = np.asarray(direction_array).astype(int).flatten()
+    if arr.size == 0:
+        return 0
+    change_idx = np.flatnonzero(np.diff(arr) != 0)
+    starts = np.r_[0, change_idx + 1]
+    ends = np.r_[change_idx, arr.size - 1]
+    run_lengths = ends - starts + 1
+    return int(run_lengths.min())
 
 
 # ------------------------------------------------------------
@@ -167,7 +180,70 @@ print(f"Max samples: {summary_df['samples'].max()}")
 
 
 # ------------------------------------------------------------
-# 4. Eye Width Distribution Analysis
+# 4. Directions Distribution and Block Size Analysis
+# ------------------------------------------------------------
+if all_directions:
+    print("\nDirections Analysis:")
+    print("=" * 50)
+
+    per_sample_stats = []
+    for dir_arr in all_directions:
+        arr = np.asarray(dir_arr).astype(int).flatten()
+        n_lines = int(arr.size)
+        if n_lines == 0:
+            continue
+        block_est = estimate_block_size(arr)
+        valid_sizes = get_valid_block_sizes(n_lines)
+        is_valid = block_est in valid_sizes
+        num_zeros = int((arr == 0).sum())
+        num_ones = int((arr == 1).sum())
+        per_sample_stats.append({
+            'n_lines': n_lines,
+            'block_size_estimate': block_est,
+            'is_valid_block_size': is_valid,
+            'zeros': num_zeros,
+            'ones': num_ones,
+        })
+
+    if per_sample_stats:
+        df_dirs = pd.DataFrame(per_sample_stats)
+        print(f"Samples with directions: {len(df_dirs)}")
+        print(f"Unique n_lines: {sorted(df_dirs['n_lines'].unique().tolist())}")
+        print("Estimated block size frequency (top 10):")
+        print(df_dirs['block_size_estimate'].value_counts().head(10))
+        print(f"\nInvalid block size estimates (should be 0): {(~df_dirs['is_valid_block_size']).sum()}")
+
+        # Plot histogram of estimated block sizes
+        plt.figure(figsize=(10, 5))
+        df_dirs['block_size_estimate'].plot(kind='hist', bins=20, edgecolor='black')
+        plt.title('Histogram of Estimated Block Sizes (min consecutive 0/1)')
+        plt.xlabel('Estimated Block Size')
+        plt.ylabel('Frequency')
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.show()
+
+        # Per n_lines breakdown (first 20 rows)
+        top_groups = (
+            df_dirs.groupby(['n_lines', 'block_size_estimate'])
+                  .size()
+                  .reset_index(name='count')
+                  .sort_values(['n_lines', 'count'], ascending=[True, False])
+        )
+        print("\nBlock size counts by n_lines (first 20 rows):")
+        print(top_groups.head(20).to_string(index=False))
+
+        # Save details
+        df_dirs.to_csv('directions_block_sizes.csv', index=False)
+        print("Saved detailed directions analysis to: directions_block_sizes.csv")
+    else:
+        print("No non-empty directions arrays found.")
+else:
+    print("No directions data found in pickle files.")
+
+
+# ------------------------------------------------------------
+# 5. Eye Width Distribution Analysis
 # ------------------------------------------------------------
 if all_line_ews:
     # Convert to numpy array for analysis
@@ -237,7 +313,7 @@ else:
 
 
 # ------------------------------------------------------------
-# 5. Data Quality Checks and Summary
+# 6. Data Quality Checks and Summary
 # ------------------------------------------------------------
 print("Data Quality Checks:")
 print("=" * 30)
@@ -324,352 +400,15 @@ if len(file_stats) > 0:
     report.append(f"  Max samples per file: {summary_df['samples'].max()}")
     report.append("")
 
-# Print and save report
-report_text = "\n".join(report)
-print(report_text)
-
-# Save to file
-report_file = Path("training_data_summary.txt")
-with open(report_file, 'w') as f:
-    f.write(report_text)
-
-print(f"\nReport saved to: {report_file}")
-
-
-# ------------------------------------------------------------
-# 6. Validation: Compare Pickle Data with Fresh Simulation
-# ------------------------------------------------------------
-# Select a subset of files for validation (to avoid long computation)
-validation_files = pickle_files[:min(3, len(pickle_files))]  # Validate first 3 files
-print(f"Validating {len(validation_files)} files...")
-
-validation_results = []
-comparison_data = {
-    'pickle_ews': [],
-    'fresh_ews': [],
-    'differences': [],
-    'relative_errors': [],
-    'file_names': [],
-    'sample_indices': []
-}
-
-for file_idx, pfile in enumerate(validation_files):
-    print(f"\nValidating {pfile.name}...")
-
-    try:
-        # Load pickle data
-        with open(pfile, 'rb') as f:
-            data = pickle.load(f)
-
-        n_samples = len(data.get('configs', []))
-        print(f"  Found {n_samples} samples")
-
-        # Validate a subset of samples from each file (to manage computation time)
-        sample_indices = list(range(0, min(5, n_samples), max(1, n_samples//5)))  # At most 5 samples per file
-
-        for i, sample_idx in enumerate(sample_indices):
-            print(f"  Validating sample {sample_idx+1}/{n_samples}...")
-
-            # Extract data for this sample
-            config_list = data['configs'][sample_idx]
-            pickle_ew = np.array(data['line_ews'][sample_idx])
-            directions = np.array(data['directions'][sample_idx]) if data['directions'][sample_idx] else None
-
-            # Get SNP file paths
-            snp_horiz = Path(data.get('snp_horiz', [''])[sample_idx] if isinstance(data.get('snp_horiz', []), list) else pfile.parent / f"{pfile.stem}.s4p")
-            snp_tx = Path(data['snp_txs'][sample_idx])
-            snp_rx = Path(data['snp_rxs'][sample_idx])
-
-            # Reconstruct config object (assuming it follows ParameterSet structure)
-            # Note: This might need adjustment based on your actual ParameterSet implementation
-            config = ParameterSet.from_list(config_list)
-
-            try:
-                # Run fresh simulation
-                result = snp_eyewidth_simulation(
-                    config=config,
-                    snp_files=(snp_horiz, snp_tx, snp_rx),
-                    directions=directions,
-                    device="cuda"  # or "cpu" based on your preference
-                )
-
-                # Handle return format (might be tuple or just line_ew)
-                if isinstance(result, tuple):
-                    fresh_ew, fresh_directions = result
-                else:
-                    fresh_ew = result
-                    fresh_directions = directions
-
-                fresh_ew = np.array(fresh_ew)
-
-                # Calculate differences
-                diff = fresh_ew - pickle_ew
-                rel_error = np.abs(diff) / (np.abs(pickle_ew) + 1e-10)  # Avoid division by zero
-
-                # Store comparison data
-                comparison_data['pickle_ews'].extend(pickle_ew.flatten())
-                comparison_data['fresh_ews'].extend(fresh_ew.flatten())
-                comparison_data['differences'].extend(diff.flatten())
-                comparison_data['relative_errors'].extend(rel_error.flatten())
-                comparison_data['file_names'].extend([pfile.name] * len(pickle_ew.flatten()))
-                comparison_data['sample_indices'].extend([sample_idx] * len(pickle_ew.flatten()))
-
-                # Print sample comparison
-                print(f"    Pickle EW: {pickle_ew}")
-                print(f"    Fresh EW:  {fresh_ew}")
-                print(f"    Difference: {diff}")
-                print(f"    Max abs diff: {np.abs(diff).max():.6f}")
-                print(f"    Max rel error: {rel_error.max():.6f}")
-
-            except Exception as e:
-                print(f"    Error in fresh simulation: {e}")
-                continue
-
-    except Exception as e:
-        print(f"Error processing {pfile.name}: {e}")
-        continue
-
-print(f"\nValidation completed!")
-print(f"Total comparisons: {len(comparison_data['differences'])}")
-
-if len(comparison_data['differences']) > 0:
-    differences = np.array(comparison_data['differences'])
-    rel_errors = np.array(comparison_data['relative_errors'])
-
-    print(f"\nOverall Validation Statistics:")
-    print(f"  Mean absolute difference: {np.abs(differences).mean():.6f}")
-    print(f"  Max absolute difference: {np.abs(differences).max():.6f}")
-    print(f"  RMS difference: {np.sqrt((differences**2).mean()):.6f}")
-    print(f"  Mean relative error: {rel_errors.mean():.6f}")
-    print(f"  Max relative error: {rel_errors.max():.6f}")
-    print(f"  Differences > 1e-3: {(np.abs(differences) > 1e-3).sum()}")
-    print(f"  Relative errors > 1%: {(rel_errors > 0.01).sum()}")
-
-
-# Visualization of comparison results
-if len(comparison_data['differences']) > 0:
-    pickle_ews = np.array(comparison_data['pickle_ews'])
-    fresh_ews = np.array(comparison_data['fresh_ews'])
-    differences = np.array(comparison_data['differences'])
-    rel_errors = np.array(comparison_data['relative_errors'])
-
-    fig, axes = plt.subplots(2, 3, figsize=(18, 12))
-
-    # 1. Scatter plot: Pickle vs Fresh
-    axes[0,0].scatter(pickle_ews, fresh_ews, alpha=0.6, s=20)
-    axes[0,0].plot([pickle_ews.min(), pickle_ews.max()], [pickle_ews.min(), pickle_ews.max()], 'r--', label='Perfect match')
-    axes[0,0].set_xlabel('Pickle Eye Width')
-    axes[0,0].set_ylabel('Fresh Eye Width')
-    axes[0,0].set_title('Pickle vs Fresh Eye Width')
-    axes[0,0].legend()
-    axes[0,0].grid(True, alpha=0.3)
-
-    # 2. Histogram of differences
-    axes[0,1].hist(differences, bins=30, alpha=0.7, edgecolor='black')
-    axes[0,1].axvline(0, color='red', linestyle='--', label='Zero difference')
-    axes[0,1].axvline(differences.mean(), color='orange', linestyle='--', label=f'Mean: {differences.mean():.6f}')
-    axes[0,1].set_xlabel('Difference (Fresh - Pickle)')
-    axes[0,1].set_ylabel('Frequency')
-    axes[0,1].set_title('Distribution of Differences')
-    axes[0,1].legend()
-    axes[0,1].grid(True, alpha=0.3)
-
-    # 3. Histogram of relative errors
-    axes[0,2].hist(rel_errors, bins=30, alpha=0.7, edgecolor='black', color='green')
-    axes[0,2].axvline(rel_errors.mean(), color='red', linestyle='--', label=f'Mean: {rel_errors.mean():.6f}')
-    axes[0,2].set_xlabel('Relative Error')
-    axes[0,2].set_ylabel('Frequency')
-    axes[0,2].set_title('Distribution of Relative Errors')
-    axes[0,2].legend()
-    axes[0,2].grid(True, alpha=0.3)
-
-    # 4. Absolute differences vs eye width magnitude
-    axes[1,0].scatter(pickle_ews, np.abs(differences), alpha=0.6, s=20)
-    axes[1,0].set_xlabel('Pickle Eye Width')
-    axes[1,0].set_ylabel('|Difference|')
-    axes[1,0].set_title('Absolute Difference vs Eye Width')
-    axes[1,0].grid(True, alpha=0.3)
-
-    # 5. Relative errors vs eye width magnitude
-    axes[1,1].scatter(pickle_ews, rel_errors, alpha=0.6, s=20, color='green')
-    axes[1,1].set_xlabel('Pickle Eye Width')
-    axes[1,1].set_ylabel('Relative Error')
-    axes[1,1].set_title('Relative Error vs Eye Width')
-    axes[1,1].grid(True, alpha=0.3)
-
-    # 6. Box plot of differences by file
-    file_names = comparison_data['file_names']
-    unique_files = list(set(file_names))
-    if len(unique_files) > 1:
-        diff_by_file = [differences[np.array(file_names) == fname] for fname in unique_files]
-        axes[1,2].boxplot(diff_by_file, labels=[fname[:10] + '...' if len(fname) > 10 else fname for fname in unique_files])
-        axes[1,2].set_ylabel('Difference')
-        axes[1,2].set_title('Differences by File')
-        axes[1,2].tick_params(axis='x', rotation=45)
-    else:
-        axes[1,2].text(0.5, 0.5, 'Only one file\nvalidated', ha='center', va='center', transform=axes[1,2].transAxes)
-        axes[1,2].set_title('Differences by File (N/A)')
-
-    plt.tight_layout()
-    plt.show()
-
-    # Summary statistics table
-    summary_stats = pd.DataFrame({
-        'Metric': ['Mean Abs Diff', 'Max Abs Diff', 'RMS Diff', 'Mean Rel Error', 'Max Rel Error', '# Large Diffs (>1e-3)', '# Large Rel Errors (>1%)'],
-        'Value': [
-            f"{np.abs(differences).mean():.6f}",
-            f"{np.abs(differences).max():.6f}",
-            f"{np.sqrt((differences**2).mean()):.6f}",
-            f"{rel_errors.mean():.6f}",
-            f"{rel_errors.max():.6f}",
-            f"{(np.abs(differences) > 1e-3).sum()} / {len(differences)}",
-            f"{(rel_errors > 0.01).sum()} / {len(rel_errors)}"
-        ]
-    })
-
-    print("\nValidation Summary Statistics:")
-    print(summary_stats.to_string(index=False))
-else:
-    print("No validation data available for plotting.")
-
-
-# ------------------------------------------------------------
-# 7. Detailed Sample-by-Sample Analysis
-# ------------------------------------------------------------
-# Identify and analyze samples with large differences
-if len(comparison_data['differences']) > 0:
-    differences = np.array(comparison_data['differences'])
-    rel_errors = np.array(comparison_data['relative_errors'])
-    pickle_ews = np.array(comparison_data['pickle_ews'])
-    fresh_ews = np.array(comparison_data['fresh_ews'])
-
-    # Find samples with large absolute differences
-    large_abs_diff_threshold = np.percentile(np.abs(differences), 95)  # Top 5% of differences
-    large_abs_diff_mask = np.abs(differences) > large_abs_diff_threshold
-
-    # Find samples with large relative errors (excluding very small eye widths)
-    significant_ew_mask = np.abs(pickle_ews) > 1.0  # Only consider significant eye widths
-    large_rel_error_threshold = np.percentile(rel_errors[significant_ew_mask], 95) if significant_ew_mask.any() else 0.1
-    large_rel_error_mask = (rel_errors > large_rel_error_threshold) & significant_ew_mask
-
-    print(f"Analysis of samples with large differences:")
-    print(f"  Large absolute difference threshold (95th percentile): {large_abs_diff_threshold:.6f}")
-    print(f"  Samples with large absolute differences: {large_abs_diff_mask.sum()}")
-    print(f"  Large relative error threshold (95th percentile): {large_rel_error_threshold:.6f}")
-    print(f"  Samples with large relative errors: {large_rel_error_mask.sum()}")
-
-    # Show worst cases
-    worst_abs_diff_indices = np.argsort(np.abs(differences))[-5:]  # 5 worst absolute differences
-    worst_rel_error_indices = np.argsort(rel_errors)[-5:]  # 5 worst relative errors
-
-    print(f"\nWorst Absolute Differences:")
-    for i, idx in enumerate(reversed(worst_abs_diff_indices)):
-        print(f"  {i+1}. Pickle: {pickle_ews[idx]:.6f}, Fresh: {fresh_ews[idx]:.6f}, Diff: {differences[idx]:.6f}")
-
-    print(f"\nWorst Relative Errors:")
-    for i, idx in enumerate(reversed(worst_rel_error_indices)):
-        if pickle_ews[idx] != 0:  # Avoid division by zero cases
-            print(f"  {i+1}. Pickle: {pickle_ews[idx]:.6f}, Fresh: {fresh_ews[idx]:.6f}, Rel Error: {rel_errors[idx]:.6f}")
-
-    # Distribution analysis
-    print(f"\nDistribution Analysis:")
-    print(f"  Perfect matches (diff = 0): {(differences == 0).sum()}")
-    print(f"  Very small diffs (|diff| < 1e-6): {(np.abs(differences) < 1e-6).sum()}")
-    print(f"  Small diffs (1e-6 <= |diff| < 1e-3): {((np.abs(differences) >= 1e-6) & (np.abs(differences) < 1e-3)).sum()}")
-    print(f"  Medium diffs (1e-3 <= |diff| < 1e-1): {((np.abs(differences) >= 1e-3) & (np.abs(differences) < 1e-1)).sum()}")
-    print(f"  Large diffs (|diff| >= 1e-1): {(np.abs(differences) >= 1e-1).sum()}")
-
-    # Create a detailed comparison DataFrame for inspection
-    detailed_comparison = pd.DataFrame({
-        'File': comparison_data['file_names'],
-        'Sample_Index': comparison_data['sample_indices'],
-        'Pickle_EW': pickle_ews,
-        'Fresh_EW': fresh_ews,
-        'Difference': differences,
-        'Abs_Difference': np.abs(differences),
-        'Rel_Error': rel_errors
-    })
-
-    # Sort by absolute difference for easy inspection
-    detailed_comparison = detailed_comparison.sort_values('Abs_Difference', ascending=False)
-
-    print(f"\nTop 10 samples with largest differences:")
-    print(detailed_comparison.head(10).to_string(index=False, float_format='%.6f'))
-
-    # Save detailed comparison to file
-    detailed_comparison.to_csv('validation_comparison_details.csv', index=False, float_format='%.8f')
-    print(f"\nDetailed comparison saved to: validation_comparison_details.csv")
-else:
-    print("No validation data available for detailed analysis.")
-
-
-# ------------------------------------------------------------
-# 8. Final Summary Report
-# ------------------------------------------------------------
-# Generate comprehensive summary report with validation results
-report = []
-report.append("EYE DIAGRAM TRAINING DATA SUMMARY REPORT")
-report.append("=" * 50)
-report.append(f"Generated: {pd.Timestamp.now()}")
-report.append(f"Data directory: {pickle_dir}")
-report.append("")
-
-# Dataset overview
-report.append("DATASET OVERVIEW:")
-report.append(f"  Total pickle files: {len(pickle_files)}")
-report.append(f"  Total samples: {len(all_configs)}")
-if len(all_configs) > 0:
-    report.append(f"  Parameters per sample: {len(all_configs[0])}")
-if len(all_line_ews) > 0:
-    line_ews_array = np.array(all_line_ews)
-    report.append(f"  Lines per sample: {line_ews_array.shape[1] if line_ews_array.ndim > 1 else 1}")
-report.append("")
-
-# Eye width statistics
-if len(all_line_ews) > 0:
-    line_ews_array = np.array(all_line_ews)
-    report.append("EYE WIDTH STATISTICS:")
-    report.append(f"  Mean: {line_ews_array.mean():.3f}")
-    report.append(f"  Std: {line_ews_array.std():.3f}")
-    report.append(f"  Min: {line_ews_array.min():.3f}")
-    report.append(f"  Max: {line_ews_array.max():.3f}")
-    report.append(f"  Closed eyes: {(line_ews_array < 0).sum()} ({(line_ews_array < 0).mean()*100:.1f}%)")
-    report.append("")
-
-# File statistics
-if len(file_stats) > 0:
-    summary_df = pd.DataFrame(file_stats)
-    report.append("FILE STATISTICS:")
-    report.append(f"  Average samples per file: {summary_df['samples'].mean():.1f}")
-    report.append(f"  Min samples per file: {summary_df['samples'].min()}")
-    report.append(f"  Max samples per file: {summary_df['samples'].max()}")
-    report.append("")
-
-# Validation statistics (if validation was performed)
-if 'comparison_data' in locals() and len(comparison_data.get('differences', [])) > 0:
-    differences = np.array(comparison_data['differences'])
-    rel_errors = np.array(comparison_data['relative_errors'])
-    report.append("VALIDATION RESULTS (Pickle vs Fresh Simulation):")
-    report.append(f"  Files validated: {len([f for f in locals().get('validation_files', [])])}")
-    report.append(f"  Samples compared: {len(differences)}")
-    report.append(f"  Mean absolute difference: {np.abs(differences).mean():.6f}")
-    report.append(f"  Max absolute difference: {np.abs(differences).max():.6f}")
-    report.append(f"  RMS difference: {np.sqrt((differences**2).mean()):.6f}")
-    report.append(f"  Mean relative error: {rel_errors.mean():.6f}")
-    report.append(f"  Max relative error: {rel_errors.max():.6f}")
-    report.append(f"  Perfect matches: {(differences == 0).sum()}")
-    report.append(f"  Large differences (>1e-3): {(np.abs(differences) > 1e-3).sum()}")
-    report.append(f"  Large relative errors (>1%): {(rel_errors > 0.01).sum()}")
-
-    # Add interpretation
-    if np.abs(differences).max() < 1e-6:
-        report.append("  INTERPRETATION: Excellent agreement - differences within numerical precision")
-    elif np.abs(differences).max() < 1e-3:
-        report.append("  INTERPRETATION: Very good agreement - small numerical differences")
-    elif np.abs(differences).max() < 1e-1:
-        report.append("  INTERPRETATION: Good agreement - some differences may need investigation")
-    else:
-        report.append("  INTERPRETATION: Significant differences detected - investigate further")
+# Directions summary (if computed)
+if 'df_dirs' in locals():
+    report.append("DIRECTIONS BLOCK SIZE SUMMARY:")
+    vc = df_dirs['block_size_estimate'].value_counts()
+    top = vc.head(5)
+    for bs, cnt in top.items():
+        report.append(f"  Block size {int(bs)}: {int(cnt)} samples")
+    invalid = int((~df_dirs['is_valid_block_size']).sum())
+    report.append(f"  Invalid block size estimates: {invalid}")
     report.append("")
 
 # Print and save report
@@ -682,7 +421,5 @@ with open(report_file, 'w') as f:
     f.write(report_text)
 
 print(f"\nReport saved to: {report_file}")
-if 'comparison_data' in locals() and len(comparison_data.get('differences', [])) > 0:
-    print(f"Validation details saved to: validation_comparison_details.csv")
 
 
