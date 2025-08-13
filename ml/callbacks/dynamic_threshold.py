@@ -50,12 +50,16 @@ class DynamicThresholdOptimizer(Callback):
         self, 
         warm_up_epochs: int = 3,
         update_frequency: int = 1,
-        grid_size: int = 101
+        grid_size: int = 101,
+        ema_alpha: float = 0.2,
     ):
         super().__init__()
         self.warm_up_epochs = warm_up_epochs
         self.update_frequency = update_frequency
         self.grid_size = grid_size
+        # Exponential moving average factor for smoothing threshold updates
+        # new_tau = (1 - ema_alpha) * prev_tau + ema_alpha * best_tau
+        self.ema_alpha = float(max(0.0, min(1.0, ema_alpha)))
         
         # Cache for validation data
         self.val_cache = {
@@ -125,15 +129,17 @@ class DynamicThresholdOptimizer(Callback):
         # Run optimization
         optimal_tau = self._optimize_threshold()
         if optimal_tau is not None:
+            # Smooth with EMA to stabilize threshold evolution
+            smoothed_tau = (1.0 - self.ema_alpha) * float(self.optimal_threshold) + self.ema_alpha * float(optimal_tau)
             # Update module threshold
-            pl_module.hparams.ew_threshold = optimal_tau
-            self.optimal_threshold = optimal_tau
+            pl_module.hparams.ew_threshold = smoothed_tau
+            self.optimal_threshold = smoothed_tau
             
             # Update metrics that use threshold
             self._update_metrics_threshold(pl_module)
             
             # Log only tau_f1
-            pl_module.log("val/tau_f1", optimal_tau, prog_bar=False, on_epoch=True, sync_dist=False)
+            pl_module.log("val/tau_f1", smoothed_tau, prog_bar=False, on_epoch=True, sync_dist=False)
             
         self._reset_cache()
     

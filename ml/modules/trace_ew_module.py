@@ -351,6 +351,8 @@ class TraceEWModule(LightningModule):
             'mae': tm.MeanAbsoluteError,
             'mape': tm.WeightedMeanAbsolutePercentageError,
             'r2': tm.R2Score,
+            'auroc': tm.classification.BinaryAUROC,
+            'auprc': tm.classification.BinaryAveragePrecision,
             'accuracy': tm.classification.BinaryAccuracy,
             'f1': tm.classification.BinaryF1Score,
             'cov': tm.classification.BinaryAccuracy,
@@ -579,7 +581,7 @@ class TraceEWModule(LightningModule):
         for key, metric in self.metrics[stage].items():
             if 'loss' in key:
                 metric.update(loss)
-            elif 'f1' in key or 'accuracy' in key:
+            elif 'f1' in key or 'accuracy' in key or 'auroc' in key or 'auprc' in key:
                 metric.update(pred_prob.flatten(), true_prob.flatten())
             elif 'cov' in key:
                 if key in coverage_metrics:
