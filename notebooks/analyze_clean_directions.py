@@ -6,6 +6,7 @@
 # ------------------------------------------------------------
 # Imports and setup
 # ------------------------------------------------------------
+import shutil
 import pickle
 import argparse
 import warnings
@@ -38,6 +39,88 @@ def estimate_block_size(direction_array: np.ndarray) -> int:
     ends = np.r_[change_idx, arr.size - 1]
     run_lengths = ends - starts + 1
     return int(run_lengths.min())
+
+
+def compute_direction_stats_for_files(pickle_files_list: list[Path]) -> pd.DataFrame:
+    """Build a per-sample directions stats dataframe across all files.
+
+    Columns: file, sample_idx, n_lines, block_size_estimate, is_valid_block_size, zeros, ones
+    """
+    stats: list[dict] = []
+    for pfile in pickle_files_list:
+        try:
+            with open(pfile, 'rb') as f:
+                data = pickle.load(f)
+        except Exception:
+            continue
+        directions_list = data.get('directions', []) or []
+        for i, dir_arr in enumerate(directions_list):
+            arr = np.asarray(dir_arr).astype(int).flatten()
+            n_lines = int(arr.size)
+            if n_lines == 0:
+                continue
+            block_est = estimate_block_size(arr)
+            valid_sizes = get_valid_block_sizes(n_lines)
+            is_valid = block_est in valid_sizes
+            stats.append({
+                'file': str(pfile),
+                'sample_idx': i,
+                'n_lines': n_lines,
+                'block_size_estimate': block_est,
+                'is_valid_block_size': is_valid,
+                'zeros': int((arr == 0).sum()),
+                'ones': int((arr == 1).sum()),
+            })
+    if not stats:
+        return pd.DataFrame(columns=['file','sample_idx','n_lines','block_size_estimate','is_valid_block_size','zeros','ones'])
+    return pd.DataFrame(stats)
+
+
+def clean_pickle_file_inplace(pfile: Path) -> tuple[int, int]:
+    """Remove rows with invalid directions block sizes from a single pickle file, in-place.
+
+    Returns: (num_samples_before, num_removed)
+    Creates a .bak backup next to the original before overwriting.
+    """
+    with open(pfile, 'rb') as f:
+        data = pickle.load(f)
+
+    directions_list = data.get('directions', []) or []
+    n_samples = len(directions_list)
+    if n_samples == 0:
+        return 0, 0
+
+    valid_indices: list[int] = []
+    for i, dir_arr in enumerate(directions_list):
+        arr = np.asarray(dir_arr).astype(int).flatten()
+        n_lines = int(arr.size)
+        if n_lines == 0:
+            # Drop empty directions
+            continue
+        block_est = estimate_block_size(arr)
+        valid_sizes = get_valid_block_sizes(n_lines)
+        if block_est in valid_sizes:
+            valid_indices.append(i)
+
+    num_removed = n_samples - len(valid_indices)
+    if num_removed <= 0:
+        return n_samples, 0
+
+    # Filter all list-valued fields aligned on sample index
+    for key, value in list(data.items()):
+        if isinstance(value, list) and len(value) == n_samples:
+            data[key] = [value[i] for i in valid_indices]
+
+    # Backup and overwrite
+    backup_path = pfile.with_suffix(pfile.suffix + '.bak')
+    try:
+        shutil.copy2(pfile, backup_path)
+    except Exception:
+        pass
+    with open(pfile, 'wb') as f:
+        pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+    return n_samples, num_removed
 
 
 # ------------------------------------------------------------
@@ -183,66 +266,76 @@ print(f"Max samples: {summary_df['samples'].max()}")
 
 
 # ------------------------------------------------------------
-# 4. Directions Distribution and Block Size Analysis
+# 4. Directions Distribution and Block Size Analysis (Before Cleaning)
 # ------------------------------------------------------------
-if all_directions:
-    print("\nDirections Analysis:")
-    print("=" * 50)
+print("\nDirections Analysis (BEFORE cleaning):")
+print("=" * 50)
+df_dirs_before = compute_direction_stats_for_files(pickle_files)
+if not df_dirs_before.empty:
+    print(f"Samples with directions: {len(df_dirs_before)}")
+    print(f"Unique n_lines: {sorted(df_dirs_before['n_lines'].unique().tolist())}")
+    print("Estimated block size frequency (top 10):")
+    print(df_dirs_before['block_size_estimate'].value_counts().head(10))
+    print(f"\nInvalid block size estimates (should be 0): {(~df_dirs_before['is_valid_block_size']).sum()}")
 
-    per_sample_stats = []
-    for dir_arr in all_directions:
-        arr = np.asarray(dir_arr).astype(int).flatten()
-        n_lines = int(arr.size)
-        if n_lines == 0:
-            continue
-        block_est = estimate_block_size(arr)
-        valid_sizes = get_valid_block_sizes(n_lines)
-        is_valid = block_est in valid_sizes
-        num_zeros = int((arr == 0).sum())
-        num_ones = int((arr == 1).sum())
-        per_sample_stats.append({
-            'n_lines': n_lines,
-            'block_size_estimate': block_est,
-            'is_valid_block_size': is_valid,
-            'zeros': num_zeros,
-            'ones': num_ones,
-        })
+    top_groups_before = (
+        df_dirs_before.groupby(['n_lines', 'block_size_estimate'])
+                      .size()
+                      .reset_index(name='count')
+                      .sort_values(['n_lines', 'count'], ascending=[True, False])
+    )
+    print("\nBlock size counts by n_lines (first 20 rows):")
+    print(top_groups_before.head(20).to_string(index=False))
 
-    if per_sample_stats:
-        df_dirs = pd.DataFrame(per_sample_stats)
-        print(f"Samples with directions: {len(df_dirs)}")
-        print(f"Unique n_lines: {sorted(df_dirs['n_lines'].unique().tolist())}")
-        print("Estimated block size frequency (top 10):")
-        print(df_dirs['block_size_estimate'].value_counts().head(10))
-        print(f"\nInvalid block size estimates (should be 0): {(~df_dirs['is_valid_block_size']).sum()}")
-
-        # Plot histogram of estimated block sizes
-        plt.figure(figsize=(10, 5))
-        df_dirs['block_size_estimate'].plot(kind='hist', bins=20, edgecolor='black')
-        plt.title('Histogram of Estimated Block Sizes (min consecutive 0/1)')
-        plt.xlabel('Estimated Block Size')
-        plt.ylabel('Frequency')
-        plt.grid(True, alpha=0.3)
-        plt.tight_layout()
-        plt.show()
-
-        # Per n_lines breakdown (first 20 rows)
-        top_groups = (
-            df_dirs.groupby(['n_lines', 'block_size_estimate'])
-                  .size()
-                  .reset_index(name='count')
-                  .sort_values(['n_lines', 'count'], ascending=[True, False])
-        )
-        print("\nBlock size counts by n_lines (first 20 rows):")
-        print(top_groups.head(20).to_string(index=False))
-
-        # Save details
-        df_dirs.to_csv('directions_block_sizes.csv', index=False)
-        print("Saved detailed directions analysis to: directions_block_sizes.csv")
-    else:
-        print("No non-empty directions arrays found.")
+    df_dirs_before.to_csv('directions_block_sizes_before.csv', index=False)
+    print("Saved: directions_block_sizes_before.csv")
 else:
     print("No directions data found in pickle files.")
+
+# ------------------------------------------------------------
+# 4b. Clean pickle files in-place (remove invalid-direction rows only)
+# ------------------------------------------------------------
+print("\nCleaning pickle files (removing rows with invalid directions)...")
+total_before = 0
+total_removed = 0
+for pfile in pickle_files:
+    try:
+        n_before, n_removed = clean_pickle_file_inplace(pfile)
+        total_before += n_before
+        total_removed += n_removed
+        if n_removed > 0:
+            print(f"Cleaned {pfile.name}: removed {n_removed}/{n_before}")
+    except Exception as e:
+        print(f"Error cleaning {pfile.name}: {e}")
+print(f"Total rows before: {total_before}; total removed: {total_removed}")
+
+# ------------------------------------------------------------
+# 4c. Directions Distribution and Block Size Analysis (After Cleaning)
+# ------------------------------------------------------------
+print("\nDirections Analysis (AFTER cleaning):")
+print("=" * 50)
+pickle_files_after = list(pickle_dir.rglob("*.pkl"))
+df_dirs_after = compute_direction_stats_for_files(pickle_files_after)
+if not df_dirs_after.empty:
+    print(f"Samples with directions: {len(df_dirs_after)}")
+    print(f"Unique n_lines: {sorted(df_dirs_after['n_lines'].unique().tolist())}")
+    print("Estimated block size frequency (top 10):")
+    print(df_dirs_after['block_size_estimate'].value_counts().head(10))
+    print(f"\nInvalid block size estimates (should be 0): {(~df_dirs_after['is_valid_block_size']).sum()}")
+
+    top_groups_after = (
+        df_dirs_after.groupby(['n_lines', 'block_size_estimate'])
+                     .size()
+                     .reset_index(name='count')
+                     .sort_values(['n_lines', 'count'], ascending=[True, False])
+    )
+    print("\nBlock size counts by n_lines (first 20 rows):")
+    print(top_groups_after.head(20).to_string(index=False))
+
+    df_dirs_after.to_csv('directions_block_sizes_after.csv', index=False)
+    print("Saved: directions_block_sizes_after.csv")
+else:
+    print("No directions data found in pickle files after cleaning.")
 
 
 # ------------------------------------------------------------
@@ -403,16 +496,26 @@ if len(file_stats) > 0:
     report.append(f"  Max samples per file: {summary_df['samples'].max()}")
     report.append("")
 
-# Directions summary (if computed)
-if 'df_dirs' in locals():
-    report.append("DIRECTIONS BLOCK SIZE SUMMARY:")
-    vc = df_dirs['block_size_estimate'].value_counts()
-    top = vc.head(5)
-    for bs, cnt in top.items():
+# Directions summary (before/after)
+if 'df_dirs_before' in locals() and isinstance(df_dirs_before, pd.DataFrame) and not df_dirs_before.empty:
+    report.append("DIRECTIONS BLOCK SIZE SUMMARY (BEFORE cleaning):")
+    vc_b = df_dirs_before['block_size_estimate'].value_counts()
+    for bs, cnt in vc_b.head(5).items():
         report.append(f"  Block size {int(bs)}: {int(cnt)} samples")
-    invalid = int((~df_dirs['is_valid_block_size']).sum())
-    report.append(f"  Invalid block size estimates: {invalid}")
+    invalid_b = int((~df_dirs_before['is_valid_block_size']).sum())
+    report.append(f"  Invalid block size estimates: {invalid_b}")
     report.append("")
+
+if 'df_dirs_after' in locals() and isinstance(df_dirs_after, pd.DataFrame) and not df_dirs_after.empty:
+    report.append("DIRECTIONS BLOCK SIZE SUMMARY (AFTER cleaning):")
+    vc_a = df_dirs_after['block_size_estimate'].value_counts()
+    for bs, cnt in vc_a.head(5).items():
+        report.append(f"  Block size {int(bs)}: {int(cnt)} samples")
+    invalid_a = int((~df_dirs_after['is_valid_block_size']).sum())
+    report.append(f"  Invalid block size estimates: {invalid_a}")
+    report.append("")
+
+report.append(f"CLEANING SUMMARY: removed {total_removed} invalid rows out of {total_before} before-clean rows")
 
 # Print and save report
 report_text = "\n".join(report)

@@ -175,15 +175,14 @@ Thumbs.db
 # ==== Custom ====
 *.txt
 !requirements.txt
-runs/*
-!runs/sample_run_1/*
 
 # Data
 res/
 docs/
 saved/
 results*/
-notebooks/
+notebooks/*
+!notebooks/analyze_clean_directions.py
 spara2pda/
 ew-predictor*
 test_data/*
