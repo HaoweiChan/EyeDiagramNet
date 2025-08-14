@@ -26,7 +26,6 @@ plt.style.use('default')
 sns.set_palette("husl")
 plt.rcParams['figure.figsize'] = (12, 8)
 
-
 # ------------------------------------------------------------
 # Helper utilities
 # ------------------------------------------------------------
@@ -40,7 +39,6 @@ def estimate_block_size(direction_array: np.ndarray) -> int:
     ends = np.r_[change_idx, arr.size - 1]
     run_lengths = ends - starts + 1
     return int(run_lengths.min())
-
 
 def compute_direction_stats_for_files(pickle_files_list: list[Path]) -> pd.DataFrame:
     """Build a per-sample directions stats dataframe across all files.
@@ -75,7 +73,6 @@ def compute_direction_stats_for_files(pickle_files_list: list[Path]) -> pd.DataF
     if not stats:
         return pd.DataFrame(columns=['file','sample_idx','n_lines','block_size_estimate','is_valid_block_size','zeros','ones'])
     return pd.DataFrame(stats)
-
 
 def clean_pickle_file_inplace(pfile: Path) -> tuple[int, int]:
     """Remove rows with invalid directions or non-numeric eye-widths.
@@ -143,13 +140,11 @@ def clean_pickle_file_inplace(pfile: Path) -> tuple[int, int]:
 
     return n_samples, num_removed
 
-
 def is_numeric_list(data: list) -> bool:
     """Check if a list contains numeric data (non-string)."""
     if not data or not isinstance(data, (list, np.ndarray)):
         return False
     return not isinstance(data[0], str)
-
 
 # ------------------------------------------------------------
 # 1. Load and Examine Pickle Files
@@ -195,7 +190,6 @@ if pickle_files:
             print(f"  {key}: {type(value)}")
 else:
     print("No pickle files found. Please check the pickle_dir path.")
-
 
 # ------------------------------------------------------------
 # 2. Data Structure Analysis
@@ -268,7 +262,8 @@ for pfile in pickle_files:
         file_stats.append({
             'file': pfile.name,
             'samples': n_samples,
-            'trace_name': pfile.stem
+            'trace_name': pfile.stem,
+            'directory': str(pfile.parent.relative_to(pickle_dir)),
         })
 
         if data.get('configs'):
@@ -288,10 +283,22 @@ print(f"Total eye width measurements: {len(all_line_ews)}")
 
 # Create summary statistics DataFrame
 summary_df = pd.DataFrame(file_stats)
+
+if not summary_df.empty:
+    print("\n" + "="*50)
+    print("--- Per-Directory Report ---")
+    per_dir_summary = summary_df.groupby('directory').agg(
+        file_count=('file', 'count'),
+        total_samples=('samples', 'sum')
+    ).reset_index().sort_values('directory')
+    print(per_dir_summary.to_string(index=False))
+    print("="*50)
+
 summary_df = summary_df.sort_values('samples', ascending=False)
 
-print("File-wise sample counts:")
-print(summary_df.head(10))
+print("\nFile-wise sample counts (Top 10):")
+print(summary_df[['directory', 'trace_name', 'samples']].head(10).to_string(index=False))
+
 print(f"\nTotal files: {len(summary_df)}")
 print(f"Total samples: {summary_df['samples'].sum()}")
 print(f"Average samples per file: {summary_df['samples'].mean():.1f}")
@@ -444,7 +451,6 @@ if all_line_ews:
 else:
     print("No eye width data found in pickle files.")
 
-
 # ------------------------------------------------------------
 # 6. Data Quality Checks and Summary
 # ------------------------------------------------------------
@@ -565,5 +571,3 @@ with open(report_file, 'w') as f:
     f.write(report_text)
 
 print(f"\nReport saved to: {report_file}")
-
-
