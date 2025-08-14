@@ -144,12 +144,20 @@ def clean_pickle_file_inplace(pfile: Path) -> tuple[int, int]:
     return n_samples, num_removed
 
 
+def is_numeric_list(data: list) -> bool:
+    """Check if a list contains numeric data (non-string)."""
+    if not data or not isinstance(data, (list, np.ndarray)):
+        return False
+    return not isinstance(data[0], str)
+
+
 # ------------------------------------------------------------
 # 1. Load and Examine Pickle Files
 # ------------------------------------------------------------
 # Configure the path to your pickle files via argv
 parser = argparse.ArgumentParser(description="Examine, clean, and analyze training pickle data.")
 parser.add_argument("pickle_dir")
+parser.add_argument("--clean", action="store_true", help="Perform in-place cleaning of pickle files.")
 args = parser.parse_args()
 pickle_dir = Path(args.pickle_dir).expanduser()
 
@@ -206,18 +214,23 @@ if pickle_files and sample_data:
         print(f"  Mean values: {config_array.mean(axis=0)[:10]}...")
 
     # Examine line eye widths
-    if sample_data['line_ews']:
-        line_ews_array = np.array(sample_data['line_ews'])
-        print(f"\nLine Eye Widths:")
-        print(f"  Shape: {line_ews_array.shape}")
-        print(f"  Min: {line_ews_array.min():.3f}")
-        print(f"  Max: {line_ews_array.max():.3f}")
-        print(f"  Mean: {line_ews_array.mean():.3f}")
-        print(f"  Std: {line_ews_array.std():.3f}")
-        print(f"  Closed eyes (EW < 0): {(line_ews_array < 0).sum()} / {line_ews_array.size}")
+    if 'line_ews' in sample_data and sample_data['line_ews']:
+        # Filter out non-numeric entries before converting to array
+        numeric_line_ews = [item for item in sample_data['line_ews'] if is_numeric_list(item)]
+        if numeric_line_ews:
+            line_ews_array = np.array(numeric_line_ews)
+            print(f"\nLine Eye Widths:")
+            print(f"  Shape: {line_ews_array.shape}")
+            print(f"  Min: {line_ews_array.min():.3f}")
+            print(f"  Max: {line_ews_array.max():.3f}")
+            print(f"  Mean: {line_ews_array.mean():.3f}")
+            print(f"  Std: {line_ews_array.std():.3f}")
+            print(f"  Closed eyes (EW < 0): {(line_ews_array < 0).sum()} / {line_ews_array.size}")
+        else:
+            print("\nLine Eye Widths: No numeric data found in this sample.")
 
     # Examine SNP files
-    if sample_data['snp_txs']:
+    if 'snp_txs' in sample_data and sample_data['snp_txs']:
         unique_tx = set(sample_data['snp_txs'])
         unique_rx = set(sample_data['snp_rxs'])
         print(f"\nSNP Files:")
@@ -316,47 +329,50 @@ else:
 # ------------------------------------------------------------
 # 4b. Clean pickle files in-place (remove invalid-direction rows only)
 # ------------------------------------------------------------
-print("\nCleaning pickle files (removing rows with invalid directions)...")
-total_before = 0
-total_removed = 0
-for pfile in pickle_files:
-    try:
-        n_before, n_removed = clean_pickle_file_inplace(pfile)
-        total_before += n_before
-        total_removed += n_removed
-        if n_removed > 0:
-            print(f"Cleaned {pfile.name}: removed {n_removed}/{n_before}")
-    except Exception as e:
-        print(f"Error cleaning {pfile.name}: {e}")
-print(f"Total rows before: {total_before}; total removed: {total_removed}")
+if args.clean:
+    print("\nCleaning pickle files (removing rows with invalid directions)...")
+    total_before = 0
+    total_removed = 0
+    for pfile in pickle_files:
+        try:
+            n_before, n_removed = clean_pickle_file_inplace(pfile)
+            total_before += n_before
+            total_removed += n_removed
+            if n_removed > 0:
+                print(f"Cleaned {pfile.name}: removed {n_removed}/{n_before}")
+        except Exception as e:
+            print(f"Error cleaning {pfile.name}: {e}")
+    print(f"Total rows before: {total_before}; total removed: {total_removed}")
 
-# ------------------------------------------------------------
-# 4c. Directions Distribution and Block Size Analysis (After Cleaning)
-# ------------------------------------------------------------
-print("\nDirections Analysis (AFTER cleaning):")
-print("=" * 50)
-pickle_files_after = list(pickle_dir.rglob("*.pkl"))
-df_dirs_after = compute_direction_stats_for_files(pickle_files_after)
-if not df_dirs_after.empty:
-    print(f"Samples with directions: {len(df_dirs_after)}")
-    print(f"Unique n_lines: {sorted(df_dirs_after['n_lines'].unique().tolist())}")
-    print("Estimated block size frequency (top 10):")
-    print(df_dirs_after['block_size_estimate'].value_counts().head(10))
-    print(f"\nInvalid block size estimates (should be 0): {(~df_dirs_after['is_valid_block_size']).sum()}")
+    # ------------------------------------------------------------
+    # 4c. Directions Distribution and Block Size Analysis (After Cleaning)
+    # ------------------------------------------------------------
+    print("\nDirections Analysis (AFTER cleaning):")
+    print("=" * 50)
+    pickle_files_after = list(pickle_dir.rglob("*.pkl"))
+    df_dirs_after = compute_direction_stats_for_files(pickle_files_after)
+    if not df_dirs_after.empty:
+        print(f"Samples with directions: {len(df_dirs_after)}")
+        print(f"Unique n_lines: {sorted(df_dirs_after['n_lines'].unique().tolist())}")
+        print("Estimated block size frequency (top 10):")
+        print(df_dirs_after['block_size_estimate'].value_counts().head(10))
+        print(f"\nInvalid block size estimates (should be 0): {(~df_dirs_after['is_valid_block_size']).sum()}")
 
-    top_groups_after = (
-        df_dirs_after.groupby(['n_lines', 'block_size_estimate'])
-                     .size()
-                     .reset_index(name='count')
-                     .sort_values(['n_lines', 'count'], ascending=[True, False])
-    )
-    print("\nBlock size counts by n_lines (first 20 rows):")
-    print(top_groups_after.head(20).to_string(index=False))
+        top_groups_after = (
+            df_dirs_after.groupby(['n_lines', 'block_size_estimate'])
+                         .size()
+                         .reset_index(name='count')
+                         .sort_values(['n_lines', 'count'], ascending=[True, False])
+        )
+        print("\nBlock size counts by n_lines (first 20 rows):")
+        print(top_groups_after.head(20).to_string(index=False))
 
-    df_dirs_after.to_csv('directions_block_sizes_after.csv', index=False)
-    print("Saved: directions_block_sizes_after.csv")
+        df_dirs_after.to_csv('directions_block_sizes_after.csv', index=False)
+        print("Saved: directions_block_sizes_after.csv")
+    else:
+        print("No directions data found in pickle files after cleaning.")
 else:
-    print("No directions data found in pickle files after cleaning.")
+    total_before, total_removed = 0, 0 # Ensure these exist for the report
 
 
 # ------------------------------------------------------------
@@ -527,16 +543,17 @@ if 'df_dirs_before' in locals() and isinstance(df_dirs_before, pd.DataFrame) and
     report.append(f"  Invalid block size estimates: {invalid_b}")
     report.append("")
 
-if 'df_dirs_after' in locals() and isinstance(df_dirs_after, pd.DataFrame) and not df_dirs_after.empty:
-    report.append("DIRECTIONS BLOCK SIZE SUMMARY (AFTER cleaning):")
-    vc_a = df_dirs_after['block_size_estimate'].value_counts()
-    for bs, cnt in vc_a.head(5).items():
-        report.append(f"  Block size {int(bs)}: {int(cnt)} samples")
-    invalid_a = int((~df_dirs_after['is_valid_block_size']).sum())
-    report.append(f"  Invalid block size estimates: {invalid_a}")
-    report.append("")
+if args.clean:
+    if 'df_dirs_after' in locals() and isinstance(df_dirs_after, pd.DataFrame) and not df_dirs_after.empty:
+        report.append("DIRECTIONS BLOCK SIZE SUMMARY (AFTER cleaning):")
+        vc_a = df_dirs_after['block_size_estimate'].value_counts()
+        for bs, cnt in vc_a.head(5).items():
+            report.append(f"  Block size {int(bs)}: {int(cnt)} samples")
+        invalid_a = int((~df_dirs_after['is_valid_block_size']).sum())
+        report.append(f"  Invalid block size estimates: {invalid_a}")
+        report.append("")
 
-report.append(f"CLEANING SUMMARY: removed {total_removed} invalid rows out of {total_before} before-clean rows")
+    report.append(f"CLEANING SUMMARY: removed {total_removed} invalid rows out of {total_before} before-clean rows")
 
 # Print and save report
 report_text = "\n".join(report)
