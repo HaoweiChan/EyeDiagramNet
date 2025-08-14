@@ -294,10 +294,17 @@ if not summary_df.empty:
     print(per_dir_summary.to_string(index=False))
     print("="*50)
 
-summary_df = summary_df.sort_values('samples', ascending=False)
+    print("\n--- Per-Directory Sample-Count Distribution ---")
+    for directory, group in summary_df.groupby('directory'):
+        print(f"\nDirectory: {directory}")
+        sample_counts = group['samples'].value_counts().sort_index()
+        if sample_counts.empty:
+            print("  No samples found.")
+            continue
+        for num_samples, num_files in sample_counts.items():
+            print(f"  - {num_samples} samples: {num_files} files")
+    print("="*50)
 
-print("\nFile-wise sample counts (Top 10):")
-print(summary_df[['directory', 'trace_name', 'samples']].head(10).to_string(index=False))
 
 print(f"\nTotal files: {len(summary_df)}")
 print(f"Total samples: {summary_df['samples'].sum()}")
