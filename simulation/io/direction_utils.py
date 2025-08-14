@@ -5,7 +5,10 @@ This module provides functions for generating direction patterns used in eye wid
 """
 
 import numpy as np
+import warnings
 from typing import List
+
+from simulation.parameters.param_utils import get_valid_block_sizes
 
 
 def get_valid_block_sizes(n_lines: int) -> List[int]:
@@ -43,13 +46,15 @@ def get_valid_block_sizes(n_lines: int) -> List[int]:
     
     return divisors
 
-def generate_directions(n_lines: int, enable_direction: bool = True) -> np.ndarray:
+def generate_directions(n_lines: int, enable_direction: bool = True, block_size: int = None) -> np.ndarray:
     """
     Generate direction pattern for simulation.
     
     Args:
         n_lines: Number of lines in the simulation
         enable_direction: Whether to use random directions (True) or all ones (False)
+        block_size: Optional fixed block size. If provided and it's a valid divisor of n_lines, it will be used.
+                    Otherwise, a random valid block size is chosen.
         
     Returns:
         numpy.ndarray: Array of direction values (0 or 1) for each line
@@ -64,9 +69,16 @@ def generate_directions(n_lines: int, enable_direction: bool = True) -> np.ndarr
     if not enable_direction:
         return np.ones(n_lines, dtype=int)
     
-    # Use block-wise pattern for better performance
-    valid_block_sizes = get_valid_block_sizes(n_lines)
-    block_size = np.random.choice(valid_block_sizes)
+    # Determine block size
+    if block_size is not None:
+        if n_lines % block_size != 0:
+            warnings.warn(f"block_size {block_size} is not a divisor of n_lines {n_lines}. A random valid block size will be used instead.")
+            block_size = None
+    
+    if block_size is None:
+        valid_block_sizes = get_valid_block_sizes(n_lines)
+        block_size = np.random.choice(valid_block_sizes)
+        
     n_blocks = n_lines // block_size
     
     # Create equal number of 0 and 1 blocks

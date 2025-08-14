@@ -845,7 +845,7 @@ Metadata Error: {meta_error}
 def collect_trace_simulation_data(trace_snp_file, vertical_pairs_with_counts, combined_params, 
                                 pickle_dir, param_type_names, enable_direction=True, 
                                 batch_size=10, debug=False, use_optimized=False,
-                                simulator_type='sbr'):
+                                simulator_type='sbr', block_size=None):
     """
     Collect eye width simulation data for a single trace SNP with multiple vertical pairs.
     This is the new coarse-grained task that processes all samples for one trace file.
@@ -861,6 +861,7 @@ def collect_trace_simulation_data(trace_snp_file, vertical_pairs_with_counts, co
         debug: Debug mode flag
         use_optimized: Whether to use optimized Phase 1 functions (default: False)
         simulator_type: Type of simulator to use ('sbr' or 'der')
+        block_size: Optional fixed block size for direction generation.
     """
     task_start_time = time.time()
     worker_id = os.getpid()
@@ -957,7 +958,7 @@ def collect_trace_simulation_data(trace_snp_file, vertical_pairs_with_counts, co
                 
                 try:
                     # Set directions using shared utility function
-                    sim_directions = generate_directions(n_lines, enable_direction)
+                    sim_directions = generate_directions(n_lines, enable_direction, block_size=block_size)
                     
                     # Run simulation with comprehensive error handling
                     try:
@@ -1145,7 +1146,7 @@ def get_multiprocessing_start_method():
 
 def run_with_executor(trace_tasks, combined_params, trace_specific_output_dir, param_types, 
                      enable_direction, num_workers, batch_size, vertical_cache_info=None, use_optimized=False,
-                     simulator_type='sbr'):
+                     simulator_type='sbr', block_size=None):
     """
     Run simulations using ProcessPoolExecutor with optimized task distribution and graceful shutdown.
     This version uses a bounded queue to avoid overwhelming the executor with too many initial tasks.
@@ -1161,6 +1162,7 @@ def run_with_executor(trace_tasks, combined_params, trace_specific_output_dir, p
         vertical_cache_info: Shared memory cache info for vertical SNPs
         use_optimized: Whether to use optimized Phase 1 functions (default: False)
         simulator_type: Type of simulator to use ('sbr' or 'der')
+        block_size: Optional fixed block size for direction generation.
     """
     global _executor, _progress_thread
     
@@ -1215,7 +1217,7 @@ def run_with_executor(trace_tasks, combined_params, trace_specific_output_dir, p
                     collect_trace_simulation_data,
                     str(trace_snp_file), vertical_pairs, combined_params, 
                     str(trace_specific_output_dir), param_types, enable_direction, batch_size, False, use_optimized,
-                    simulator_type
+                    simulator_type, block_size
                 )
                 active_futures[future] = (trace_snp_file, vertical_pairs)
                 return True
@@ -1458,6 +1460,9 @@ def main():
     # Handle enable_inductance logic (default to False)  
     enable_inductance = args.enable_inductance or config['boundary'].get('enable_inductance', False)
     
+    # Handle block_size from args or config
+    block_size = args.block_size if args.block_size is not None else config['boundary'].get('block_size')
+
     # Handle simulator type
     simulator_type = args.simulator_type or config.get('runner', {}).get('simulator_type', 'sbr')
 
@@ -1509,6 +1514,8 @@ def main():
     print(f"  BLAS threads: {blas_threads}")
     print(f"  Platform: {platform.system()}")
     print(f"  Simulator Type: {simulator_type}")
+    if block_size is not None:
+        print(f"  Fixed block size: {block_size}")
     
     # Validate parameter types against simulator type
     if simulator_type == 'der':
@@ -1677,7 +1684,7 @@ def main():
         if not debug:
             run_with_executor(trace_tasks, combined_params, trace_specific_output_dir, param_types, 
                              enable_direction, max_workers, batch_size, vertical_cache_info, use_optimized,
-                             simulator_type)
+                             simulator_type, block_size)
         else:
             # Debug mode - run sequentially
             global _vertical_cache_info, _progress_queue
@@ -1705,7 +1712,7 @@ def main():
                 collect_trace_simulation_data(
                     trace_snp_file, vertical_pairs_with_counts, combined_params, 
                     trace_specific_output_dir, param_types, enable_direction, batch_size, True, use_optimized,
-                    simulator_type
+                    simulator_type, block_size
                 )
             
             # Print overall debug mode performance summary

@@ -65,4 +65,8 @@ def build_argparser():
         '--max_workers', type=int,
         help="Maximum number of worker processes (overrides config)"
     )
+    parser.add_argument(
+        '--block_size', type=int, default=None,
+        help="Fixed block size for direction generation (optional, overrides random selection)"
+    )
     return parser 

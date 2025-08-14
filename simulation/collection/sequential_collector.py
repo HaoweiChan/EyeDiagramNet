@@ -244,7 +244,7 @@ Metadata Error: {meta_error}
     def collect_data(self, trace_pattern_key: str, trace_pattern: str, vertical_dirs: List[str], 
                     output_dir: Path, param_types: List[str], max_samples: int, 
                     enable_direction: bool = False, enable_inductance: bool = False, shuffle: bool = False,
-                    simulator_type: str = 'sbr', use_optimized: bool = False) -> Dict[str, Any]:
+                    simulator_type: str = 'sbr', use_optimized: bool = False, block_size: int = None) -> Dict[str, Any]:
         """
         Collect eye width simulation data using optimized sequential processing
         
@@ -260,6 +260,7 @@ Metadata Error: {meta_error}
             shuffle: Whether to shuffle the work items before processing
             simulator_type: The type of simulator to use ('sbr' or 'der')
             use_optimized: Whether to use optimized SBR simulation functions.
+            block_size: Optional fixed block size for direction generation.
         
         Returns:
             Collection statistics and results
@@ -276,6 +277,8 @@ Metadata Error: {meta_error}
         print(f"  Shuffle work items: {shuffle}")
         print(f"  Simulator type: {simulator_type}")
         print(f"  Use optimized: {use_optimized}")
+        if block_size is not None:
+            print(f"  Fixed block size: {block_size}")
         
         # Validate parameter types against simulator type
         if simulator_type == 'der':
@@ -377,7 +380,7 @@ Metadata Error: {meta_error}
                 self._process_trace_file(
                     trace_snp, vertical_pair, samples_needed, pickle_file,
                     combined_params, enable_direction, pbar, param_types, max_samples,
-                    simulator_type, use_optimized
+                    simulator_type, use_optimized, block_size
                 )
         
         self.stats["end_time"] = time.time()
@@ -409,7 +412,7 @@ Metadata Error: {meta_error}
     def _process_trace_file(self, trace_snp: Path, vertical_pair: Tuple[Path, Path], 
                            samples_needed: int, pickle_file: Path, combined_params: Any,
                            enable_direction: bool, pbar: tqdm, param_types: List[str], max_samples: int,
-                           simulator_type: str, use_optimized: bool):
+                           simulator_type: str, use_optimized: bool, block_size: int = None):
         """Process a single trace file with optimized sequential processing"""
         
         # INITIAL RACE CONDITION CHECK: Verify quota not already filled by other parallel jobs
@@ -514,7 +517,7 @@ Metadata Error: {meta_error}
                     combined_config = combined_params.sample()
                     
                     # Generate directions
-                    sim_directions = generate_directions(n_lines, enable_direction)
+                    sim_directions = generate_directions(n_lines, enable_direction, block_size=block_size)
                     
                     # Run simulation
                     sim_start_time = time.time()
@@ -698,6 +701,7 @@ def main():
     parser.add_argument('--shuffle', action='store_true', help='Shuffle the work items before processing')
     parser.add_argument('--simulator-type', type=str, default='sbr', choices=['sbr', 'der'], help='Type of simulator to use')
     parser.add_argument('--use-optimized', action='store_true', help='Use optimized SBR simulation functions.')
+    parser.add_argument('--block-size', type=int, default=None, help='Fixed block size for direction generation.')
     args = parser.parse_args(_remaining_argv)
     
     # Load configuration
@@ -730,6 +734,9 @@ def main():
     # Handle enable_inductance logic (default to False) - same as parallel_collector.py
     enable_inductance = args.enable_inductance or config['boundary'].get('enable_inductance', False)
     
+    # Handle block_size from args or config
+    block_size = args.block_size if args.block_size is not None else config['boundary'].get('block_size')
+
     # Handle shuffle logic (default to False)
     shuffle = args.shuffle if hasattr(args, 'shuffle') else config['boundary'].get('shuffle', False)
     
@@ -761,6 +768,8 @@ def main():
     print(f"  Processing mode: Sequential (using all cores)")
     print(f"  Simulator Type: {simulator_type}")
     print(f"  Use optimized: {use_optimized}")
+    if block_size is not None:
+        print(f"  Fixed block size: {block_size}")
     
     # Create collector
     collector = SequentialCollector(config, debug=debug)
@@ -778,7 +787,8 @@ def main():
             enable_inductance=enable_inductance,
             shuffle=shuffle,
             simulator_type=simulator_type,
-            use_optimized=use_optimized
+            use_optimized=use_optimized,
+            block_size=block_size
         )
         
         print(f"\nCollection completed successfully!")
