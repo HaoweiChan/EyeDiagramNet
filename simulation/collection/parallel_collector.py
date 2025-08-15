@@ -84,6 +84,7 @@ from simulation.io.snp_utils import parse_snps, generate_vertical_snp_pairs
 from simulation.io.progress_utils import progress_monitor, report_progress
 from simulation.io.direction_utils import generate_directions
 from simulation.parameters.param_utils import parse_param_types, modify_params_for_inductance
+from simulation.io.pickle_utils import DataWriter, SimulationResult
 
 # Import performance monitoring functions
 try:
@@ -390,42 +391,23 @@ def get_optimal_workers(config_blas_threads=2):
     return optimal_workers
 
 class BufferedPickleWriter:
-    """Buffered writer for pickle files to reduce I/O overhead with interrupt safety"""
+    """Buffered writer that uses the standard DataWriter for final output."""
     
     def __init__(self, pickle_file, batch_size=10):
         self.pickle_file = Path(pickle_file)
         self.batch_size = batch_size
         self.buffer = []
-        self.data = self._load_existing_data()
         self._closed = False
         self._last_flush_time = time.time()
         self._flush_interval = 30.0  # Force flush every 30 seconds
         
-        # Register atexit handler to ensure cleanup
+        # Register atexit handler for emergency cleanup
         import atexit
         atexit.register(self._emergency_cleanup)
     
-    def _load_existing_data(self):
-        """Load existing pickle data"""
-        if self.pickle_file.exists():
-            try:
-                with open(self.pickle_file, 'rb') as f:
-                    return pickle.load(f)
-            except:
-                pass
-        return {
-            'configs': [],
-            'line_ews': [], 
-            'snp_drvs': [],
-            'snp_odts': [],
-            'directions': [],
-            'meta': {}
-        }
-    
     def add_result(self, result):
-        """Add a simulation result to the buffer"""
+        """Add a simulation result to the buffer."""
         if self._closed or _shutdown_event.is_set():
-            # If shutdown is in progress, flush immediately
             self.buffer.append(result)
             self.flush()
             return
@@ -433,70 +415,46 @@ class BufferedPickleWriter:
         self.buffer.append(result)
         current_time = time.time()
         
-        # Flush if buffer is full or enough time has passed
         if (len(self.buffer) >= self.batch_size or 
             current_time - self._last_flush_time > self._flush_interval):
             self.flush()
     
     def flush(self):
-        """Write buffered results to disk with timeout protection"""
-        if not self.buffer or self._closed:
-            return
-        
-        # Skip flush if shutdown is in progress to avoid hanging
-        if _shutdown_event.is_set():
+        """Write buffered results to disk using the standard DataWriter."""
+        if not self.buffer or self._closed or _shutdown_event.is_set():
             return
         
         try:
-            # Add all buffered results to data
+            # Use a lock to prevent race conditions from multiple workers
+            # trying to write to the same file simultaneously (though this
+            # class is typically used one-per-file in the current design).
+            
+            # For simplicity in this refactor, we assume one writer per file.
+            # A more robust solution for multi-writer scenarios would use a file lock.
+            
+            data_writer = DataWriter(self.pickle_file)
+            
             for result in self.buffer:
-                self.data['configs'].append(result['config_values'])
-                self.data['line_ews'].append(result['line_ews'])
-                self.data['snp_drvs'].append(result['snp_drv'])
-                self.data['snp_odts'].append(result['snp_odt'])
-                self.data['directions'].append(result['directions'])
+                data_writer.add_result(result)
             
-            # Update meta if needed
-            if self.buffer and not self.data['meta'].get('config_keys'):
-                first_result = self.buffer[0]
-                self.data['meta']['config_keys'] = first_result['config_keys']
-                self.data['meta']['snp_horiz'] = first_result.get('snp_horiz', '')
-                self.data['meta']['n_ports'] = first_result.get('n_ports', 0)
-                self.data['meta']['param_types'] = first_result.get('param_types', [])
-            
-            # Write to disk with timeout protection using thread
-            def write_with_timeout():
-                self.pickle_file.parent.mkdir(parents=True, exist_ok=True)
-                with open(self.pickle_file, 'wb') as f:
-                    pickle.dump(self.data, f)
-            
-            write_thread = threading.Thread(target=write_with_timeout, daemon=True)
-            write_thread.start()
-            write_thread.join(timeout=5.0)  # 5 second timeout for I/O
-            
-            if write_thread.is_alive():
-                # Write is taking too long, abandon it
-                print(f"[WARNING] Pickle write timeout for {self.pickle_file.name}, abandoning...", flush=True)
-                return
+            data_writer.save()
             
             self.buffer.clear()
             self._last_flush_time = time.time()
             
         except Exception as e:
-            # If normal write fails, just log and continue
-            print(f"[WARNING] Failed to flush pickle data: {e}", flush=True)
-            self.buffer.clear()  # Clear buffer to avoid memory issues
+            print(f"[WARNING] Failed to flush pickle data for {self.pickle_file.name}: {e}", flush=True)
+            self.buffer.clear()
     
     def close(self):
-        """Flush remaining data and close"""
+        """Flush remaining data and close."""
         if not self._closed:
-            # Only flush if not shutting down to avoid hanging
             if not _shutdown_event.is_set():
                 self.flush()
             self._closed = True
     
     def _emergency_cleanup(self):
-        """Emergency cleanup for atexit"""
+        """Emergency cleanup for atexit."""
         if not self._closed and self.buffer:
             try:
                 self.close()
@@ -1038,19 +996,19 @@ def collect_trace_simulation_data(trace_snp_file, vertical_pairs_with_counts, co
             line_ew = np.array(line_ew)
             line_ew[line_ew >= 99.9] = -0.1
             
-            # Create result
+            # Create a structured dataclass instance for the result
             config_values, config_keys = combined_config.to_list(return_keys=True)
-            result = {
-                'config_values': config_values,
-                'config_keys': config_keys,
-                'line_ews': line_ew.tolist(),
-                'snp_drv': snp_drv_path.as_posix(),
-                'snp_odt': snp_odt_path.as_posix(),
-                'directions': sim_directions.tolist(),
-                'snp_horiz': str(trace_snp_path),
-                'n_ports': n_ports,
-                'param_types': param_type_names
-            }
+            result = SimulationResult(
+                config_values=config_values,
+                config_keys=config_keys,
+                line_ews=line_ew.tolist(),
+                snp_drv=snp_drv_path.as_posix(),
+                snp_odt=snp_odt_path.as_posix(),
+                directions=sim_directions.tolist(),
+                snp_horiz=str(trace_snp_path),
+                n_ports=n_ports,
+                param_types=param_type_names
+            )
             
             # Add to buffered writer
             writer.add_result(result)

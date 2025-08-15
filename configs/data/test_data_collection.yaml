@@ -1,0 +1,24 @@
+dataset:
+  horizontal_dataset:
+    5mi: /proj/sialabm/ew_predictor/test_data/trace_input/5mi
+    9mi_Rtx_25ohm: /proj/sialabm/ew_predictor/test_data/trace_input/9mi_Rtx_25ohm
+    9mi_Rtx_36ohm: /proj/sialabm/ew_predictor/test_data/trace_input/9mi_Rtx_36ohm
+    HBM3: /proj/sialabm/ew_predictor/test_data/trace_input/HBM3
+    HBM4: /proj/sialabm/ew_predictor/test_data/trace_input/HBM4
+    HBM4E: /proj/sialabm/ew_predictor/test_data/trace_input/HBM4E
+
+  vertical_dataset:
+    - /proj/sialabm/ew_predictor/test_data/vertical/
+
+# Data configuration
+data:
+  trace_pattern: 5mi
+  output_dir: "/proj/sialabm/ew_predictor/data/"
+
+# Boundary parameter configuration
+boundary:
+   input_dir: "/proj/sialabm/ew_predictor/test_data/sub_task/boundary_add_dir_ctle"
+   param_type: "DEFAULT_PARAMS"
+   max_samples: 50
+   enable_direction: false
+   enable_inductance: false

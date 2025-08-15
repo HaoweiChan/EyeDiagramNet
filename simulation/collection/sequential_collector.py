@@ -74,6 +74,7 @@ from simulation.io.config_utils import load_config, resolve_trace_pattern, resol
 from simulation.io.snp_utils import parse_snps, generate_vertical_snp_pairs
 from simulation.io.direction_utils import generate_directions
 from simulation.parameters.param_utils import parse_param_types, modify_params_for_inductance
+from simulation.io.pickle_utils import DataWriter, SimulationResult
 
 # Import performance monitoring
 try:
@@ -604,19 +605,19 @@ Metadata Error: {meta_error}
             line_ew = np.array(line_ew)
             line_ew[line_ew >= 99.9] = -0.1
             
-            # Create result
+            # Create a structured dataclass instance for the result
             config_values, config_keys = combined_config.to_list(return_keys=True)
-            result = {
-                'config_values': config_values,
-                'config_keys': config_keys,
-                'line_ews': line_ew.tolist(),
-                'snp_drv': snp_drv_path.as_posix(),
-                'snp_odt': snp_odt_path.as_posix(),
-                'directions': sim_directions.tolist(),
-                'snp_horiz': str(trace_snp),
-                'n_ports': n_ports,
-                'param_types': param_types  # Add param_types for consistency
-            }
+            result = SimulationResult(
+                config_values=config_values,
+                config_keys=config_keys,
+                line_ews=line_ew.tolist(),
+                snp_drv=snp_drv_path.as_posix(),
+                snp_odt=snp_odt_path.as_posix(),
+                directions=sim_directions.tolist(),
+                snp_horiz=str(trace_snp),
+                n_ports=n_ports,
+                param_types=param_types
+            )
             
             new_results.append(result)
             self.stats["completed_simulations"] += 1
@@ -626,70 +627,29 @@ Metadata Error: {meta_error}
             
             # Batch save every N samples
             if len(new_results) >= self.batch_size:
-                self._save_results(pickle_file, existing_data, new_results)
+                self._save_results(pickle_file, new_results)
                 new_results = []
         
         # Save remaining results
         if new_results:
-            self._save_results(pickle_file, existing_data, new_results)
+            self._save_results(pickle_file, new_results)
     
-    def _save_results(self, pickle_file: Path, existing_data: Dict[str, Any], new_results: List[Dict[str, Any]]):
-        """Save results to pickle file with race condition protection"""
+    def _save_results(self, pickle_file: Path, new_results: List[Dict[str, Any]]):
+        """Save results to a pickle file using the standardized DataWriter."""
         try:
-            # FINAL RACE CONDITION CHECK: Re-load file to check current state before saving
-            current_data = existing_data
-            if pickle_file.exists():
-                try:
-                    with open(pickle_file, 'rb') as f:
-                        current_data = pickle.load(f)
-                except:
-                    # If reload fails, use our existing data
-                    current_data = existing_data
+            data_writer = DataWriter(pickle_file)
             
-            current_count = len(current_data.get('configs', []))
-            
-            # Only add results that won't exceed any reasonable limit
-            # Use a generous limit to handle edge cases while still preventing massive over-collection
-            max_reasonable_samples = 200  # Allow some over-collection but prevent runaway
-            
-            results_to_add = []
+            # Add all new results to the writer
             for result in new_results:
-                if current_count + len(results_to_add) < max_reasonable_samples:
-                    results_to_add.append(result)
-                else:
-                    print(f"[RACE PROTECTION] Stopping save at {current_count + len(results_to_add)} samples to prevent over-collection")
-                    break
+                data_writer.add_result(result)
             
-            if not results_to_add:
-                print(f"[RACE PROTECTION] No results to save, file already has {current_count} samples")
-                return
-            
-            # Add filtered results to current data
-            for result in results_to_add:
-                current_data['configs'].append(result['config_values'])
-                current_data['line_ews'].append(result['line_ews'])
-                current_data['snp_drvs'].append(result['snp_drv'])
-                current_data['snp_odts'].append(result['snp_odt'])
-                current_data['directions'].append(result['directions'])
-            
-            # Update metadata
-            if results_to_add and not current_data['meta'].get('config_keys'):
-                first_result = results_to_add[0]
-                current_data['meta']['config_keys'] = first_result['config_keys']
-                current_data['meta']['snp_horiz'] = first_result.get('snp_horiz', '')
-                current_data['meta']['n_ports'] = first_result.get('n_ports', 0)
-                current_data['meta']['param_types'] = first_result.get('param_types', [])
-            
-            # Save to file
-            pickle_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(pickle_file, 'wb') as f:
-                pickle.dump(current_data, f)
-                
-            print(f"[SAVE] Saved {len(results_to_add)} new results to {pickle_file.name} (total: {len(current_data['configs'])})")
+            # Save the updated data
+            data_writer.save()
+
+            print(f"[SAVE] Saved {len(new_results)} new results to {pickle_file.name} (total: {data_writer.get_sample_count()})")
                 
         except Exception as e:
             print(f"Error saving results to {pickle_file}: {e}")
-            # Continue without saving - the simulation results are still counted for progress
 
 def main():
     """Main function for optimized sequential data collection"""
