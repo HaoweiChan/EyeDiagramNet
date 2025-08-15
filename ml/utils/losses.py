@@ -10,10 +10,6 @@ def _reduce_loss(loss, mask):
     return loss
 
 def weighted_mse_loss(inputs, targets, mask=None):
-    loss = (torch.log1p(inputs) - torch.log1p(targets)) ** 2
-    return _reduce_loss(loss, mask)
-
-def weighted_mse_loss(inputs, targets, mask=None):
     loss = (inputs - targets) ** 2
     return _reduce_loss(loss, mask)
 
@@ -96,3 +92,22 @@ def gaussian_nll_loss(inputs, targets, logvar, mask=None):
     loss = 0.5 * (logvar + precision * (inputs - targets).pow(2))
 
     return _reduce_loss(loss, mask)
+
+def logit(p, eps=1e-6):
+    """Numerically stable logit function."""
+    p = torch.clamp(p, eps, 1 - eps)
+    return torch.log(p) - torch.log1p(-p)
+
+def softmin(x, tau=0.1, dim=None):
+    """
+    Differentiable softmin function using log-sum-exp.
+    
+    Args:
+        x: Input tensor.
+        tau: Temperature parameter. Smaller tau makes the function closer to the true min.
+        dim: The dimension to reduce. If None, reduces all dimensions.
+        
+    Returns:
+        The soft minimum of the tensor.
+    """
+    return -tau * torch.logsumexp(-x / tau, dim=dim)

@@ -20,7 +20,6 @@ def plot_ew_curve(outputs, metrics, ew_threshold, sigma=2):
     true_ew = outputs['true_ew'].float().cpu()
     pred_prob = outputs['pred_prob'].float().detach().cpu()
     true_prob = outputs['true_prob'].float().cpu()
-    pred_sigma = outputs['pred_sigma'].float().detach().cpu()
     meta = outputs['meta']
 
     # Random sample one batch index to get (N,) arrays for plotting
@@ -31,7 +30,6 @@ def plot_ew_curve(outputs, metrics, ew_threshold, sigma=2):
     true_ew = true_ew[sample_idx]
     pred_prob = pred_prob[sample_idx]
     true_prob = true_prob[sample_idx]
-    pred_sigma = pred_sigma[sample_idx]
     
     # Correctly sample metadata
     sampled_meta = {}
@@ -46,13 +44,6 @@ def plot_ew_curve(outputs, metrics, ew_threshold, sigma=2):
     
     # Conversions
     pred_mask = pred_ew > ew_threshold
-
-    # Calculate and clip uncertainty bounds to be within [0, 100]
-    upper_bound = np.clip(pred_ew + sigma * pred_sigma, a_min=None, a_max=100.0)
-    lower_bound = np.clip(pred_ew - sigma * pred_sigma, a_min=0.0, a_max=None)
-    
-    upper_mask = np.ma.masked_where(~pred_mask, upper_bound)
-    lower_masked = np.ma.masked_where(~pred_mask, lower_bound)
 
     stage_key = next(iter(metrics)).split('_')[0].replace('/', ' ').upper()
     metrics = {k.split('/')[1]: v for k, v in metrics.items() if v != 0 and not math.isnan(v)}
@@ -79,8 +70,6 @@ def plot_ew_curve(outputs, metrics, ew_threshold, sigma=2):
     ax1 = fig.add_subplot(gs[0, :])
     ax1.set_title('Eye width', fontsize=12, fontweight='bold', pad=15)  # Increased pad
     ax1.plot(pred_ew * pred_mask, color='#1777b4', alpha=0.8, label='Pred', linewidth=1.5)
-    if pred_sigma.abs().sum() > 1e-6:
-        ax1.fill_between(np.arange(len(pred_ew)), upper_mask, lower_masked, color='#aec7e8', alpha=0.3, label='±σ')
     ax1.plot(true_ew * true_prob, color='#111111', alpha=0.8, label='True', linewidth=1.5)
     ax1.legend(loc='lower right', fontsize=9)
     ax1.grid(True, alpha=0.3)
