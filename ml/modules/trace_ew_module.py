@@ -574,7 +574,7 @@ class TraceEWModule(LightningModule):
             if 'loss' in key:
                 metric.update(loss)
             elif 'f1' in key or 'accuracy' in key or 'auroc' in key or 'auprc' in key:
-                metric.update(pred_prob.flatten(), true_prob.flatten())
+                metric.update(pred_prob.flatten(), true_prob.flatten().long())
             elif pred_ew_masked.numel() > 0:  # Only update if we have valid masked data
                 metric.update(pred_ew_masked, true_ew_masked)
 
