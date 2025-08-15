@@ -80,7 +80,9 @@ class TraceEWModule(LightningModule):
         ew_threshold: float = 0.3,
         use_laplace_on_fit_end: bool = True,
         ignore_snp: bool = False,
-        predict_logvar: bool = True,
+        tau_gate: float = 0.1,
+        tau_min: float = 0.1,
+        min_loss_weight: float = 0.1,
     ):
         super().__init__()
         self.save_hyperparameters(ignore=['model'])
@@ -88,8 +90,6 @@ class TraceEWModule(LightningModule):
         # Set ignore_snp on the model if it supports it
         if hasattr(model, 'ignore_snp'):
             model.ignore_snp = ignore_snp
-        if hasattr(model, 'predict_logvar'):
-            model.predict_logvar = self.hparams.predict_logvar
 
         self.model = model
         self.train_step_outputs = {}
@@ -104,7 +104,7 @@ class TraceEWModule(LightningModule):
         self.ew_scaler_inv = torch.tensor(1.0 / self.hparams.ew_scaler)
         self.log_ew_scaler = torch.log(self.ew_scaler)
         # self.weighted_loss = UncertaintyWeightedLoss(['nll', 'bce'])
-        self.weighted_loss = LearnableLossWeighting(['nll', 'bce'])
+        self.weighted_loss = LearnableLossWeighting(['bce', 'min_loss', 'trace_loss'])
         
         # NOTE: GradNormLossBalancer uses second-order gradients which are incompatible 
         # with torch.compile. If you want to use torch.compile, switch to:
@@ -355,8 +355,6 @@ class TraceEWModule(LightningModule):
             'auprc': tm.classification.BinaryAveragePrecision,
             'accuracy': tm.classification.BinaryAccuracy,
             'f1': tm.classification.BinaryF1Score,
-            'cov': tm.classification.BinaryAccuracy,
-            'cov2s': tm.classification.BinaryAccuracy,
         }
         metrics_dict = nn.ModuleDict()
         for k, metric in metrics.items():
@@ -388,65 +386,74 @@ class TraceEWModule(LightningModule):
         """
         # Use the model's internal uncertainty logic (Laplace or MC)
         if stage == "val" and hasattr(self.model, 'predict_with_uncertainty'):
-            pred_ew_eval, total_var, _, _, pred_logits_eval = self.model.predict_with_uncertainty(
+            pred_ew_eval, _, _, _, pred_logits_eval = self.model.predict_with_uncertainty(
                 item.trace_seq, item.direction, item.boundary, item.snp_vert
             )
             pred_prob_eval = torch.sigmoid(pred_logits_eval)
-            pred_logvar_eval = torch.log(total_var + 1e-8)
         else:
-            pred_ew_eval = pred_logvar_eval = pred_prob_eval = None
+            pred_ew_eval = pred_prob_eval = None
 
         # Gradient-carrying forward pass (always)
-        pred_ew, pred_logvar, pred_logits = self(
+        pred_ew, pred_logits = self(
             item.trace_seq, item.direction, item.boundary, item.snp_vert
         )
         pred_prob = torch.sigmoid(pred_logits)
 
         # Fallback to eager outputs for metric display when Laplace not used
         if pred_ew_eval is None:
-            pred_ew_eval, pred_logvar_eval, pred_prob_eval = pred_ew, pred_logvar, pred_prob
+            pred_ew_eval, pred_prob_eval = pred_ew, pred_prob
 
         return {
-            "train":   (pred_ew, pred_logvar, pred_prob),
-            "eval":    (pred_ew_eval, pred_logvar_eval, pred_prob_eval)
+            "train":   (pred_ew, pred_prob),
+            "eval":    (pred_ew_eval, pred_prob_eval)
         }
 
     def _compute_loss(self, item: "BatchItem", forward_out):
         """Calculate composite loss and prepare everything needed for metric updates."""
-        pred_ew, pred_logvar, pred_prob = forward_out["train"]
+        pred_ew, pred_prob = forward_out["train"]
 
         # --- classification helpers --------------------------------------------------
         true_prob = (item.true_ew > 0).float()
-        weight_prob = torch.where(true_prob == 0, 10.0, 1.0)
-        weight_prob = weight_prob / weight_prob.sum(dim=-1, keepdim=True)
-        # ------------------------------------------------------------------------------
+        
+        # --- Soft-min loss for minimum eye-width prediction --------------------------
+        t = self.hparams.ew_threshold
+        tau_g = self.hparams.tau_gate
+        tau_m = self.hparams.tau_min
+        
+        # Soft gate based on inference threshold
+        s = torch.sigmoid((pred_prob - losses.logit(torch.tensor(t, device=self.device))) / tau_g)
+        
+        # Effective eye-width with gated closed-eye value
+        c_closed = -0.1 / self.ew_scaler.item()
+        ew_eff = s * pred_ew + (1 - s) * c_closed
+        
+        # Per-design softmin and true min
+        # pred_ew is (B, L), so we reduce along L (dim=1)
+        softmin_pred_ew = losses.softmin(ew_eff, tau=tau_m, dim=1)
+        min_true_ew = torch.min(item.true_ew, dim=1).values
+        
+        # Min-value prediction loss
+        min_loss = F.smooth_l1_loss(softmin_pred_ew, min_true_ew)
 
-        if self.hparams.predict_logvar:
-            loss = self.weighted_loss({
-                'nll': losses.gaussian_nll_loss(pred_ew, item.true_ew, pred_logvar, mask=true_prob),
-                'bce': F.binary_cross_entropy_with_logits(pred_prob, true_prob, weight=weight_prob)
-            })
-        else:
-            loss = self.weighted_loss({
-                'mse': F.mse_loss(pred_ew[true_prob.bool()], item.true_ew[true_prob.bool()]),
-                'bce': F.binary_cross_entropy_with_logits(pred_prob, true_prob, weight=weight_prob)
-            })
+        # Per-trace prediction loss
+        trace_loss = F.mse_loss(ew_eff, item.true_ew)
+        
+        # --- Original classification loss ---------------------------------------------
+        bce_loss = F.binary_cross_entropy_with_logits(pred_prob, true_prob)
 
+        # --- Combine losses -----------------------------------------------------------
+        loss = self.weighted_loss({
+            'bce': bce_loss,
+            'min_loss': min_loss,
+            'trace_loss': trace_loss
+        })
 
         # Use the eval tensors (may come from MC/Laplace inference) for metrics
-        pred_ew_eval, pred_logvar_eval, pred_prob_eval = forward_out["eval"]
+        pred_ew_eval, pred_prob_eval = forward_out["eval"]
 
         # Rescale / post-process for logging
         pred_ew_eval = pred_ew_eval * self.ew_scaler
         true_ew_scaled = item.true_ew * self.ew_scaler
-        
-        # Handle uncertainty prediction based on predict_logvar setting
-        if self.hparams.predict_logvar:
-            pred_logvar_eval = pred_logvar_eval + 2 * self.log_ew_scaler.to(pred_logvar_eval.device)
-            pred_sigma = torch.exp(0.5 * pred_logvar_eval)
-        else:
-            # When predict_logvar is false, sigma should be zero
-            pred_sigma = torch.zeros_like(pred_ew_eval)
         
         # Get the scaler from datamodule and inverse transform boundary data
         fix_scaler = self.trainer.datamodule.fix_scaler
@@ -477,7 +484,6 @@ class TraceEWModule(LightningModule):
             "true_ew": true_ew_scaled,
             "pred_prob": pred_prob_eval,
             "true_prob": true_prob,
-            "pred_sigma": pred_sigma,
             "meta": meta,
         }
         return loss, extras
@@ -529,7 +535,6 @@ class TraceEWModule(LightningModule):
                     extras["true_ew"],
                     extras["pred_prob"],
                     extras["true_prob"],
-                    extras["pred_sigma"],
                 )
                 self._maybe_collect_samples(stage, name, batch_idx, extras)
 
@@ -552,7 +557,6 @@ class TraceEWModule(LightningModule):
         true_ew: torch.Tensor,
         pred_prob: torch.Tensor,
         true_prob: torch.Tensor,
-        pred_sigma: torch.Tensor,
     ):
         # Pre-compute common values to avoid redundant operations
         mask = true_prob.bool()
@@ -565,38 +569,19 @@ class TraceEWModule(LightningModule):
             pred_ew_masked = torch.empty(0, device=pred_ew.device, dtype=pred_ew.dtype)
             true_ew_masked = torch.empty(0, device=true_ew.device, dtype=true_ew.dtype)
         
-        # Pre-compute coverage metrics to avoid redundant calculations
-        coverage_metrics = {}
-        if self.hparams.predict_logvar and mask.any():
-            for key in self.metrics[stage].keys():
-                if 'cov' in key:
-                    sigma_multiplier = 1.0 if '1s' in key else 2.0
-                    # Use in-place operations where possible
-                    lower = pred_ew - sigma_multiplier * pred_sigma
-                    upper = pred_ew + sigma_multiplier * pred_sigma
-                    in_range_mask = ((true_ew >= lower) & (true_ew <= upper)).float()
-                    coverage_metrics[key] = (in_range_mask[mask], torch.ones_like(in_range_mask[mask]))
-        
         # Update all metrics efficiently - avoid redundant flattening
         for key, metric in self.metrics[stage].items():
             if 'loss' in key:
                 metric.update(loss)
             elif 'f1' in key or 'accuracy' in key or 'auroc' in key or 'auprc' in key:
                 metric.update(pred_prob.flatten(), true_prob.flatten())
-            elif 'cov' in key:
-                if key in coverage_metrics:
-                    in_range_flat, true_mask_flat = coverage_metrics[key]
-                    metric.update(in_range_flat, true_mask_flat)
             elif pred_ew_masked.numel() > 0:  # Only update if we have valid masked data
                 metric.update(pred_ew_masked, true_ew_masked)
 
     def compute_metrics(self, stage):
         log_metrics = {}
         for key, metric in self.metrics[stage].items():
-            if not self.hparams.predict_logvar and 'cov' in key:
-                log_metrics[f'{stage}/{key}'] = float('nan')
-            else:
-                log_metrics[f'{stage}/{key}'] = metric.compute()
+            log_metrics[f'{stage}/{key}'] = metric.compute()
             metric.reset()
         if stage in ("train_", "val") and self.logger is not None:
             self.logger.log_metrics(log_metrics, self.current_epoch)

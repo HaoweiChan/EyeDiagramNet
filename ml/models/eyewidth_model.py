@@ -56,7 +56,7 @@ class _ForwardWrapper(nn.Module):
             raise TypeError(f"Input to _ForwardWrapper must be a tuple or a single trace_seq tensor (if sample inputs provided). Got {type(x)}")
 
         # For likelihood='regression', Laplace expects a single output (mean)
-        values, _, _ = self.base(trace_seq, direction, boundary, snp_vert)
+        values, _ = self.base(trace_seq, direction, boundary, snp_vert)
         
         # Ensure values is 1D for Laplace regression (flatten all outputs)
         values = values.view(-1).contiguous()  # Flatten to 1D and ensure contiguous layout
@@ -96,12 +96,10 @@ class EyeWidthRegressor(nn.Module):
         pretrained_snp_path=None,
         freeze_snp_encoder=False,
         ignore_snp=False,
-        predict_logvar=True,
     ):
         super().__init__()
 
         self.model_dim = model_dim
-        self._predict_logvar = predict_logvar
         self.use_rope = use_rope
         self.use_gradient_checkpointing = use_gradient_checkpointing
         self.ignore_snp = ignore_snp
@@ -189,27 +187,12 @@ class EyeWidthRegressor(nn.Module):
         self._laplace_model = None        
         
     @property
-    def predict_logvar(self):
-        return self._predict_logvar
-
-    @predict_logvar.setter
-    def predict_logvar(self, value):
-        if hasattr(self, '_predict_logvar') and self._predict_logvar != value:
-            self._predict_logvar = value
-            self._build_prediction_head()
-            # Move new head to the correct device
-            if hasattr(self, 'device'):
-                self.pred_head.to(self.device)
-        else:
-            self._predict_logvar = value
-
-    @property
     def device(self):
         return next(self.parameters()).device
 
     @property
     def output_dim(self):
-        return 3 if self.predict_logvar else 2
+        return 2
 
     def _build_prediction_head(self):
         """Builds or rebuilds the prediction head based on the current output_dim."""
@@ -247,7 +230,6 @@ class EyeWidthRegressor(nn.Module):
 
         Returns:
             values (torch.Tensor): Predicted eye width averages of shape (B, P), where B is the batch size and P is the number of ports.
-            log_var (torch.Tensor): Predicted eye width sigmas of shape (B, P).
             logits (torch.Tensor): Predicted open-eye probability logits (real values, before sigmoid) of shape (B, P).
         """
         # Process trace sequence
@@ -315,15 +297,10 @@ class EyeWidthRegressor(nn.Module):
 
         # Predict eye width and open eye probabilities respectively
         output = self.pred_head(hidden_states_sig)
-        if self.predict_logvar:
-            values, log_var, logits = output.split([1, 1, 1], dim=-1)
-            values, log_var, logits = values.squeeze(-1), log_var.squeeze(-1), logits.squeeze(-1)
-        else:
-            values, logits = output.split([1, 1], dim=-1)
-            values, logits = values.squeeze(-1), logits.squeeze(-1)
-            log_var = torch.zeros_like(values)
+        values, logits = output.split([1, 1], dim=-1)
+        values, logits = values.squeeze(-1), logits.squeeze(-1)
 
-        return values, log_var, logits
+        return values, logits
 
     def predict_with_uncertainty(
         self,
@@ -350,11 +327,8 @@ class EyeWidthRegressor(nn.Module):
             return self.laplace_predict(trace_seq, direction, boundary, snp_vert)
         else:
             # Fallback to standard forward pass without uncertainty
-            values, log_var, logits = self(trace_seq, direction, boundary, snp_vert)
-            if self.predict_logvar:
-                aleatoric_var = torch.exp(log_var)
-            else:
-                aleatoric_var = torch.zeros_like(values)
+            values, logits = self(trace_seq, direction, boundary, snp_vert)
+            aleatoric_var = torch.zeros_like(values)
             epistemic_var = torch.zeros_like(aleatoric_var)
             total_var = aleatoric_var
             return values, total_var, aleatoric_var, epistemic_var, logits
@@ -465,11 +439,8 @@ class EyeWidthRegressor(nn.Module):
         var = self._laplace_model.predictive_variance(x, model=laplace_wrapper)
 
         # Retrieve aleatoric variance from log_var head:
-        _, log_var, logits = self(trace_seq, direction, boundary, snp_vert)
-        if self.predict_logvar:
-            aleatoric_var = torch.exp(log_var)
-        else:
-            aleatoric_var = torch.zeros_like(pred)
+        _, logits = self(trace_seq, direction, boundary, snp_vert)
+        aleatoric_var = torch.zeros_like(pred)
         total_var = var + aleatoric_var
         epistemic_var = var
 
