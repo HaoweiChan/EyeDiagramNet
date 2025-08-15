@@ -254,15 +254,15 @@ class TraceEWModule(LightningModule):
                             # For Laplace _find_last_layer, which expects a single tensor X,
                             # we yield only the primary input (trace_seq) and the target.
                             # raw_data is (trace_seq, direction, boundary, snp_vert, true_ew)
-                            trace_seq_input = raw_data[0].to(self.device)
+                            inputs = tuple(t.to(self.device) for t in raw_data[:-1])
                             targets = raw_data[-1].to(self.device).squeeze()
-                            yield trace_seq_input, targets
+                            yield inputs, targets
                     else:
-                        # Handle tuple batch from a single dataloader
+                        # Handle tuple batch from a single dataloaloader
                         # batch is (trace_seq, direction, boundary, snp_vert, true_ew)
-                        trace_seq_input = batch[0].to(self.device)
+                        inputs = tuple(t.to(self.device) for t in batch[:-1])
                         targets = batch[-1].to(self.device).squeeze()
-                        yield trace_seq_input, targets
+                        yield inputs, targets
             
             def __len__(self):
                 return len(self.dataloader)
