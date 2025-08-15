@@ -451,8 +451,20 @@ class TraceEWModule(LightningModule):
         # Use the eval tensors (may come from MC/Laplace inference) for metrics
         pred_ew_eval, pred_prob_eval = forward_out["eval"]
 
+        # --- Effective eye-width for evaluation metrics ---
+        # Apply the same logic as loss calculation to align metrics with training objective
+        t = self.hparams.ew_threshold
+        tau_g = self.hparams.tau_gate
+        
+        # Soft gate based on inference threshold using evaluation probabilities
+        s_eval = torch.sigmoid((pred_prob_eval - losses.logit(torch.tensor(t, device=self.device))) / tau_g)
+        
+        # Effective eye-width with gated closed-eye value
+        c_closed = -0.1 / self.ew_scaler.item()
+        ew_eff_eval = s_eval * pred_ew_eval + (1 - s_eval) * c_closed
+
         # Rescale / post-process for logging
-        pred_ew_eval = pred_ew_eval * self.ew_scaler
+        pred_ew_scaled = ew_eff_eval * self.ew_scaler
         true_ew_scaled = item.true_ew * self.ew_scaler
         
         # Get the scaler from datamodule and inverse transform boundary data
@@ -480,7 +492,7 @@ class TraceEWModule(LightningModule):
         meta = {**item.meta, 'boundary': boundary_dicts}
 
         extras = {
-            "pred_ew": pred_ew_eval,
+            "pred_ew": pred_ew_scaled,
             "true_ew": true_ew_scaled,
             "pred_prob": pred_prob_eval,
             "true_prob": true_prob,

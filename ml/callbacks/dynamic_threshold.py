@@ -95,7 +95,7 @@ class DynamicThresholdOptimizer(Callback):
             
             # Get prediction probabilities 
             with torch.no_grad():
-                pred_ew, pred_logvar, pred_logits = pl_module(
+                *_, pred_logits = pl_module(
                     trace_seq, direction, boundary, snp_vert
                 )
                 pred_prob = torch.sigmoid(pred_logits)
