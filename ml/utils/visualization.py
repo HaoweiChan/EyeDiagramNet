@@ -124,7 +124,7 @@ def _format_meta_value(key, value):
         return str(value)
 
     # Special handling for capacitance and inductance parameters - always show in scientific notation
-    if key in ['C_drv', 'C_odt', 'L_drv', 'L_odt']:
+    if key.startswith(('C_', 'L_')):
         return f"{value:.2e}"
     
     # Special handling for frequency parameters and other large numbers - show in scientific notation
