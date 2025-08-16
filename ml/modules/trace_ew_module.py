@@ -381,8 +381,8 @@ class TraceEWModule(LightningModule):
         """
         Forward pass wrapper.  
         Returns a dict with:
-            * 'train':   tensors that carry gradients (used for loss)
-            * 'eval':    tensors used only for metrics / logging
+            * 'train': tensors that carry gradients (used for loss)
+            * 'eval': tensors used only for metrics / logging
         """
         # Use the model's internal uncertainty logic (Laplace or MC)
         if stage == "val" and hasattr(self.model, 'predict_with_uncertainty'):
@@ -404,9 +404,22 @@ class TraceEWModule(LightningModule):
             pred_ew_eval, pred_prob_eval = pred_ew, pred_prob
 
         return {
-            "train":   (pred_ew, pred_prob),
-            "eval":    (pred_ew_eval, pred_prob_eval)
+            "train": (pred_ew, pred_prob),
+            "eval": (pred_ew_eval, pred_prob_eval)
         }
+
+    def _calculate_effective_ew(self, pred_ew: torch.Tensor, pred_prob: torch.Tensor) -> torch.Tensor:
+        """Calculates the effective eye-width with a soft gate."""
+        t = self.hparams.ew_threshold
+        tau_g = self.hparams.tau_gate
+        
+        # Soft gate based on inference threshold
+        s = torch.sigmoid((pred_prob - losses.logit(torch.tensor(t, device=self.device))) / tau_g)
+        
+        # Effective eye-width with gated closed-eye value
+        c_closed = -0.1 / self.ew_scaler.item()
+        ew_eff = s * pred_ew + (1 - s) * c_closed
+        return ew_eff
 
     def _compute_loss(self, item: "BatchItem", forward_out):
         """Calculate composite loss and prepare everything needed for metric updates."""
@@ -416,16 +429,8 @@ class TraceEWModule(LightningModule):
         true_prob = (item.true_ew > 0).float()
         
         # --- Soft-min loss for minimum eye-width prediction --------------------------
-        t = self.hparams.ew_threshold
-        tau_g = self.hparams.tau_gate
         tau_m = self.hparams.tau_min
-        
-        # Soft gate based on inference threshold
-        s = torch.sigmoid((pred_prob - losses.logit(torch.tensor(t, device=self.device))) / tau_g)
-        
-        # Effective eye-width with gated closed-eye value
-        c_closed = -0.1 / self.ew_scaler.item()
-        ew_eff = s * pred_ew + (1 - s) * c_closed
+        ew_eff = self._calculate_effective_ew(pred_ew, pred_prob)
         
         # Per-design softmin and true min
         # pred_ew is (B, L), so we reduce along L (dim=1)
@@ -450,63 +455,77 @@ class TraceEWModule(LightningModule):
 
         # Use the eval tensors (may come from MC/Laplace inference) for metrics
         pred_ew_eval, pred_prob_eval = forward_out["eval"]
-
-        # --- Effective eye-width for evaluation metrics ---
-        # Apply the same logic as loss calculation to align metrics with training objective
-        t = self.hparams.ew_threshold
-        tau_g = self.hparams.tau_gate
         
-        # Soft gate based on inference threshold using evaluation probabilities
-        s_eval = torch.sigmoid((pred_prob_eval - losses.logit(torch.tensor(t, device=self.device))) / tau_g)
-        
-        # Effective eye-width with gated closed-eye value
-        c_closed = -0.1 / self.ew_scaler.item()
-        ew_eff_eval = s_eval * pred_ew_eval + (1 - s_eval) * c_closed
+        # Avoid recomputing effective ew if the eval tensors are the same as train tensors
+        if pred_ew is pred_ew_eval:
+            ew_eff_eval = ew_eff
+        else:
+            ew_eff_eval = self._calculate_effective_ew(pred_ew_eval, pred_prob_eval)
 
         # Rescale / post-process for logging
         pred_ew_scaled = ew_eff_eval * self.ew_scaler
         true_ew_scaled = item.true_ew * self.ew_scaler
         
-        # Get the scaler from datamodule and inverse transform boundary data
-        fix_scaler = self.trainer.datamodule.fix_scaler
-        
-        # Reshape boundary data for inverse transform
-        boundary_reshaped = item.boundary.reshape(-1, item.boundary.shape[-1])
-        
-        # Apply inverse transform
-        boundary_inverse = fix_scaler.inverse_transform(boundary_reshaped)
-        
-        # Handle nan values - convert scaler.nan to torch.nan
-        boundary_inverse[boundary_inverse == fix_scaler.nan] = torch.nan
-        
-        # Reshape back to original shape
-        boundary_inverse = boundary_inverse.reshape(item.boundary.shape)
-        
-        # Convert to proper format for meta - create boundary dict for each item in batch
-        boundary_dicts = []
-        for i in range(len(boundary_inverse)):
-            boundary_dict = {k: v.item() for k, v in zip(self.config_keys, boundary_inverse[i])}
-            boundary_dicts.append(boundary_dict)
-        
-        # Add boundary parameters to metadata for logging
-        meta = {**item.meta, 'boundary': boundary_dicts}
-
         extras = {
             "pred_ew": pred_ew_scaled,
             "true_ew": true_ew_scaled,
             "pred_prob": pred_prob_eval,
             "true_prob": true_prob,
-            "meta": meta,
+            "meta": item.meta,
+            "boundary": item.boundary,
         }
         return loss, extras
+
+    def _prepare_boundary_meta(self, boundary: torch.Tensor, meta: dict) -> dict:
+        """Inverse transforms boundary data and formats it for logging."""
+        # This function is computationally expensive and should only be called when needed for logging.
+        # It involves moving data to the CPU for scikit-learn's inverse_transform.
+        
+        # Ensure boundary tensor is on the CPU
+        boundary_cpu = boundary.cpu()
+        
+        # Get the scaler from datamodule
+        fix_scaler = self.trainer.datamodule.fix_scaler
+        
+        # Reshape boundary data for inverse transform
+        boundary_reshaped = boundary_cpu.reshape(-1, boundary_cpu.shape[-1])
+        
+        # Apply inverse transform (assuming scaler works on numpy)
+        boundary_inverse = fix_scaler.inverse_transform(boundary_reshaped.numpy())
+        
+        # Handle nan values - convert scaler.nan to torch.nan
+        # Create a tensor from the numpy array to perform this operation
+        boundary_inverse_torch = torch.from_numpy(boundary_inverse)
+        
+        # It's safer to check for scaler.nan's type, but assuming it's a float/int
+        nan_val = getattr(fix_scaler, 'nan', None)
+        if nan_val is not None:
+            boundary_inverse_torch[boundary_inverse_torch == nan_val] = torch.nan
+        
+        # Reshape back to original shape
+        boundary_inverse_reshaped = boundary_inverse_torch.reshape(boundary_cpu.shape)
+        
+        # Convert to proper format for meta - create boundary dict for each item in batch
+        boundary_dicts = []
+        for i in range(len(boundary_inverse_reshaped)):
+            boundary_dict = {k: v.item() for k, v in zip(self.config_keys, boundary_inverse_reshaped[i])}
+            boundary_dicts.append(boundary_dict)
+        
+        # Add boundary parameters to metadata for logging
+        return {**meta, 'boundary': boundary_dicts}
 
     def _maybe_collect_samples(self, stage: str, name: str, batch_idx: int, extras: dict):
         """Keep a few random samples around for plotting at epoch-end."""
         if batch_idx in self.get_output_steps(stage):
+            # Prepare detailed metadata only for the samples we are saving
+            log_extras = extras.copy()
+            log_extras["meta"] = self._prepare_boundary_meta(extras["boundary"], extras["meta"])
+            del log_extras["boundary"]  # Clean up unprocessed boundary tensor
+
             if stage == "train_":
-                self.train_step_outputs.setdefault(name, []).append(extras)
+                self.train_step_outputs.setdefault(name, []).append(log_extras)
             else:
-                self.val_step_outputs.setdefault(name, []).append(extras)
+                self.val_step_outputs.setdefault(name, []).append(log_extras)
 
     def get_output_steps(self, stage):
         if stage == "train_":
