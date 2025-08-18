@@ -86,3 +86,57 @@ class DataWriter:
     def get_sample_count(self) -> int:
         """Returns the number of samples currently in the data."""
         return len(self.data.get('configs', []))
+
+
+def load_pickle_data(pfile: Path) -> List[SimulationResult]:
+    """
+    Loads a pickle file and converts its contents into a list of SimulationResult dataclasses.
+    This function handles the logic to reconstruct the dataclass from the stored dictionary format.
+    
+    Args:
+        pfile: Path to the pickle file to load
+        
+    Returns:
+        List of SimulationResult dataclasses, empty list if file is malformed or missing
+    """
+    try:
+        with open(pfile, 'rb') as f:
+            data = pickle.load(f)
+    except (pickle.UnpicklingError, EOFError, FileNotFoundError):
+        return []
+
+    results = []
+    
+    # Check for the expected dictionary structure
+    if not isinstance(data, dict) or not all(k in data for k in ['configs', 'line_ews', 'meta']):
+        print(f"Warning: Pickle file {pfile.name} has an unexpected format. Skipping.")
+        return []
+
+    n_samples = len(data.get('configs', []))
+    
+    # Get metadata, which should be consistent for all samples in the file
+    meta = data.get('meta', {})
+    config_keys = meta.get('config_keys', [])
+    snp_horiz = meta.get('snp_horiz', '')
+    n_ports = meta.get('n_ports', 0)
+    param_types = meta.get('param_types', [])
+
+    for i in range(n_samples):
+        try:
+            result = SimulationResult(
+                config_values=data['configs'][i],
+                config_keys=config_keys,
+                line_ews=data['line_ews'][i],
+                snp_drv=data['snp_drvs'][i],
+                snp_odt=data['snp_odts'][i],
+                directions=data['directions'][i],
+                snp_horiz=snp_horiz,
+                n_ports=n_ports,
+                param_types=param_types
+            )
+            results.append(result)
+        except (IndexError, KeyError) as e:
+            print(f"Warning: Skipping malformed sample {i} in {pfile.name} due to missing data: {e}")
+            continue
+            
+    return results

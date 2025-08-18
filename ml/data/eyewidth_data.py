@@ -17,6 +17,7 @@ from lightning.pytorch.utilities.rank_zero import rank_zero_info
 from ..utils.scaler import MinMaxScaler
 from .processors import CSVProcessor, TraceSequenceProcessor
 from simulation.parameters.bound_param import SampleResult, to_new_param_name
+from simulation.io.pickle_utils import load_pickle_data
 from common.signal_utils import read_snp, flip_snp
 
 def get_loader_from_dataset(
@@ -282,19 +283,19 @@ class TraceSeqEWDataloader(LightningDataModule):
         for name, csv_path in csv_paths.items():
             case_ids, input_arr = processor.parse(csv_path)
 
-            # Load labels
+            # Load labels using unified dataclass loading approach
             labels: dict[str, tuple] = {}
             for pkl_file in Path(self.label_dir, name).glob("*.pkl"):
-                with open(pkl_file, "rb") as f:
-                    loaded = pickle.load(f)
+                # Load data as list of SimulationResult dataclasses
+                results = load_pickle_data(pkl_file)
+                
+                if not results:
+                    rank_zero_info(f"Skipping malformed or empty pickle: {pkl_file.name}")
+                    continue
 
-                # Handle backward compatibility for data format
-                if 'meta' in loaded and 'snp_horiz' in loaded['meta']:
-                    # New format: metadata is nested
-                    snp_horiz_path = loaded['meta']['snp_horiz']
-                else:
-                    # Old format: metadata at top level
-                    snp_horiz_path = loaded.get('snp_horiz')
+                # Extract data from the first result to get metadata
+                first_result = results[0]
+                snp_horiz_path = first_result.snp_horiz
 
                 if not snp_horiz_path:
                     rank_zero_info(f"Skipping malformed pickle: {pkl_file.name} ('snp_horiz' not found).")
@@ -308,23 +309,45 @@ class TraceSeqEWDataloader(LightningDataModule):
                                    f"Skipping pickle file: {pkl_file.name}")
                     continue
 
+                # Convert dataclass results back to the format expected by the rest of the code
+                configs = []
+                directions_list = []
+                line_ews_list = []
+                snp_drvs = []
+                snp_odts = []
+
+                for result in results:
+                    # Convert config from keys+values back to dict format for backward compatibility
+                    config_dict = dict(zip(result.config_keys, result.config_values))
+                    if isinstance(config_dict, dict):
+                        config_dict = to_new_param_name(config_dict)
+                    configs.append(config_dict)
+                    
+                    directions_list.append(result.directions)
+                    line_ews_list.append(result.line_ews)
+                    snp_drvs.append(result.snp_drv)
+                    snp_odts.append(result.snp_odt)
+
                 # Handle SNP vertical data based on ignore_snp flag
                 if self.ignore_snp:
-                    snp_vert = (("dummy_drv.snp", "dummy_odt.snp"),) * len(loaded.get("directions", [0]))
+                    snp_vert = (("dummy_drv.snp", "dummy_odt.snp"),) * len(directions_list)
                 else:
-                    snp_vert = tuple(zip(loaded["snp_drvs"], loaded["snp_odts"]))
+                    snp_vert = tuple(zip(snp_drvs, snp_odts))
 
-                # Handle backward compatibility for boundary parameter names
-                configs = loaded["configs"]
-                if isinstance(configs, list) and configs and isinstance(configs[0], dict):
-                    configs = [to_new_param_name(c) for c in configs]
+                # Create metadata dict from the first result
+                meta = {
+                    'config_keys': first_result.config_keys,
+                    'snp_horiz': first_result.snp_horiz,
+                    'n_ports': first_result.n_ports,
+                    'param_types': first_result.param_types
+                }
 
                 labels[key] = (
                     configs,
-                    loaded["directions"],
-                    loaded["line_ews"],
+                    directions_list,
+                    line_ews_list,
                     snp_vert,
-                    loaded["meta"]
+                    meta
                 )
 
             # keep only indices present in labels

@@ -4,6 +4,8 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from pathlib import Path
+from typing import List
+from simulation.io.pickle_utils import SimulationResult
 
 # Try to import seaborn, make it optional
 try:
@@ -65,13 +67,15 @@ def compute_direction_stats_for_files(pickle_files_list: list[Path]) -> pd.DataF
         return pd.DataFrame(columns=['file','sample_idx','n_lines','block_size_estimate','is_valid_block_size','zeros','ones'])
     return pd.DataFrame(stats)
 
-def plot_eye_width_distributions(all_line_ews: list, output_dir: Path):
+def plot_eye_width_distributions(all_results: List[SimulationResult], output_dir: Path):
     """Generates and saves plots for eye-width distributions."""
-    if not all_line_ews:
+    if not all_results:
         print("No eye width data to plot.")
         return
 
-    line_ews_array = np.array(all_line_ews)
+    # Extract line_ews from the list of dataclasses
+    line_ews_array = np.array([res.line_ews for res in all_results])
+    
     fig, axes = plt.subplots(2, 2, figsize=(15, 10))
     
     # Overall distribution
@@ -116,7 +120,7 @@ def plot_eye_width_distributions(all_line_ews: list, output_dir: Path):
     plt.savefig(plot_path, dpi=300, bbox_inches='tight')
     print(f"\nDistribution plots saved to: {plot_path}")
 
-def generate_summary_report(pickle_dir: Path, pickle_files: list, all_data: dict, analysis_results: dict, output_dir: Path):
+def generate_summary_report(pickle_dir: Path, pickle_files: list, all_results: List[SimulationResult], analysis_results: dict, output_dir: Path):
     """Generates and saves a final summary report."""
     report = []
     report.append("EYE DIAGRAM TRAINING DATA SUMMARY REPORT")
@@ -128,17 +132,15 @@ def generate_summary_report(pickle_dir: Path, pickle_files: list, all_data: dict
     # Dataset overview
     report.append("DATASET OVERVIEW:")
     report.append(f"  Total pickle files: {len(pickle_files)}")
-    report.append(f"  Total samples: {len(all_data['configs'])}")
-    if len(all_data['configs']) > 0:
-        report.append(f"  Parameters per sample: {len(all_data['configs'][0])}")
-    if len(all_data['line_ews']) > 0:
-        line_ews_array = np.array(all_data['line_ews'])
-        report.append(f"  Lines per sample: {line_ews_array.shape[1] if line_ews_array.ndim > 1 else 1}")
+    report.append(f"  Total samples: {len(all_results)}")
+    if all_results:
+        report.append(f"  Parameters per sample: {len(all_results[0].config_values)}")
+        report.append(f"  Lines per sample: {len(all_results[0].line_ews)}")
     report.append("")
 
     # Eye width statistics
-    if len(all_data['line_ews']) > 0:
-        line_ews_array = np.array(all_data['line_ews'])
+    if all_results:
+        line_ews_array = np.array([res.line_ews for res in all_results])
         report.append("EYE WIDTH STATISTICS:")
         report.append(f"  Mean: {np.nanmean(line_ews_array):.3f}")
         report.append(f"  Std: {np.nanstd(line_ews_array):.3f}")

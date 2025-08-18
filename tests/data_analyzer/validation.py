@@ -6,9 +6,11 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from pathlib import Path
 
+from simulation.io.pickle_utils import SimulationResult, load_pickle_data
+
 # Try to import simulation functions for comparison
 try:
-    from simulation.engine.sparam_to_ew import snp_eyewidth_simulation as legacy_snp_eyewidth_simulation
+    from simulation.engine.sbr_simulator import snp_eyewidth_simulation as legacy_snp_eyewidth_simulation
     from simulation.parameters.bound_param import SampleResult
     VALIDATION_AVAILABLE = True
 except ImportError as e:
@@ -71,21 +73,28 @@ def run_validation(pickle_files: list, max_files: int, max_samples: int, output_
     for pfile in validation_files:
         print(f"\nValidating {pfile.name}...")
         try:
-            with open(pfile, 'rb') as f:
-                data = pickle.load(f)
-            
-            n_samples = len(data.get('configs', []))
-            sample_indices = list(range(0, min(max_samples, n_samples)))
+            results = load_pickle_data(pfile)
+            if not results:
+                continue
 
-            for sample_idx in sample_indices:
+            n_samples_to_validate = min(max_samples, len(results))
+            samples_to_validate = random.sample(results, n_samples_to_validate)
+
+            for sample in samples_to_validate:
                 try:
-                    pickle_ew = np.array(data['line_ews'][sample_idx])
-                    directions = np.array(data['directions'][sample_idx])
-                    snp_drv, snp_odt = get_snp_file_paths(data, sample_idx)
-                    config = reconstruct_config(data, sample_idx)
+                    # Reconstruct config from dataclass
+                    config_dict = dict(zip(sample.config_keys, sample.config_values))
+                    config = SampleResult.from_dict(config_dict)
                     legacy_config = convert_config_to_legacy_format(config)
                     
-                    sim_result = legacy_snp_eyewidth_simulation(legacy_config, (data['meta']['snp_horiz'], snp_drv, snp_odt), directions)
+                    # Get SNP file paths from dataclass
+                    snp_horiz = sample.snp_horiz
+                    snp_drv = Path(sample.snp_drv)
+                    snp_odt = Path(sample.snp_odt)
+                    directions = np.array(sample.directions)
+                    pickle_ew = np.array(sample.line_ews)
+
+                    sim_result = legacy_snp_eyewidth_simulation(legacy_config, (snp_horiz, snp_drv, snp_odt), directions)
                     simulated_ew = np.array(sim_result[0] if isinstance(sim_result, tuple) else sim_result)
                     
                     diff = simulated_ew - pickle_ew
@@ -93,14 +102,13 @@ def run_validation(pickle_files: list, max_files: int, max_samples: int, output_
                     
                     detailed_results.append({
                         'file_name': pfile.name,
-                        'sample_index': sample_idx,
                         'pickle_ew': pickle_ew,
                         'simulated_ew': simulated_ew,
                         'differences': diff,
                         'relative_errors': rel_error
                     })
                 except Exception as e:
-                    print(f"    Error in simulation for sample {sample_idx}: {e}")
+                    print(f"    Error in simulation for a sample: {e}")
         except Exception as e:
             print(f"Error processing {pfile.name}: {e}")
 

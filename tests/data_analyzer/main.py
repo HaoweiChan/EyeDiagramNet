@@ -4,6 +4,7 @@ from pathlib import Path
 from datetime import datetime
 
 from . import analysis, cleaning, validation
+from simulation.io.pickle_utils import load_pickle_data
 
 def main():
     parser = argparse.ArgumentParser(description="A comprehensive tool to analyze, clean, and validate training pickle data.")
@@ -42,24 +43,18 @@ def main():
         return
 
     if args.command == "analyze":
-        # Load all data for analysis
-        all_data = {'configs': [], 'line_ews': [], 'directions': []}
+        # Load all data for analysis using the new dataclass loader
+        all_results = []
         file_stats = []
         for pfile in pickle_files:
-            try:
-                with open(pfile, 'rb') as f:
-                    data = pickle.load(f)
-                n_samples = len(data.get('configs', []))
-                file_stats.append({'file': pfile.name, 'samples': n_samples})
-                if data.get('configs'): all_data['configs'].extend(data['configs'])
-                if data.get('line_ews'): all_data['line_ews'].extend(data['line_ews'])
-                if data.get('directions'): all_data['directions'].extend(data['directions'])
-            except Exception as e:
-                print(f"Could not load {pfile.name}: {e}")
+            results = load_pickle_data(pfile)
+            if results:
+                all_results.extend(results)
+                file_stats.append({'file': pfile.name, 'samples': len(results)})
         
         analysis_results = {'file_stats': file_stats}
-        analysis.plot_eye_width_distributions(all_data['line_ews'], output_dir)
-        analysis.generate_summary_report(pickle_dir, pickle_files, all_data, analysis_results, output_dir)
+        analysis.plot_eye_width_distributions(all_results, output_dir)
+        analysis.generate_summary_report(pickle_dir, pickle_files, all_results, analysis_results, output_dir)
 
     elif args.command == "clean":
         print("\nCleaning pickle files...")

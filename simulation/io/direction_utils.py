@@ -8,8 +8,6 @@ import numpy as np
 import warnings
 from typing import List
 
-from simulation.parameters.param_utils import get_valid_block_sizes
-
 
 def get_valid_block_sizes(n_lines: int) -> List[int]:
     """
@@ -199,11 +197,11 @@ if __name__ == "__main__":
         # Run demo
         demo_direction_generation()
         
-        print("\n✅ All tests and demonstrations completed successfully!")
+        print("\nAll tests and demonstrations completed successfully!")
         sys.exit(0)
         
     except Exception as e:
-        print(f"\n❌ Test failed with error: {e}")
+        print(f"\nTest failed with error: {e}")
         import traceback
         traceback.print_exc()
         sys.exit(1)
