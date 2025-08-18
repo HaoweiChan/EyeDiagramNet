@@ -13,19 +13,20 @@ dataset:
     pattern2_emib_9mi_0124: /proj/siaiadm/AI_training_data/D2D/UCIe_Trace/pattern2/emib_9mi_0124
     pattern2_emib_10mi_0124: /proj/siaiadm/AI_training_data/D2D/UCIe_Trace/pattern2/emib_10mi_0124
 
-  vertical_dataset:
-    - /proj/siaiadm/AI_training_data/D2D/vertical/snp_for_UCIE_20250121
-    - /proj/siaiadm/AI_training_data/D2D/from_enzo
+  vertical_dataset: null
+    # - /proj/siaiadm/AI_training_data/D2D/vertical/snp_for_UCIE_20250121
+    # - /proj/siaiadm/AI_training_data/D2D/from_enzo
 
 # Data configuration
 data:
   trace_pattern: pattern2_cowos_8mi
-  output_dir: "/proj/siaiadm/ew_predictor/data/"
+  output_dir: "/proj/siaiadm/ew_predictor/data/sbr/naive"
 
 # Boundary parameter configuration
 boundary:
-  param_type: MIX_PARAMS,CTLE_PARAMS
-  max_samples: 50
+  param_type: MIX_PARAMS
+  # param_type: MIX_PARAMS,CTLE_PARAMS
+  max_samples: 10
   enable_direction: false
   enable_inductance: false
 
