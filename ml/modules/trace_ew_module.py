@@ -94,10 +94,12 @@ class TraceEWModule(LightningModule):
         self.model = model
         self.train_step_outputs = {}
         self.val_step_outputs = {}
+        self.test_step_outputs = {}
 
         self.metrics = nn.ModuleDict({
             "train_": self.metrics_factory(),
             "val": self.metrics_factory(),
+            "test": self.metrics_factory(),
         })
         self.ew_scaler = torch.tensor(self.hparams.ew_scaler)
         # Pre-compute inverse and log for efficiency - avoid repeated divisions
@@ -118,6 +120,14 @@ class TraceEWModule(LightningModule):
             loader = self.trainer.datamodule.train_dataloader()
             # Since train_dataset is a dict, we can grab the first one.
             self.config_keys = next(iter(self.trainer.datamodule.train_dataset.values())).config_keys
+        elif stage == 'test':
+            loader = self.trainer.datamodule.test_dataloader()
+            # Since test_dataset is a dict, we can grab the first one.
+            self.config_keys = next(iter(self.trainer.datamodule.test_dataset.values())).config_keys
+        elif stage == 'validate':
+            loader = self.trainer.datamodule.val_dataloader()
+            # Since val_dataset is a dict, we can grab the first one.
+            self.config_keys = next(iter(self.trainer.datamodule.val_dataset.values())).config_keys
         else:
             loader = self.trainer.datamodule.predict_dataloader()
             self.config_keys = self.trainer.datamodule.boundary.to_dict().keys()
@@ -315,6 +325,9 @@ class TraceEWModule(LightningModule):
 
     def validation_step(self, batch, batch_idx, dataloader_idx=0):
         return self.step(batch, batch_idx, "val", dataloader_idx)
+    
+    def test_step(self, batch, batch_idx, dataloader_idx=0):
+        return self.step(batch, batch_idx, "test", dataloader_idx)
 
     def on_train_epoch_end(self):
         log_metrics = self.compute_metrics("train_")
@@ -328,6 +341,12 @@ class TraceEWModule(LightningModule):
         for dataloader_idx, outputs in self.val_step_outputs.items():
             self.plot_metrics_curve("val", log_metrics, outputs[0], dataloader_idx)
         self.val_step_outputs.clear()
+    
+    def on_test_epoch_end(self):
+        log_metrics = self.compute_metrics("test")
+        for dataloader_idx, outputs in self.test_step_outputs.items():
+            self.plot_metrics_curve("test", log_metrics, outputs[0], dataloader_idx)
+        self.test_step_outputs.clear()
 
     ############################ INFERENCE ############################
 
@@ -524,12 +543,16 @@ class TraceEWModule(LightningModule):
 
             if stage == "train_":
                 self.train_step_outputs.setdefault(name, []).append(log_extras)
-            else:
+            elif stage == "val":
                 self.val_step_outputs.setdefault(name, []).append(log_extras)
+            elif stage == "test":
+                self.test_step_outputs.setdefault(name, []).append(log_extras)
 
     def get_output_steps(self, stage):
         if stage == "train_":
             max_batches = self.trainer.num_training_batches
+        elif stage == "test":
+            max_batches = getattr(self.trainer, 'num_test_batches')[0]
         else:
             max_batches = getattr(self.trainer, f'num_{stage}_batches')[0]
         return (self.current_epoch * max_batches, max_batches - 1)

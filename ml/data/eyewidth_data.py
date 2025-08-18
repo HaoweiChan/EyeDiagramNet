@@ -262,6 +262,7 @@ class TraceSeqEWDataloader(LightningDataModule):
         # containers for datasets per "name"
         self.train_dataset: dict[str, TraceEWDataset] = {}
         self.val_dataset: dict[str, TraceEWDataset] = {}
+        self.test_dataset: dict[str, TraceEWDataset] = {}
 
     def setup(self, stage: str | None = None, nan: int = -1):
         # Scalers
@@ -378,8 +379,31 @@ class TraceSeqEWDataloader(LightningDataModule):
 
             rank_zero_info(f"{name}| input_seq {input_arr.shape} | eye_width {eye_widths.shape} | ignore_snp={self.ignore_snp}")
 
-            # train/val split
+            # train/val/test split
             indices = np.arange(len(input_arr))
+            
+            # For test stage, use the entire dataset as test set
+            if stage == "test":
+                test_idx = indices
+                x_seq_test = input_arr[test_idx]
+                x_tok_test = directions[test_idx]
+                x_fix_test = boundaries[test_idx]
+                x_vert_test = snp_paths[test_idx]
+                y_test = eye_widths[test_idx]
+                metas_test = metas[test_idx]
+                
+                # Create test dataset
+                self.test_dataset[name] = TraceEWDataset(
+                    x_seq_test, x_tok_test, x_fix_test, x_vert_test, y_test, metas_test, train=False, ignore_snp=self.ignore_snp
+                )
+                # Apply scaling if scalers are available
+                if hasattr(self, 'seq_scaler') and hasattr(self, 'fix_scaler'):
+                    self.test_dataset[name] = self.test_dataset[name].transform(
+                        self.seq_scaler, self.fix_scaler
+                    )
+                continue
+            
+            # Standard train/val split for other stages
             train_idx, val_idx = train_test_split(
                 indices, test_size=self.test_size, shuffle=True, random_state=42
             )
@@ -442,6 +466,14 @@ class TraceSeqEWDataloader(LightningDataModule):
         loaders = {
             name: get_loader_from_dataset(ds, batch_size=per_loader_bs, shuffle=False)
             for name, ds in self.val_dataset.items()
+        }
+        return CombinedLoader(loaders, mode="min_size")
+    
+    def test_dataloader(self):
+        per_loader_bs = int(self.batch_size * 1.6 / max(1, len(self.test_dataset)))
+        loaders = {
+            name: get_loader_from_dataset(ds, batch_size=per_loader_bs, shuffle=False)
+            for name, ds in self.test_dataset.items()
         }
         return CombinedLoader(loaders, mode="min_size")
 
