@@ -1,0 +1,69 @@
+# lightning.pytorch==2.5.1.post0
+seed_everything: true
+trainer:
+  accelerator: gpu
+  strategy: ddp
+  devices: 1
+  num_nodes: 1
+  precision: 16-mixed
+  fast_dev_run: true
+  logger:
+    - class_path: lightning.pytorch.loggers.TensorBoardLogger
+      init_args:
+        save_dir: ./tests/
+        name: ew_xfmr
+  callbacks:
+    - class_path: lightning.pytorch.callbacks.ModelSummary
+      init_args:
+        max_depth: 3
+    - class_path: lightning.pytorch.callbacks.LearningRateMonitor
+      init_args:
+        logging_interval: step
+    - class_path: ml.callbacks.dynamic_threshold.DynamicThresholdOptimizer
+      init_args:
+        warm_up_epochs: 3
+        update_frequency: 1
+        grid_size: 101
+    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+      init_args:
+        filename: 'ew-xfmr-epoch{epoch}-mae{hp_metric:.2f}'
+        auto_insert_metric_name: false
+        monitor: hp_metric
+        mode: min
+        save_last: true
+        enable_version_counter: true
+
+model:
+  class_path: ml.modules.trace_ew_module.TraceEWModule
+  init_args:
+    ckpt_path: null
+    strict: false
+    ew_scaler: 100
+    ew_threshold: 0.3
+    compile_model: false
+    use_laplace_on_fit_end: false
+    ignore_snp: false
+    predict_logvar: false
+    model:
+      class_path: ml.models.eyewidth_model.EyeWidthRegressor
+      init_args:
+        num_types: 3 # (S, G, D)
+        model_dim: 384
+        num_heads: 2
+        num_layers: 2
+        freq_length: 32
+        dropout: 0.1
+        use_gradient_checkpointing: false
+        pretrained_snp_path: null
+        freeze_snp_encoder: false
+
+data:
+  class_path: ml.data.eyewidth_data.TraceSeqEWDataloader
+  init_args:
+    data_dirs:
+      5mi: /proj/siaiadm/ew_predictor/test_data/sub_task/trace_input/5mi
+      8mi: /proj/siaiadm/ew_predictor/test_data/sub_task/trace_input/8mi
+      9mi: /proj/siaiadm/ew_predictor/test_data/sub_task/trace_input/9mi
+    label_dir: /proj/siaiadm/ew_predictor/data/sbr/test
+    batch_size: 100
+    test_size: 0.5
