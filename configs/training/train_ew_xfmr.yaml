@@ -77,7 +77,6 @@ model:
     compile_model: false
     use_laplace_on_fit_end: false
     ignore_snp: true
-    predict_logvar: false
     model:
       class_path: ml.models.eyewidth_model.EyeWidthRegressor
       init_args:
