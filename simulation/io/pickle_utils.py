@@ -123,12 +123,23 @@ def load_pickle_data(pfile: Path) -> List[SimulationResult]:
 
     for i in range(n_samples):
         try:
+            # Handle both new and legacy naming conventions for SNP files
+            if 'snp_drvs' in data and 'snp_odts' in data:
+                snp_drv = data['snp_drvs'][i]
+                snp_odt = data['snp_odts'][i]
+            elif 'snp_txs' in data and 'snp_rxs' in data:
+                # Legacy format - map to new naming
+                snp_drv = data['snp_txs'][i]
+                snp_odt = data['snp_rxs'][i]
+            else:
+                raise KeyError("No SNP file paths found in data (neither new nor legacy format)")
+            
             result = SimulationResult(
                 config_values=data['configs'][i],
                 config_keys=config_keys,
                 line_ews=data['line_ews'][i],
-                snp_drv=data['snp_drvs'][i],
-                snp_odt=data['snp_odts'][i],
+                snp_drv=snp_drv,
+                snp_odt=snp_odt,
                 directions=data['directions'][i],
                 snp_horiz=snp_horiz,
                 n_ports=n_ports,

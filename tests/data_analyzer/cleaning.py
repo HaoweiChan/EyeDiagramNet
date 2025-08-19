@@ -44,7 +44,20 @@ def clean_pickle_file_inplace(pfile: Path, block_size: int = None, remove_block_
     Filters samples in a pickle file based on direction block size.
     The file is overwritten in-place with the cleaned data, preserving the original format.
     A backup of the original file is created with a .bak extension.
+    
+    Note: If the input file uses legacy format (snp_txs/snp_rxs), it will be 
+    automatically converted to the new format (snp_drvs/snp_odts) when saved.
     """
+    # Check if the original file uses legacy format before loading
+    legacy_format_detected = False
+    try:
+        with open(pfile, 'rb') as f:
+            raw_data = pickle.load(f)
+        if isinstance(raw_data, dict) and 'snp_txs' in raw_data and 'snp_rxs' in raw_data:
+            legacy_format_detected = True
+    except Exception:
+        pass  # Will be handled by load_pickle_data
+    
     # Load data using the standardized dataclass loader
     results = load_pickle_data(pfile)
     n_samples_before = len(results)
@@ -95,5 +108,9 @@ def clean_pickle_file_inplace(pfile: Path, block_size: int = None, remove_block_
         data_writer.add_result(result)
     
     data_writer.save()
+    
+    # Report legacy format conversion if applicable
+    if legacy_format_detected:
+        print(f"Note: Converted {pfile.name} from legacy format (snp_txs/snp_rxs) to new format (snp_drvs/snp_odts)")
 
     return n_samples_before, num_removed

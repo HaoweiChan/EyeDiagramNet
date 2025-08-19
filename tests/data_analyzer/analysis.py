@@ -25,6 +25,40 @@ except ImportError:
 
 from .cleaning import estimate_block_size
 
+def detect_legacy_format_files(pickle_files_list: list[Path]) -> dict:
+    """Detect which pickle files use legacy naming conventions."""
+    legacy_stats = {
+        'legacy_files': 0,
+        'new_format_files': 0,
+        'malformed_files': 0,
+        'legacy_file_names': []
+    }
+    
+    for pfile in pickle_files_list:
+        try:
+            with open(pfile, 'rb') as f:
+                data = pickle.load(f)
+        except Exception:
+            legacy_stats['malformed_files'] += 1
+            continue
+            
+        # Check for legacy vs new format
+        if isinstance(data, dict):
+            has_legacy = 'snp_txs' in data and 'snp_rxs' in data
+            has_new = 'snp_drvs' in data and 'snp_odts' in data
+            
+            if has_legacy and not has_new:
+                legacy_stats['legacy_files'] += 1
+                legacy_stats['legacy_file_names'].append(pfile.name)
+            elif has_new:
+                legacy_stats['new_format_files'] += 1
+            else:
+                legacy_stats['malformed_files'] += 1
+        else:
+            legacy_stats['malformed_files'] += 1
+    
+    return legacy_stats
+
 warnings.filterwarnings('ignore')
 plt.style.use('default')
 plt.rcParams['figure.figsize'] = (12, 8)
@@ -129,6 +163,9 @@ def generate_summary_report(pickle_dir: Path, pickle_files: list, all_results: L
     report.append(f"Data directory: {pickle_dir}")
     report.append("")
 
+    # Detect legacy format files
+    legacy_stats = detect_legacy_format_files(pickle_files)
+    
     # Dataset overview
     report.append("DATASET OVERVIEW:")
     report.append(f"  Total pickle files: {len(pickle_files)}")
@@ -136,6 +173,16 @@ def generate_summary_report(pickle_dir: Path, pickle_files: list, all_results: L
     if all_results:
         report.append(f"  Parameters per sample: {len(all_results[0].config_values)}")
         report.append(f"  Lines per sample: {len(all_results[0].line_ews)}")
+    report.append("")
+    
+    # Data format analysis
+    report.append("DATA FORMAT ANALYSIS:")
+    report.append(f"  New format files (snp_drvs/snp_odts): {legacy_stats['new_format_files']}")
+    report.append(f"  Legacy format files (snp_txs/snp_rxs): {legacy_stats['legacy_files']}")
+    report.append(f"  Malformed files: {legacy_stats['malformed_files']}")
+    if legacy_stats['legacy_files'] > 0:
+        report.append(f"  Legacy files found: {', '.join(legacy_stats['legacy_file_names'][:5])}" + 
+                      (f" and {len(legacy_stats['legacy_file_names']) - 5} more..." if len(legacy_stats['legacy_file_names']) > 5 else ""))
     report.append("")
 
     # Eye width statistics
