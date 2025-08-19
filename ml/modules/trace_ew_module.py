@@ -105,15 +105,9 @@ class TraceEWModule(LightningModule):
         # Pre-compute inverse and log for efficiency - avoid repeated divisions
         self.ew_scaler_inv = torch.tensor(1.0 / self.hparams.ew_scaler)
         self.log_ew_scaler = torch.log(self.ew_scaler)
-        # self.weighted_loss = UncertaintyWeightedLoss(['nll', 'bce'])
-        self.weighted_loss = LearnableLossWeighting(['bce', 'min_loss', 'trace_loss'])
+        # self.weighted_loss = LearnableLossWeighting(['bce', 'min_loss', 'trace_loss'])
+        self.weighted_loss = LearnableLossWeighting(['bce', 'trace_loss'])
         
-        # NOTE: GradNormLossBalancer uses second-order gradients which are incompatible 
-        # with torch.compile. If you want to use torch.compile, switch to:
-        # self.weighted_loss = LearnableLossWeighting(['nll', 'bce'])  # Simple learnable weights
-        # or
-        # self.weighted_loss = UncertaintyWeightedLoss(['nll', 'bce'])  # Uncertainty weighting
-
     def setup(self, stage=None):
         # Warm up the model by performing a dummy forward pass
         if stage in ('fit', None):
@@ -416,14 +410,14 @@ class TraceEWModule(LightningModule):
         pred_ew, pred_logits = self(
             item.trace_seq, item.direction, item.boundary, item.snp_vert
         )
-        pred_prob = torch.sigmoid(pred_logits)
 
         # Fallback to eager outputs for metric display when Laplace not used
         if pred_ew_eval is None:
+            pred_prob = torch.sigmoid(pred_logits)
             pred_ew_eval, pred_prob_eval = pred_ew, pred_prob
 
         return {
-            "train": (pred_ew, pred_prob),
+            "train": (pred_ew, pred_logits),
             "eval": (pred_ew_eval, pred_prob_eval)
         }
 
@@ -442,7 +436,8 @@ class TraceEWModule(LightningModule):
 
     def _compute_loss(self, item: "BatchItem", forward_out):
         """Calculate composite loss and prepare everything needed for metric updates."""
-        pred_ew, pred_prob = forward_out["train"]
+        pred_ew, pred_logits = forward_out["train"]
+        pred_prob = torch.sigmoid(pred_logits)
 
         # --- classification helpers --------------------------------------------------
         true_prob = (item.true_ew > 0).float()
@@ -453,22 +448,22 @@ class TraceEWModule(LightningModule):
         
         # Per-design softmin and true min
         # pred_ew is (B, L), so we reduce along L (dim=1)
-        softmin_pred_ew = losses.softmin(ew_eff, tau=tau_m, dim=1)
-        min_true_ew = torch.min(item.true_ew, dim=1).values
+        # softmin_pred_ew = losses.softmin(ew_eff, tau=tau_m, dim=1)
+        # min_true_ew = torch.min(item.true_ew, dim=1).values
         
         # Min-value prediction loss
-        min_loss = F.smooth_l1_loss(softmin_pred_ew, min_true_ew)
+        # min_loss = F.smooth_l1_loss(softmin_pred_ew, min_true_ew)
 
         # Per-trace prediction loss
         trace_loss = F.mse_loss(ew_eff, item.true_ew)
         
         # --- Original classification loss ---------------------------------------------
-        bce_loss = F.binary_cross_entropy_with_logits(pred_prob, true_prob)
+        bce_loss = F.binary_cross_entropy_with_logits(pred_logits, true_prob)
 
         # --- Combine losses -----------------------------------------------------------
         loss = self.weighted_loss({
             'bce': bce_loss,
-            'min_loss': min_loss,
+            # 'min_loss': min_loss,
             'trace_loss': trace_loss
         })
 
@@ -509,8 +504,8 @@ class TraceEWModule(LightningModule):
         # Reshape boundary data for inverse transform
         boundary_reshaped = boundary_cpu.reshape(-1, boundary_cpu.shape[-1])
         
-        # Apply inverse transform (assuming scaler works on numpy)
-        boundary_inverse = fix_scaler.inverse_transform(boundary_reshaped.numpy())
+        # Apply inverse transform
+        boundary_inverse = fix_scaler.inverse_transform(boundary_reshaped)
         
         # It's safer to check for scaler.nan's type, but assuming it's a float/int
         nan_val = getattr(fix_scaler, 'nan', None)
