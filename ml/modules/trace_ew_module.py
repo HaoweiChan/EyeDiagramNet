@@ -512,17 +512,13 @@ class TraceEWModule(LightningModule):
         # Apply inverse transform (assuming scaler works on numpy)
         boundary_inverse = fix_scaler.inverse_transform(boundary_reshaped.numpy())
         
-        # Handle nan values - convert scaler.nan to torch.nan
-        # Create a tensor from the numpy array to perform this operation
-        boundary_inverse_torch = torch.from_numpy(boundary_inverse)
-        
         # It's safer to check for scaler.nan's type, but assuming it's a float/int
         nan_val = getattr(fix_scaler, 'nan', None)
         if nan_val is not None:
-            boundary_inverse_torch[boundary_inverse_torch == nan_val] = torch.nan
+            boundary_inverse[boundary_inverse == nan_val] = torch.nan
         
         # Reshape back to original shape
-        boundary_inverse_reshaped = boundary_inverse_torch.reshape(boundary_cpu.shape)
+        boundary_inverse_reshaped = boundary_inverse.reshape(boundary_cpu.shape)
         
         # Convert to proper format for meta - create boundary dict for each item in batch
         boundary_dicts = []

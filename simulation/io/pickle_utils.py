@@ -151,3 +151,111 @@ def load_pickle_data(pfile: Path) -> List[SimulationResult]:
             continue
             
     return results
+
+
+def load_pickle_directory(label_dir: Path, dataset_name: str, config_keys: list = None) -> dict:
+    """
+    Load and process all pickle files from a directory for a specific dataset.
+    
+    Args:
+        label_dir: Path to the directory containing pickle files
+        dataset_name: Name of the dataset subdirectory 
+        config_keys: Optional list of config keys for structured array conversion
+        
+    Returns:
+        Dictionary mapping case_ids to processed data tuples containing:
+        (configs, directions_list, line_ews_list, snp_vert, meta)
+    """
+    from simulation.parameters.bound_param import SampleResult, to_new_param_name
+    
+    labels = {}
+    
+    for pkl_file in Path(label_dir, dataset_name).glob("*.pkl"):
+        # Load data as list of SimulationResult dataclasses
+        results = load_pickle_data(pkl_file)
+        
+        if not results:
+            print(f"Warning: Skipping malformed or empty pickle: {pkl_file.name}")
+            continue
+
+        # Extract data from the first result to get metadata
+        first_result = results[0]
+        snp_horiz_path = first_result.snp_horiz
+
+        if not snp_horiz_path:
+            print(f"Warning: Skipping malformed pickle: {pkl_file.name} ('snp_horiz' not found).")
+            continue
+
+        # The key must match the case_id from the CSV file
+        try:
+            key = int(Path(snp_horiz_path).stem.replace("-", "_").split("_")[-1].split(".")[0])
+        except (ValueError, IndexError):
+            print(f"Warning: Could not parse case ID from snp_horiz: '{snp_horiz_path}'. "
+                   f"Skipping pickle file: {pkl_file.name}")
+            continue
+
+        # Convert dataclass results to the format expected by downstream code
+        configs = []
+        directions_list = []
+        line_ews_list = []
+        snp_drvs = []
+        snp_odts = []
+
+        for result in results:
+            # Convert config from keys+values back to dict format for backward compatibility
+            config_dict = dict(zip(result.config_keys, result.config_values))
+            if isinstance(config_dict, dict):
+                config_dict = to_new_param_name(config_dict)
+            configs.append(config_dict)
+            
+            directions_list.append(result.directions)
+            line_ews_list.append(result.line_ews)
+            snp_drvs.append(result.snp_drv)
+            snp_odts.append(result.snp_odt)
+
+        # Create SNP vertical data tuple
+        snp_vert = tuple(zip(snp_drvs, snp_odts))
+
+        # Create metadata dict from the first result
+        meta = {
+            'config_keys': first_result.config_keys,
+            'snp_horiz': first_result.snp_horiz,
+            'n_ports': first_result.n_ports,
+            'param_types': first_result.param_types
+        }
+
+        labels[key] = (
+            configs,
+            directions_list,
+            line_ews_list,
+            snp_vert,
+            meta
+        )
+    
+    return labels
+
+
+def convert_configs_to_boundaries(configs_list: list, config_keys: list):
+    """
+    Convert a list of config dictionaries to structured boundary arrays.
+    
+    Args:
+        configs_list: List of lists of config dictionaries
+        config_keys: List of parameter keys for structured array conversion
+        
+    Returns:
+        List of lists of structured numpy arrays
+    """
+    from simulation.parameters.bound_param import SampleResult
+    
+    boundaries_list = []
+    for configs in configs_list:
+        # Convert each list of config dicts to structured arrays
+        sample_boundaries = []
+        for config_dict in configs:
+            # Convert dict to SampleResult and then to structured array
+            sample_result = SampleResult.from_dict(config_dict)
+            sample_boundaries.append(sample_result.to_structured_array(config_keys))
+        boundaries_list.append(sample_boundaries)
+    
+    return boundaries_list

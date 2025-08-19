@@ -17,7 +17,7 @@ from lightning.pytorch.utilities.rank_zero import rank_zero_info
 from ..utils.scaler import MinMaxScaler
 from .processors import CSVProcessor, TraceSequenceProcessor
 from simulation.parameters.bound_param import SampleResult, to_new_param_name
-from simulation.io.pickle_utils import load_pickle_data
+from simulation.io.pickle_utils import load_pickle_data, load_pickle_directory, convert_configs_to_boundaries
 from common.signal_utils import read_snp, flip_snp
 
 def get_loader_from_dataset(
@@ -284,72 +284,14 @@ class TraceSeqEWDataloader(LightningDataModule):
         for name, csv_path in csv_paths.items():
             case_ids, input_arr = processor.parse(csv_path)
 
-            # Load labels using unified dataclass loading approach
-            labels: dict[str, tuple] = {}
-            for pkl_file in Path(self.label_dir, name).glob("*.pkl"):
-                # Load data as list of SimulationResult dataclasses
-                results = load_pickle_data(pkl_file)
-                
-                if not results:
-                    rank_zero_info(f"Skipping malformed or empty pickle: {pkl_file.name}")
-                    continue
-
-                # Extract data from the first result to get metadata
-                first_result = results[0]
-                snp_horiz_path = first_result.snp_horiz
-
-                if not snp_horiz_path:
-                    rank_zero_info(f"Skipping malformed pickle: {pkl_file.name} ('snp_horiz' not found).")
-                    continue
-
-                # The key must match the case_id from the CSV file
-                try:
-                    key = int(Path(snp_horiz_path).stem.replace("-", "_").split("_")[-1].split(".")[0])
-                except (ValueError, IndexError):
-                    rank_zero_info(f"Could not parse case ID from snp_horiz: '{snp_horiz_path}'. "
-                                   f"Skipping pickle file: {pkl_file.name}")
-                    continue
-
-                # Convert dataclass results back to the format expected by the rest of the code
-                configs = []
-                directions_list = []
-                line_ews_list = []
-                snp_drvs = []
-                snp_odts = []
-
-                for result in results:
-                    # Convert config from keys+values back to dict format for backward compatibility
-                    config_dict = dict(zip(result.config_keys, result.config_values))
-                    if isinstance(config_dict, dict):
-                        config_dict = to_new_param_name(config_dict)
-                    configs.append(config_dict)
-                    
-                    directions_list.append(result.directions)
-                    line_ews_list.append(result.line_ews)
-                    snp_drvs.append(result.snp_drv)
-                    snp_odts.append(result.snp_odt)
-
-                # Handle SNP vertical data based on ignore_snp flag
-                if self.ignore_snp:
-                    snp_vert = (("dummy_drv.snp", "dummy_odt.snp"),) * len(directions_list)
-                else:
-                    snp_vert = tuple(zip(snp_drvs, snp_odts))
-
-                # Create metadata dict from the first result
-                meta = {
-                    'config_keys': first_result.config_keys,
-                    'snp_horiz': first_result.snp_horiz,
-                    'n_ports': first_result.n_ports,
-                    'param_types': first_result.param_types
-                }
-
-                labels[key] = (
-                    configs,
-                    directions_list,
-                    line_ews_list,
-                    snp_vert,
-                    meta
-                )
+            # Load labels using unified pickle directory loader
+            labels = load_pickle_directory(self.label_dir, name)
+            
+            # Handle SNP vertical data based on ignore_snp flag if needed
+            if self.ignore_snp:
+                for key, (configs, directions_list, line_ews_list, snp_vert, meta) in labels.items():
+                    dummy_snp_vert = (("dummy_drv.snp", "dummy_odt.snp"),) * len(directions_list)
+                    labels[key] = (configs, directions_list, line_ews_list, dummy_snp_vert, meta)
 
             # keep only indices present in labels
             label_keys = set(labels.keys())
@@ -369,7 +311,12 @@ class TraceSeqEWDataloader(LightningDataModule):
             sorted_vals = [sorted_vals[i] for i in keep_indices]
             input_arr = input_arr[keep_indices]
 
-            boundaries_list, directions_list, eye_widths_list, snp_paths_list, metas_list = zip(*sorted_vals)
+            configs_list, directions_list, eye_widths_list, snp_paths_list, metas_list = zip(*sorted_vals)
+            
+            # Convert config dictionaries to structured boundary arrays using utility function
+            config_keys = metas_list[0]['config_keys']
+            boundaries_list = convert_configs_to_boundaries(configs_list, config_keys)
+            
             boundaries, directions, eye_widths = map(
                 np.array, (boundaries_list, directions_list, eye_widths_list)
             )
