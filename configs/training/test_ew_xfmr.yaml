@@ -17,7 +17,7 @@ trainer:
 model:
   class_path: ml.modules.trace_ew_module.TraceEWModule
   init_args:
-    ckpt_path: null  # Will be set via command line --ckpt_path
+    ckpt_path: ./saved/ew_xfmr/version_23/checkpoints/last.ckpt 
     use_laplace_on_fit_end: false  # Disable Laplace for testing
     compile_model: false  # Disable compilation for testing
 

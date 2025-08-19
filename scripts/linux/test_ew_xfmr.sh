@@ -18,17 +18,11 @@ setenv TORCH_SHOW_CPP_STACKTRACES 0
 setenv OMP_NUM_THREADS 4
 setenv MKL_NUM_THREADS 4
 
-if ($#argv == 0) then
-    echo "Usage: $0 <path_to_model_checkpoint>"
-    exit 1
-endif
-
 echo "Starting model testing with performance settings..."
 
 bhosts GPU_3090_4
 set python_cmd = ( \
     python3 -m ml.trainer test --config configs/training/test_ew_xfmr.yaml \
-    --model.init_args.ckpt_path $1 \
     --trainer.num_nodes 1 \
 )
 

@@ -26,11 +26,19 @@ class ConfigProcessor:
     
     def process_test_config(self):
         """Process configuration for test mode - load training config from checkpoint."""
-        if not (hasattr(self.sub_config, 'ckpt_path') and self.sub_config.ckpt_path):
+        # Get ckpt_path from model.init_args.ckpt_path
+        ckpt_path = None
+        if (hasattr(self.sub_config, 'model') and 
+            hasattr(self.sub_config.model, 'init_args') and 
+            hasattr(self.sub_config.model.init_args, 'ckpt_path')):
+            ckpt_path = self.sub_config.model.init_args.ckpt_path
+        
+        if not ckpt_path:
+            print("No checkpoint path found in test config")
             return
             
-        ckpt = torch.load(self.sub_config.ckpt_path, map_location="cpu")
-        print(f"Loading training config from checkpoint: {self.sub_config.ckpt_path}")
+        ckpt = torch.load(ckpt_path, map_location="cpu")
+        print(f"Loading training config from checkpoint: {ckpt_path}")
         
         if "hyper_parameters" not in ckpt:
             print("Warning: No hyper_parameters found in checkpoint")
