@@ -1286,9 +1286,9 @@ def snp_eyewidth_simulation(config, snp_files=None, directions=None, use_optimiz
 
 def main():
     try:
-        from simulation.parameters.bound_param import SampleResult
+        from common.param_types import SampleResult
     except ImportError:
-        print("Error: Could not import SampleResult from simulation.parameters.bound_param")
+        print("Error: Could not import SampleResult from common.param_types")
         raise
     
     script_dir = os.path.dirname(os.path.abspath(__file__))

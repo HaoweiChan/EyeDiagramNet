@@ -69,12 +69,12 @@ optimize_blas_for_sequential(num_threads=_thread_args.num_threads)
 
 # Now import numerical libraries with optimized settings
 from common.signal_utils import read_snp
+from common.pickle_utils import DataWriter, SimulationResult
 from simulation.parameters.bound_param import PARAM_SETS_MAP
 from simulation.io.config_utils import load_config, resolve_trace_pattern, resolve_vertical_dirs, build_argparser
 from simulation.io.snp_utils import parse_snps, generate_vertical_snp_pairs
 from simulation.io.direction_utils import generate_directions
 from simulation.parameters.param_utils import parse_param_types, modify_params_for_inductance
-from simulation.io.pickle_utils import DataWriter, SimulationResult
 
 # Import performance monitoring
 try:

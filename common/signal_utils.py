@@ -252,7 +252,7 @@ def read_boundary(bound_path):
     Returns directions and boundary in the format expected by old code.
     """
     import json
-    from simulation.parameters.bound_param import SampleResult
+    from common.param_types import SampleResult
     
     with open(bound_path, 'r') as f:
         loaded = json.load(f)

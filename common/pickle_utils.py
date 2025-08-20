@@ -166,7 +166,7 @@ def load_pickle_directory(label_dir: Path, dataset_name: str, config_keys: list 
         Dictionary mapping case_ids to processed data tuples containing:
         (configs, directions_list, line_ews_list, snp_vert, meta)
     """
-    from simulation.parameters.bound_param import SampleResult, to_new_param_name
+    from common.param_types import SampleResult, to_new_param_name
     
     labels = {}
     
@@ -217,8 +217,17 @@ def load_pickle_directory(label_dir: Path, dataset_name: str, config_keys: list 
         snp_vert = tuple(zip(snp_drvs, snp_odts))
 
         # Create metadata dict from the first result
+        # Apply the same key conversion to config_keys as done to config values
+        updated_config_keys = []
+        key_map = {
+            'R_tx': 'R_drv', 'C_tx': 'C_drv', 'L_tx': 'L_drv',
+            'R_rx': 'R_odt', 'C_rx': 'C_odt', 'L_rx': 'L_odt',
+        }
+        for key in first_result.config_keys:
+            updated_config_keys.append(key_map.get(key, key))
+        
         meta = {
-            'config_keys': first_result.config_keys,
+            'config_keys': updated_config_keys,
             'snp_horiz': first_result.snp_horiz,
             'n_ports': first_result.n_ports,
             'param_types': first_result.param_types
@@ -246,7 +255,7 @@ def convert_configs_to_boundaries(configs_list: list, config_keys: list):
     Returns:
         List of lists of structured numpy arrays
     """
-    from simulation.parameters.bound_param import SampleResult
+    from common.param_types import SampleResult
     
     boundaries_list = []
     for configs in configs_list:

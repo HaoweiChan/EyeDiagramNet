@@ -5,7 +5,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from pathlib import Path
 from typing import List
-from simulation.io.pickle_utils import SimulationResult
+
+from common.param_types import SampleResult as SimulationResult
 
 # Try to import seaborn, make it optional
 try:

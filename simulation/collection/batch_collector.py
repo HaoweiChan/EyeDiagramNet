@@ -6,14 +6,16 @@ import numpy as np
 from tqdm import tqdm
 from pathlib import Path
 
-from simulation.parameters.bound_param import ParameterSet, SampleResult, PARAM_SETS_MAP
-from simulation.engine.sbr_simulator import snp_eyewidth_simulation
 
 from common.signal_utils import read_snp
+from common.param_types import ParameterSet, SampleResult
+from common.pickle_utils import DataWriter, SimulationResult
+
+from simulation.parameters.bound_param import PARAM_SETS_MAP
+from simulation.engine.sbr_simulator import snp_eyewidth_simulation
 from simulation.io.config_utils import resolve_trace_pattern
 from simulation.io.snp_utils import generate_vertical_snp_pairs
 from simulation.io.direction_utils import generate_directions
-from simulation.io.pickle_utils import DataWriter, SimulationResult
 
 class EyeWidthSimulatePipeline:
     def __init__(self, config_path, debug=False):

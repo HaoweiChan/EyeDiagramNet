@@ -14,8 +14,8 @@ except ImportError:
 
 # Source 2: The current EyeWidthSimulator class.
 try:
+    from common.param_types import SampleResult
     from simulation.engine.sbr_simulator import EyeWidthSimulator
-    from simulation.parameters.bound_param import SampleResult
     NEW_SIMULATOR_AVAILABLE = True
     print("Successfully imported `EyeWidthSimulator`.")
 except ImportError as e:

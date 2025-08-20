@@ -4,7 +4,7 @@ from pathlib import Path
 from datetime import datetime
 
 from . import analysis, cleaning, validation
-from simulation.io.pickle_utils import load_pickle_data
+from common.pickle_utils import load_pickle_data
 
 def main():
     parser = argparse.ArgumentParser(description="A comprehensive tool to analyze, clean, and validate training pickle data.")

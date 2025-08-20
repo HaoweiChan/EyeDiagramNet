@@ -1,6 +1,5 @@
 import json
 import psutil
-import pickle
 import random
 import numpy as np
 from pathlib import Path
@@ -9,15 +8,14 @@ from sklearn.model_selection import train_test_split
 import torch
 import torch.multiprocessing as mp
 from torch.utils.data import Dataset, DataLoader
-
 from lightning import LightningDataModule
 from lightning.pytorch.utilities import CombinedLoader
 from lightning.pytorch.utilities.rank_zero import rank_zero_info
 
 from ..utils.scaler import MinMaxScaler
 from .processors import CSVProcessor, TraceSequenceProcessor
-from simulation.parameters.bound_param import SampleResult, to_new_param_name
-from simulation.io.pickle_utils import load_pickle_data, load_pickle_directory, convert_configs_to_boundaries
+from common.param_types import SampleResult, to_new_param_name
+from common.pickle_utils import load_pickle_directory, convert_configs_to_boundaries
 from common.signal_utils import read_snp, flip_snp
 
 def get_loader_from_dataset(
@@ -312,7 +310,6 @@ class TraceSeqEWDataloader(LightningDataModule):
             input_arr = input_arr[keep_indices]
 
             configs_list, directions_list, eye_widths_list, snp_paths_list, metas_list = zip(*sorted_vals)
-            
             # Convert config dictionaries to structured boundary arrays using utility function
             config_keys = metas_list[0]['config_keys']
             boundaries_list = convert_configs_to_boundaries(configs_list, config_keys)

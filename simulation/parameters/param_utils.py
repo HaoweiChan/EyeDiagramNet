@@ -1,7 +1,8 @@
 """Parameter utilities for training data collection."""
 
 from typing import List
-from simulation.parameters.bound_param import PARAM_SETS_MAP, ParameterSet
+from common.param_types import ParameterSet, DiscreteParameter, RandomToggledParameterSet, CombinedParameterSet
+from simulation.parameters.bound_param import PARAM_SETS_MAP
 
 def parse_param_types(param_type_str: str) -> List[str]:
     """Parse comma-separated parameter type string into a list of valid types."""
@@ -32,7 +33,6 @@ def modify_params_for_inductance(param_set, enable_inductance):
         return param_set
     
     # Create a copy of the parameter set with L_drv and L_odt set to zero
-    from simulation.parameters.bound_param import ParameterSet, DiscreteParameter
     
     # Handle different parameter set types
     if hasattr(param_set, '_params'):
@@ -56,7 +56,6 @@ def modify_params_for_inductance(param_set, enable_inductance):
             toggling_params['L_odt'] = DiscreteParameter(values=[0.0])
         
         # Recreate the parameter sets
-        from simulation.parameters.bound_param import RandomToggledParameterSet, CombinedParameterSet
         new_static_set = ParameterSet(**static_params)
         new_toggling_set = RandomToggledParameterSet(
             toggle_probability=param_set.toggling_set.toggle_probability,

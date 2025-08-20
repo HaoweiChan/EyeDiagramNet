@@ -49,9 +49,9 @@ except ImportError as e:
 
 try:
     from common.signal_utils import read_snp
+    from common.param_types import SampleResult
     from simulation.engine.sbr_simulator import snp_eyewidth_simulation, EyeWidthSimulator
     from simulation.engine.network_utils import s2y, y2s, s2z, z2s, nudge_eig, rsolve
-    from simulation.parameters.bound_param import SampleResult
     SIMULATION_AVAILABLE = True
 except ImportError as e:
     print(f"Simulation modules not available: {e}")
