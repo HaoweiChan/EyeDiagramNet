@@ -307,32 +307,27 @@ def load_pickle_directory(label_dir: Path, dataset_name: str, config_keys: list 
 
 def convert_configs_to_boundaries(configs_list: list, config_keys: list):
     """
-    Convert a list of config dictionaries directly to a numpy array of structured boundaries.
+    Convert a list of config dictionaries directly to a pure numpy array of boundaries.
     
     Args:
         configs_list: List of lists of config dictionaries
-        config_keys: List of parameter keys for structured array conversion
+        config_keys: List of parameter keys for array conversion
         
     Returns:
-        numpy.ndarray: Array of structured numpy arrays (boundaries)
+        numpy.ndarray: Pure numerical array of shape (n_samples, n_configs_per_sample, n_parameters)
     """
     import numpy as np
     
     boundaries_list = []
     for configs in configs_list:
-        # Convert each list of config dicts to structured arrays
+        # Convert each list of config dicts to numerical arrays
         sample_boundaries = []
         for config_dict in configs:
-            # Create structured array from config dictionary
             # Extract values in the order specified by config_keys
             values = [config_dict.get(key, np.nan) for key in config_keys]
-            
-            # Create structured array with proper dtypes
-            dtype = [(key, 'f8') for key in config_keys]  # f8 = float64
-            structured_array = np.array([tuple(values)], dtype=dtype)
-            sample_boundaries.append(structured_array[0])  # Extract the single record
+            sample_boundaries.append(values)
             
         boundaries_list.append(sample_boundaries)
     
-    # Convert to numpy array directly
-    return np.array(boundaries_list, dtype=object)
+    # Convert to pure numpy array with proper shape
+    return np.array(boundaries_list, dtype=np.float64)
