@@ -312,13 +312,11 @@ class TraceSeqEWDataloader(LightningDataModule):
             configs_list, directions_list, eye_widths_list, snp_paths_list, metas_list = zip(*sorted_vals)
             # Convert config dictionaries to structured boundary arrays using utility function
             config_keys = metas_list[0]['config_keys']
-            boundaries_list = convert_configs_to_boundaries(configs_list, config_keys)
+            boundaries = convert_configs_to_boundaries(configs_list, config_keys)
             
-            boundaries, directions, eye_widths = map(
-                np.array, (boundaries_list, directions_list, eye_widths_list)
+            directions, eye_widths, snp_paths, metas = map(
+                np.array, (directions_list, eye_widths_list, snp_paths_list, metas_list)
             )
-            snp_paths = np.array(snp_paths_list, dtype=object)
-            metas = np.array(metas_list, dtype=object)
             eye_widths[eye_widths < 0] = 0
 
             rank_zero_info(f"{name}| input_seq {input_arr.shape} | eye_width {eye_widths.shape} | ignore_snp={self.ignore_snp}")

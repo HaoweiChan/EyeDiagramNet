@@ -307,14 +307,14 @@ def load_pickle_directory(label_dir: Path, dataset_name: str, config_keys: list 
 
 def convert_configs_to_boundaries(configs_list: list, config_keys: list):
     """
-    Convert a list of config dictionaries to structured boundary arrays.
+    Convert a list of config dictionaries directly to a numpy array of structured boundaries.
     
     Args:
         configs_list: List of lists of config dictionaries
         config_keys: List of parameter keys for structured array conversion
         
     Returns:
-        List of lists of structured numpy arrays
+        numpy.ndarray: Array of structured numpy arrays (boundaries)
     """
     import numpy as np
     
@@ -334,4 +334,5 @@ def convert_configs_to_boundaries(configs_list: list, config_keys: list):
             
         boundaries_list.append(sample_boundaries)
     
-    return boundaries_list
+    # Convert to numpy array directly
+    return np.array(boundaries_list, dtype=object)
