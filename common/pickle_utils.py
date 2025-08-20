@@ -169,77 +169,138 @@ def load_pickle_directory(label_dir: Path, dataset_name: str, config_keys: list 
     from common.param_types import SampleResult, to_new_param_name
     
     labels = {}
+    processed_files = 0
+    skipped_files = 0
     
-    for pkl_file in Path(label_dir, dataset_name).glob("*.pkl"):
-        # Load data as list of SimulationResult dataclasses
-        results = load_pickle_data(pkl_file)
-        
-        if not results:
-            print(f"Warning: Skipping malformed or empty pickle: {pkl_file.name}")
-            continue
-
-        # Extract data from the first result to get metadata
-        first_result = results[0]
-        snp_horiz_path = first_result.snp_horiz
-
-        if not snp_horiz_path:
-            print(f"Warning: Skipping malformed pickle: {pkl_file.name} ('snp_horiz' not found).")
-            continue
-
-        # The key must match the case_id from the CSV file
+    pkl_files = list(Path(label_dir, dataset_name).glob("*.pkl"))
+    print(f"Found {len(pkl_files)} pickle files in {label_dir}/{dataset_name}")
+    
+    for pkl_file in pkl_files:
         try:
-            key = int(Path(snp_horiz_path).stem.replace("-", "_").split("_")[-1].split(".")[0])
-        except (ValueError, IndexError):
-            print(f"Warning: Could not parse case ID from snp_horiz: '{snp_horiz_path}'. "
-                   f"Skipping pickle file: {pkl_file.name}")
+            # Load data as list of SimulationResult dataclasses
+            results = load_pickle_data(pkl_file)
+            
+            if not results:
+                print(f"Warning: Skipping malformed or empty pickle: {pkl_file.name}")
+                skipped_files += 1
+                continue
+
+            # Extract data from the first result to get metadata
+            first_result = results[0]
+            snp_horiz_path = first_result.snp_horiz
+
+            if not snp_horiz_path:
+                print(f"Warning: Skipping malformed pickle: {pkl_file.name} ('snp_horiz' not found).")
+                skipped_files += 1
+                continue
+
+            # Try multiple methods to extract case ID
+            key = None
+            
+            # Method 1: Try to extract from snp_horiz path 
+            try:
+                key = int(Path(snp_horiz_path).stem.replace("-", "_").split("_")[-1].split(".")[0])
+            except (ValueError, IndexError):
+                pass
+            
+            # Method 2: If method 1 fails, try to extract from pickle filename
+            if key is None:
+                try:
+                    # Extract number from pickle filename
+                    filename_parts = pkl_file.stem.replace("-", "_").split("_")
+                    for part in reversed(filename_parts):
+                        try:
+                            key = int(part)
+                            break
+                        except ValueError:
+                            continue
+                except (ValueError, IndexError):
+                    pass
+            
+            # Method 3: If both methods fail, use a hash of the filename as fallback
+            if key is None:
+                import hashlib
+                key = int(hashlib.md5(pkl_file.name.encode()).hexdigest()[:8], 16)
+                print(f"Warning: Could not parse case ID from '{snp_horiz_path}' or '{pkl_file.name}'. "
+                      f"Using hash-based key: {key}")
+            
+            # Check for duplicate keys
+            if key in labels:
+                print(f"Warning: Duplicate key {key} found for file {pkl_file.name}. "
+                      f"Previous file will be overwritten.")
+                
+        except Exception as e:
+            print(f"Error processing file {pkl_file.name}: {str(e)}")
+            skipped_files += 1
             continue
 
         # Convert dataclass results to the format expected by downstream code
-        configs = []
-        directions_list = []
-        line_ews_list = []
-        snp_drvs = []
-        snp_odts = []
+        try:
+            configs = []
+            directions_list = []
+            line_ews_list = []
+            snp_drvs = []
+            snp_odts = []
 
-        for result in results:
-            # Convert config from keys+values back to dict format for backward compatibility
-            config_dict = dict(zip(result.config_keys, result.config_values))
-            if isinstance(config_dict, dict):
-                config_dict = to_new_param_name(config_dict)
-            configs.append(config_dict)
+            for result in results:
+                try:
+                    # Convert config from keys+values back to dict format for backward compatibility
+                    config_dict = dict(zip(result.config_keys, result.config_values))
+                    if isinstance(config_dict, dict):
+                        config_dict = to_new_param_name(config_dict)
+                    configs.append(config_dict)
+                    
+                    directions_list.append(result.directions)
+                    line_ews_list.append(result.line_ews)
+                    snp_drvs.append(result.snp_drv)
+                    snp_odts.append(result.snp_odt)
+                except Exception as e:
+                    print(f"Warning: Error processing result in {pkl_file.name}: {str(e)}")
+                    continue
+
+            # Skip file if no valid results were processed
+            if not configs:
+                print(f"Warning: No valid results found in {pkl_file.name}")
+                skipped_files += 1
+                continue
+
+            # Create SNP vertical data tuple
+            snp_vert = tuple(zip(snp_drvs, snp_odts))
+
+            # Create metadata dict from the first result
+            # Apply the same key conversion to config_keys as done to config values
+            updated_config_keys = []
+            key_map = {
+                'R_tx': 'R_drv', 'C_tx': 'C_drv', 'L_tx': 'L_drv',
+                'R_rx': 'R_odt', 'C_rx': 'C_odt', 'L_rx': 'L_odt',
+            }
+            for config_key in first_result.config_keys:
+                updated_config_keys.append(key_map.get(config_key, config_key))
             
-            directions_list.append(result.directions)
-            line_ews_list.append(result.line_ews)
-            snp_drvs.append(result.snp_drv)
-            snp_odts.append(result.snp_odt)
+            meta = {
+                'config_keys': updated_config_keys,
+                'snp_horiz': first_result.snp_horiz,
+                'n_ports': first_result.n_ports,
+                'param_types': first_result.param_types
+            }
 
-        # Create SNP vertical data tuple
-        snp_vert = tuple(zip(snp_drvs, snp_odts))
-
-        # Create metadata dict from the first result
-        # Apply the same key conversion to config_keys as done to config values
-        updated_config_keys = []
-        key_map = {
-            'R_tx': 'R_drv', 'C_tx': 'C_drv', 'L_tx': 'L_drv',
-            'R_rx': 'R_odt', 'C_rx': 'C_odt', 'L_rx': 'L_odt',
-        }
-        for key in first_result.config_keys:
-            updated_config_keys.append(key_map.get(key, key))
-        
-        meta = {
-            'config_keys': updated_config_keys,
-            'snp_horiz': first_result.snp_horiz,
-            'n_ports': first_result.n_ports,
-            'param_types': first_result.param_types
-        }
-
-        labels[key] = (
-            configs,
-            directions_list,
-            line_ews_list,
-            snp_vert,
-            meta
-        )
+            labels[key] = (
+                configs,
+                directions_list,
+                line_ews_list,
+                snp_vert,
+                meta
+            )
+            processed_files += 1
+            
+        except Exception as e:
+            print(f"Error processing data from {pkl_file.name}: {str(e)}")
+            skipped_files += 1
+            continue
+    
+    # Print summary
+    print(f"Successfully processed {processed_files} pickle files, skipped {skipped_files} files")
+    print(f"Generated {len(labels)} unique labels with keys: {list(labels.keys())}")
     
     return labels
 
