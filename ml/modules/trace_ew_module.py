@@ -11,6 +11,7 @@ from lightning.pytorch.utilities.combined_loader import CombinedLoader
 
 from ..models.layers import LearnableLossWeighting
 from ..utils import losses
+from ..utils.losses import focus_weighted_eye_width_loss, min_focused_loss
 from ..utils.init_weights import init_weights
 from ..utils.visualization import image_to_buffer, plot_ew_curve
 
@@ -83,6 +84,11 @@ class TraceEWModule(LightningModule):
         tau_gate: float = 0.1,
         tau_min: float = 0.1,
         min_loss_weight: float = 0.1,
+        augment_insert_frac: int = 20,  # Less aggressive augmentation
+        # Unified loss options
+        unified_ew_loss: str = 'separate',  # 'separate', 'focus_weighted', 'min_focused'
+        focus_weight: float = 5.0,  # For focus_weighted loss
+        min_focused_alpha: float = 0.7,  # For min_focused loss
     ):
         super().__init__()
         self.save_hyperparameters(ignore=['model'])
@@ -105,8 +111,13 @@ class TraceEWModule(LightningModule):
         # Pre-compute inverse and log for efficiency - avoid repeated divisions
         self.ew_scaler_inv = torch.tensor(1.0 / self.hparams.ew_scaler)
         self.log_ew_scaler = torch.log(self.ew_scaler)
-        # self.weighted_loss = LearnableLossWeighting(['bce', 'min_loss', 'trace_loss'])
-        self.weighted_loss = LearnableLossWeighting(['bce', 'trace_loss'])
+        # Use learnable loss weighting based on unified loss choice
+        if self.hparams.unified_ew_loss == 'separate':
+            # Original separate losses
+            self.weighted_loss = LearnableLossWeighting(['bce', 'min_loss', 'trace_loss'])
+        else:
+            # Unified eye width loss + BCE
+            self.weighted_loss = LearnableLossWeighting(['bce', 'unified_ew_loss'])
         
     def setup(self, stage=None):
         # Warm up the model by performing a dummy forward pass
@@ -442,30 +453,53 @@ class TraceEWModule(LightningModule):
         # --- classification helpers --------------------------------------------------
         true_prob = (item.true_ew > 0).float()
         
-        # --- Soft-min loss for minimum eye-width prediction --------------------------
-        tau_m = self.hparams.tau_min
-        ew_eff = self._calculate_effective_ew(pred_ew, pred_prob)
-        
-        # Per-design softmin and true min
-        # pred_ew is (B, L), so we reduce along L (dim=1)
-        # softmin_pred_ew = losses.softmin(ew_eff, tau=tau_m, dim=1)
-        # min_true_ew = torch.min(item.true_ew, dim=1).values
-        
-        # Min-value prediction loss
-        # min_loss = F.smooth_l1_loss(softmin_pred_ew, min_true_ew)
-
-        # Per-trace prediction loss
-        trace_loss = F.mse_loss(ew_eff, item.true_ew)
-        
-        # --- Original classification loss ---------------------------------------------
+        # --- Classification loss -----------------------------------------------------
         bce_loss = F.binary_cross_entropy_with_logits(pred_logits, true_prob)
 
-        # --- Combine losses -----------------------------------------------------------
-        loss = self.weighted_loss({
-            'bce': bce_loss,
-            # 'min_loss': min_loss,
-            'trace_loss': trace_loss
-        })
+        # --- Eye width regression loss --------------------------------------------
+        if self.hparams.unified_ew_loss == 'separate':
+            # Original separate losses
+            tau_m = self.hparams.tau_min
+            ew_eff = self._calculate_effective_ew(pred_ew, pred_prob)
+            
+            # Min-value prediction loss
+            softmin_pred_ew = losses.softmin(ew_eff, tau=tau_m, dim=1)
+            min_true_ew = torch.min(item.true_ew, dim=1).values
+            min_loss = F.smooth_l1_loss(softmin_pred_ew, min_true_ew)
+
+            # Per-trace prediction loss
+            trace_loss = F.mse_loss(ew_eff, item.true_ew)
+            
+            loss = self.weighted_loss({
+                'bce': bce_loss,
+                'min_loss': min_loss,
+                'trace_loss': trace_loss
+            })
+            
+        elif self.hparams.unified_ew_loss == 'focus_weighted':
+            # Focus-weighted unified loss
+            unified_ew_loss = focus_weighted_eye_width_loss(
+                pred_ew, item.true_ew, 
+                focus_weight=self.hparams.focus_weight
+            )
+            loss = self.weighted_loss({
+                'bce': bce_loss,
+                'unified_ew_loss': unified_ew_loss
+            })
+            
+        elif self.hparams.unified_ew_loss == 'min_focused':
+            # Min-focused unified loss
+            unified_ew_loss = min_focused_loss(
+                pred_ew, item.true_ew,
+                alpha=self.hparams.min_focused_alpha,
+                tau_min=self.hparams.tau_min
+            )
+            loss = self.weighted_loss({
+                'bce': bce_loss,
+                'unified_ew_loss': unified_ew_loss
+            })
+        else:
+            raise ValueError(f"Unknown unified_ew_loss: {self.hparams.unified_ew_loss}")
 
         # Use the eval tensors (may come from MC/Laplace inference) for metrics
         pred_ew_eval, pred_prob_eval = forward_out["eval"]

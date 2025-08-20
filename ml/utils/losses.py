@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+
 def _reduce_loss(loss, mask):
     if mask is None:
         return torch.mean(loss)
@@ -111,3 +112,52 @@ def softmin(x, tau=0.1, dim=None):
         The soft minimum of the tensor.
     """
     return -tau * torch.logsumexp(-x / tau, dim=dim)
+
+def focus_weighted_eye_width_loss(pred_ew, true_ew, focus_weight=5.0, tau=0.1):
+    """
+    Unified loss that combines trace-level and minimum-focused objectives.
+    
+    Args:
+        pred_ew: Predicted eye widths (B, L)
+        true_ew: True eye widths (B, L) 
+        focus_weight: How much more to weight positions near the minimum
+        tau: Temperature for soft attention
+        
+    Returns:
+        Combined loss that focuses more on minimum regions while maintaining trace accuracy
+    """
+    # Compute soft attention weights based on proximity to true minimum
+    true_min = torch.min(true_ew, dim=1, keepdim=True).values  # (B, 1)
+    proximity_to_min = torch.exp(-(true_ew - true_min).abs() / tau)  # (B, L)
+    
+    # Create focus weights: higher weight for positions closer to minimum
+    weights = 1.0 + (focus_weight - 1.0) * proximity_to_min  # (B, L)
+    weights = weights / weights.mean(dim=1, keepdim=True)  # Normalize
+    
+    # Weighted MSE loss
+    weighted_mse = weights * (pred_ew - true_ew).pow(2)
+    return weighted_mse.mean()
+
+def min_focused_loss(pred_ew, true_ew, alpha=0.7, tau_min=0.1):
+    """
+    Alternative unified loss: blend of softmin accuracy and overall correlation.
+    
+    Args:
+        pred_ew: Predicted eye widths (B, L)
+        true_ew: True eye widths (B, L)
+        alpha: Weight for minimum accuracy vs overall correlation (0-1)
+        tau_min: Temperature for softmin
+        
+    Returns:
+        Blended loss focusing on minimum accuracy with overall shape preservation
+    """
+    # Minimum accuracy component
+    pred_min = softmin(pred_ew, tau=tau_min, dim=1)  # (B,)
+    true_min = torch.min(true_ew, dim=1).values      # (B,)
+    min_loss = F.smooth_l1_loss(pred_min, true_min)
+    
+    # Overall correlation component  
+    correlation_loss = 1.0 - F.cosine_similarity(pred_ew, true_ew, dim=1).mean()
+    
+    # Blend the two
+    return alpha * min_loss + (1 - alpha) * correlation_loss
