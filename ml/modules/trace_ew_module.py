@@ -13,6 +13,7 @@ from ..models.layers import LearnableLossWeighting
 from ..utils import losses
 from ..utils.losses import focus_weighted_eye_width_loss, min_focused_loss
 from ..utils.init_weights import init_weights
+from ..utils.laplace_utils import setup_laplace_dataloader, get_sample_inputs_from_datamodule
 from ..utils.visualization import image_to_buffer, plot_ew_curve
 
 @torch.jit.script
@@ -81,7 +82,6 @@ class TraceEWModule(LightningModule):
         ew_threshold: float = 0.3,
         use_laplace_on_fit_end: bool = True,
         ignore_snp: bool = False,
-        tau_gate: float = 0.1,
         tau_min: float = 0.1,
         min_loss_weight: float = 0.1,
         augment_insert_frac: int = 20,  # Less aggressive augmentation
@@ -198,99 +198,9 @@ class TraceEWModule(LightningModule):
             return
             
         rank_zero_info("Fitting Laplace approximation on the last layer...")
-        # The dataloader needs to be wrapped to yield (X, y) tuples
-        # where X is a tuple of the model's inputs.
-        class LaplaceDataLoaderWrapper:
-            def __init__(self, dataloader, device):
-                self.dataloader = dataloader
-                self.device = device
-                
-                # Expose the dataset attribute for Laplace library
-                if hasattr(dataloader, 'dataset'):
-                    self.dataset = dataloader.dataset
-                elif isinstance(dataloader, CombinedLoader):
-                    total_len = 0
-                    valid_dataset_found = False
-                    try:
-                        # Attempt to access dataloader.loaders
-                        loaders_collection = dataloader.loaders
-                        if isinstance(loaders_collection, dict):
-                            for _loader in loaders_collection.values():
-                                if hasattr(_loader, 'dataset') and _loader.dataset is not None:
-                                    total_len += len(_loader.dataset)
-                                    valid_dataset_found = True
-                        elif isinstance(loaders_collection, (list, tuple)):
-                            for _loader in loaders_collection:
-                                if hasattr(_loader, 'dataset') and _loader.dataset is not None:
-                                    total_len += len(_loader.dataset)
-                                    valid_dataset_found = True
-                        else:
-                            rank_zero_info(f"LaplaceDataLoaderWrapper: CombinedLoader.loaders is of unexpected type: {type(loaders_collection)}")
-                            
-                    except AttributeError:
-                        rank_zero_info("LaplaceDataLoaderWrapper: CombinedLoader instance does not have 'loaders' attribute as expected.")
-                        # total_len remains 0, valid_dataset_found remains False
-
-                    if valid_dataset_found and total_len > 0:
-                        class _CombinedDatasetProxy:
-                            def __init__(self, length): self._length = length
-                            def __len__(self): return self._length
-                        self.dataset = _CombinedDatasetProxy(total_len)
-                        rank_zero_info(f"LaplaceDataLoaderWrapper: Using CombinedDatasetProxy with total length {total_len} for CombinedLoader.")
-                    else:
-                        rank_zero_info("LaplaceDataLoaderWrapper: Could not determine dataset length for CombinedLoader from its sub-loaders. Using len(CombinedLoader) as batch count proxy.")
-                        # Fallback: Create a proxy whose length is the number of batches in CombinedLoader.
-                        # This is not N_samples, but might allow Laplace to iterate if N is only for progress bar.
-                        class _LenProxyDataset:
-                            def __init__(self, loader_to_wrap): self.loader_to_wrap = loader_to_wrap
-                            def __len__(self): return len(self.loader_to_wrap) 
-                        self.dataset = _LenProxyDataset(dataloader)
-                else:
-                    rank_zero_info("LaplaceDataLoaderWrapper: Wrapped dataloader is not CombinedLoader and has no 'dataset' attribute.")
-                    self.dataset = None 
-                
-                # Ensure self.dataset is always set, even if to a dummy one for safety
-                if self.dataset is None:
-                    class _EmptyDataset:
-                        def __len__(self): return 0
-                    self.dataset = _EmptyDataset()
-                    rank_zero_info("LaplaceDataLoaderWrapper: Fallback to an empty dataset proxy (length 0).")
-
-            def __iter__(self):
-                for batch, *_ in self.dataloader:
-                    if isinstance(batch, dict):
-                        # Handle dictionary batch (from CombinedLoader or regular training)
-                        for name, raw_data in batch.items():
-                            # raw_data is a tuple of tensors: (trace_seq, direction, boundary, snp_vert, true_ew)
-                            # Concatenate inputs into a single tensor
-                            # Assuming all input tensors have the same batch size (dim 0)
-                            # and can be concatenated along a new dimension or an existing one
-                            # This part needs careful consideration of tensor shapes
-                            # For Laplace _find_last_layer, which expects a single tensor X,
-                            # we yield only the primary input (trace_seq) and the target.
-                            # raw_data is (trace_seq, direction, boundary, snp_vert, true_ew)
-                            inputs = tuple(t.to(self.device) for t in raw_data[:-1])
-                            targets = raw_data[-1].to(self.device).squeeze()
-                            yield inputs, targets
-                    else:
-                        # Handle tuple batch from a single dataloaloader
-                        # batch is (trace_seq, direction, boundary, snp_vert, true_ew)
-                        inputs = tuple(t.to(self.device) for t in batch[:-1])
-                        targets = batch[-1].to(self.device).squeeze()
-                        yield inputs, targets
-            
-            def __len__(self):
-                return len(self.dataloader)
-
-        train_loader = self.trainer.datamodule.train_dataloader()
         
-        # If train_loader is a dictionary of dataloaders, wrap it with CombinedLoader.
-        # Otherwise, use it directly. This makes the logic robust.
-        if isinstance(train_loader, dict):
-            combined_loader = CombinedLoader(train_loader, mode="max_size_cycle")
-            laplace_loader = LaplaceDataLoaderWrapper(combined_loader, self.device)
-        else:
-            laplace_loader = LaplaceDataLoaderWrapper(train_loader, self.device)
+        # Setup Laplace-compatible dataloader using utility functions
+        laplace_loader = setup_laplace_dataloader(self.trainer.datamodule, self.device)
         
         # Pass the datamodule to fit_laplace
         self.model.fit_laplace(laplace_loader, self.trainer.datamodule)
@@ -432,23 +342,9 @@ class TraceEWModule(LightningModule):
             "eval": (pred_ew_eval, pred_prob_eval)
         }
 
-    def _calculate_effective_ew(self, pred_ew: torch.Tensor, pred_prob: torch.Tensor) -> torch.Tensor:
-        """Calculates the effective eye-width with a soft gate."""
-        t = self.hparams.ew_threshold
-        tau_g = self.hparams.tau_gate
-        
-        # Soft gate based on inference threshold
-        s = torch.sigmoid((pred_prob - losses.logit(torch.tensor(t, device=self.device))) / tau_g)
-        
-        # Effective eye-width with gated closed-eye value
-        c_closed = -0.1 / self.ew_scaler.item()
-        ew_eff = s * pred_ew + (1 - s) * c_closed
-        return ew_eff
-
     def _compute_loss(self, item: "BatchItem", forward_out):
         """Calculate composite loss and prepare everything needed for metric updates."""
         pred_ew, pred_logits = forward_out["train"]
-        pred_prob = torch.sigmoid(pred_logits)
 
         # --- classification helpers --------------------------------------------------
         true_prob = (item.true_ew > 0).float()
@@ -458,17 +354,16 @@ class TraceEWModule(LightningModule):
 
         # --- Eye width regression loss --------------------------------------------
         if self.hparams.unified_ew_loss == 'separate':
-            # Original separate losses
+            # Original separate losses (now consistent with unified losses)
             tau_m = self.hparams.tau_min
-            ew_eff = self._calculate_effective_ew(pred_ew, pred_prob)
             
             # Min-value prediction loss
-            softmin_pred_ew = losses.softmin(ew_eff, tau=tau_m, dim=1)
+            softmin_pred_ew = losses.softmin(pred_ew, tau=tau_m, dim=1)
             min_true_ew = torch.min(item.true_ew, dim=1).values
             min_loss = F.smooth_l1_loss(softmin_pred_ew, min_true_ew)
 
-            # Per-trace prediction loss
-            trace_loss = F.mse_loss(ew_eff, item.true_ew)
+            # Per-trace prediction loss  
+            trace_loss = F.mse_loss(pred_ew, item.true_ew)
             
             loss = self.weighted_loss({
                 'bce': bce_loss,
@@ -503,15 +398,9 @@ class TraceEWModule(LightningModule):
 
         # Use the eval tensors (may come from MC/Laplace inference) for metrics
         pred_ew_eval, pred_prob_eval = forward_out["eval"]
-        
-        # Avoid recomputing effective ew if the eval tensors are the same as train tensors
-        if pred_ew is pred_ew_eval:
-            ew_eff_eval = ew_eff
-        else:
-            ew_eff_eval = self._calculate_effective_ew(pred_ew_eval, pred_prob_eval)
 
-        # Rescale / post-process for logging
-        pred_ew_scaled = ew_eff_eval * self.ew_scaler
+        # Scale predictions for metrics (no effective eye width gating)
+        pred_ew_scaled = pred_ew_eval * self.ew_scaler
         true_ew_scaled = item.true_ew * self.ew_scaler
         
         extras = {

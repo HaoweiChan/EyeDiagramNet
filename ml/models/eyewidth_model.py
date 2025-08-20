@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-from laplace import Laplace
 from einops import rearrange
 from torch.utils.data import DataLoader
 
@@ -376,46 +375,14 @@ class EyeWidthRegressor(nn.Module):
         hessian_structure : 'diag' | 'kron' | 'full'
         prior_var : if None, will be optimised by marginal likelihood
         """
+        from laplace import Laplace
+        from ..utils.laplace_utils import get_sample_inputs_from_datamodule
+        
         device = next(self.parameters()).device
         self.eval()
 
-        # Get sample inputs for the _ForwardWrapper to use when only trace_seq is passed
-        # The train_loader here is LaplaceDataLoaderWrapper which yields (trace_seq, target)
-        # We need the original dataloader's structure to get all 4 inputs.
-        # This requires access to the original datamodule or a sample from it.
-        # For now, let's fetch one batch from the passed train_loader,
-        # assuming it's the LaplaceDataLoaderWrapper that now yields (trace_seq, target).
-        # This means we can't easily get the other parts (direction, boundary, snp_vert) here
-        # unless we change LaplaceDataLoaderWrapper back or get samples differently.
-
-        # Reverting to the idea that LaplaceDataLoaderWrapper yields the tuple of inputs
-        # and the fix is purely in how laplace library handles it, or how _ForwardWrapper handles its input.
-        # The current error is 'tuple' object has no attribute 'to' from X[:1].to(device).
-        # This means X is a tuple, and X[:1] is a sub-tuple.
-        # The change in LaplaceDataLoaderWrapper to yield only trace_seq was to make X a tensor.
-        # If X is now trace_seq (a tensor), then X[:1] is a tensor slice, and .to(device) works.
-        # Then _ForwardWrapper receives this trace_seq slice.
-
-        # We need sample_direction, sample_boundary, sample_snp_vert for _ForwardWrapper.
-        # Let's get it from the *original* structure of the train_loader,
-        # before it's wrapped by LaplaceDataLoaderWrapper.
-        # This is tricky as fit_laplace only receives the (potentially wrapped) train_loader.
-
-        # Let's assume train_loader is the LaplaceDataLoaderWrapper instance.
-        # We need to get a "full" sample.
-        original_train_loader = datamodule.train_dataloader() # Use passed datamodule
-        sample_batch_dict, *_ = next(iter(original_train_loader))
-        # Assuming CombinedLoader, so sample_batch_dict is a dict
-        # Take the first available dataset's sample
-        sample_raw_data = next(iter(sample_batch_dict.values()))
-
-        # Get single sample (first item of the batch) for each component
-        # and move to device. These will be used by _ForwardWrapper.
-        # raw_data is (trace_seq, direction, boundary, snp_vert, true_ew)
-        _sample_trace_seq = sample_raw_data[0][0:1].to(device) # Batch size 1
-        sample_direction = sample_raw_data[1][0:1].to(device)
-        sample_boundary = sample_raw_data[2][0:1].to(device)
-        sample_snp_vert = sample_raw_data[3][0:1].to(device)
+        # Get sample inputs for the _ForwardWrapper using utility function
+        sample_direction, sample_boundary, sample_snp_vert = get_sample_inputs_from_datamodule(datamodule, device)
         
         # Create a wrapper for the forward pass that Laplace can use
         # This is NOT a submodule to avoid recursion during .apply() calls
