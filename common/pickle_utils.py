@@ -300,7 +300,6 @@ def load_pickle_directory(label_dir: Path, dataset_name: str, config_keys: list 
     
     # Print summary
     print(f"Successfully processed {processed_files} pickle files, skipped {skipped_files} files")
-    print(f"Generated {len(labels)} unique labels with keys: {list(labels.keys())}")
     
     return labels
 
