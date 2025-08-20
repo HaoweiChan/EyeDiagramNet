@@ -64,21 +64,41 @@ class _ForwardWrapper(nn.Module):
         return values
 
 class PredictionHead(nn.Module):
-    def __init__(self, model_dim, output_dim, dropout):
+    def __init__(self, model_dim, output_dim, dropout=0.1, use_layer_norm=True):
         super().__init__()
+        self.use_layer_norm = use_layer_norm
+        
+        # Enhanced prediction head with better regularization
         self.head = nn.Sequential(
             nn.Linear(model_dim, 2 * model_dim),
+            nn.LayerNorm(2 * model_dim) if use_layer_norm else nn.Identity(),
             nn.GELU(),
             nn.Dropout(dropout),
             nn.Linear(2 * model_dim, 2 * model_dim),
+            nn.LayerNorm(2 * model_dim) if use_layer_norm else nn.Identity(), 
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(2 * model_dim, output_dim)
+            # Additional intermediate layer for better capacity
+            nn.Linear(2 * model_dim, model_dim),
+            nn.LayerNorm(model_dim) if use_layer_norm else nn.Identity(),
+            nn.GELU(),
+            nn.Dropout(dropout * 0.5),  # Lighter dropout in final layer
+            nn.Linear(model_dim, output_dim)
         )
-        self.res_projection = nn.Linear(model_dim, output_dim)
+        
+        # Residual projection with normalization
+        self.res_projection = nn.Sequential(
+            nn.Linear(model_dim, model_dim // 2),
+            nn.LayerNorm(model_dim // 2) if use_layer_norm else nn.Identity(),
+            nn.GELU(), 
+            nn.Dropout(dropout * 0.5),
+            nn.Linear(model_dim // 2, output_dim)
+        )
 
     def forward(self, x):
-        return self.head(x) + self.res_projection(x)
+        main_out = self.head(x)
+        res_out = self.res_projection(x)
+        return main_out + res_out
 
 class EyeWidthRegressor(nn.Module):
     def __init__(
@@ -100,6 +120,7 @@ class EyeWidthRegressor(nn.Module):
         super().__init__()
 
         self.model_dim = model_dim
+        self.dropout = dropout  # Store dropout for prediction head
         self.use_rope = use_rope
         self.use_gradient_checkpointing = use_gradient_checkpointing
         self.ignore_snp = ignore_snp
@@ -196,10 +217,11 @@ class EyeWidthRegressor(nn.Module):
 
     def _build_prediction_head(self):
         """Builds or rebuilds the prediction head based on the current output_dim."""
-        self.pred_head = nn.Sequential(
-            nn.Linear(self.model_dim, self.model_dim),
-            nn.GELU(),
-            nn.Linear(self.model_dim, self.output_dim),
+        self.pred_head = PredictionHead(
+            model_dim=self.model_dim,
+            output_dim=self.output_dim,
+            dropout=self.dropout,
+            use_layer_norm=True
         )
 
     def load_pretrained_snp(self, checkpoint_path, freeze=True):

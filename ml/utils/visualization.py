@@ -60,7 +60,7 @@ def plot_ew_curve(outputs, metrics, ew_threshold, sigma=2):
     metrics_display_string = f"{stage_key.replace('_', ' ')}\n\n" + '\n'.join(metric_lines)
 
     plt.close()
-    fig = plt.figure(figsize=(12, 9))  # Increased figure size for better layout
+    fig = plt.figure(figsize=(10, 8))
     
     # Create a 3x3 grid layout with proper spacing
     gs = fig.add_gridspec(3, 3, width_ratios=[1, 1, 1], height_ratios=[2, 1.5, 1], 
@@ -116,7 +116,6 @@ def plot_ew_curve(outputs, metrics, ew_threshold, sigma=2):
     # Use subplots_adjust for precise control over layout
     plt.subplots_adjust(left=0.08, right=0.95, top=0.92, bottom=0.08, hspace=0.3, wspace=0.15)
     return fig
-
 
 def _format_meta_value(key, value):
     """Helper to format values for metadata display, with specific rules for different number types."""
