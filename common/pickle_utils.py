@@ -316,16 +316,22 @@ def convert_configs_to_boundaries(configs_list: list, config_keys: list):
     Returns:
         List of lists of structured numpy arrays
     """
-    from common.param_types import SampleResult
+    import numpy as np
     
     boundaries_list = []
     for configs in configs_list:
         # Convert each list of config dicts to structured arrays
         sample_boundaries = []
         for config_dict in configs:
-            # Convert dict to SampleResult and then to structured array
-            sample_result = SampleResult.from_dict(config_dict)
-            sample_boundaries.append(sample_result.to_structured_array(config_keys))
+            # Create structured array from config dictionary
+            # Extract values in the order specified by config_keys
+            values = [config_dict.get(key, np.nan) for key in config_keys]
+            
+            # Create structured array with proper dtypes
+            dtype = [(key, 'f8') for key in config_keys]  # f8 = float64
+            structured_array = np.array([tuple(values)], dtype=dtype)
+            sample_boundaries.append(structured_array[0])  # Extract the single record
+            
         boundaries_list.append(sample_boundaries)
     
     return boundaries_list
