@@ -64,6 +64,10 @@ class ConfigProcessor:
         else:
             hparams_dict = dict(train_hparams)
         
+        print(f"Loading {len(hparams_dict)} hyperparameters from checkpoint")
+        if 'model' in hparams_dict:
+            print("Found model configuration in checkpoint - applying to test config")
+        
         # Merge all training hyperparameters into model.init_args
         for key, value in hparams_dict.items():
             # Skip test-specific overrides to preserve them
@@ -76,6 +80,8 @@ class ConfigProcessor:
         # Restore test-specific overrides (these take precedence)
         for key, value in test_overrides.items():
             setattr(self.sub_config.model.init_args, key, value)
+            
+        print(f"Model configuration successfully loaded: {getattr(self.sub_config.model.init_args, 'model', None) is not None}")
     
     def _get_test_overrides(self):
         """Get test-specific configuration overrides that should be preserved."""
@@ -103,21 +109,59 @@ class CustomLightningCLI(LightningCLI):
         if 'predict' in sys.argv:
             kwargs['save_config_callback'] = None
         super().__init__(*args, **kwargs)
+    
+    def add_arguments_to_parser(self, parser):
+        """Override to make model optional for test subcommand."""
+        super().add_arguments_to_parser(parser)
+        
+        # Make model parameter optional for test subcommand
+        if hasattr(parser, '_subparsers') and parser._subparsers:
+            for action in parser._subparsers._actions:
+                if hasattr(action, 'choices') and 'test' in action.choices:
+                    test_parser = action.choices['test']
+                    # Find the model argument group and make it optional
+                    for group in test_parser._action_groups:
+                        for action in group._group_actions:
+                            if hasattr(action, 'dest') and action.dest.endswith('.model'):
+                                # Make this argument optional by changing required to False
+                                if hasattr(action, 'required'):
+                                    action.required = False
 
-    def before_instantiate_classes(self):
-        if self.subcommand in ["predict", "test"]:
+    def parse_arguments(self, parser, args):
+        """Override to load checkpoint config after parsing."""
+        # Detect subcommand from args since self.subcommand might not be set yet
+        subcommand = None
+        if args and len(args) > 0:
+            for arg in args:
+                if arg in ["fit", "validate", "test", "predict"]:
+                    subcommand = arg
+                    break
+        
+        # Call parent to get initial parsed config
+        cfg = super().parse_arguments(parser, args)
+        
+        # Use detected subcommand or self.subcommand
+        effective_subcommand = self.subcommand if hasattr(self, 'subcommand') else subcommand
+        
+        # Process test/predict configs immediately after parsing
+        if effective_subcommand in ["predict", "test"]:
             try:
-                processor = ConfigProcessor(self.config, self.subcommand)
+                # Create processor with the raw config
+                processor = ConfigProcessor(cfg, effective_subcommand)
                 
-                if self.subcommand == "predict":
+                if effective_subcommand == "predict":
                     processor.process_predict_config()
-                elif self.subcommand == "test":
+                elif effective_subcommand == "test":
                     processor.process_test_config()
                     
-            except (IndexError, StopIteration, FileNotFoundError) as e:
-                print(f"Warning: Could not process config for {self.subcommand}: {e}")
-                pass
+            except (IndexError, StopIteration, FileNotFoundError, AttributeError) as e:
+                print(f"Warning: Could not process config for {effective_subcommand}: {e}")
+                import traceback
+                traceback.print_exc()
         
+        return cfg
+
+    def before_instantiate_classes(self):
         # Pass ignore_snp flag from TraceEWModule to both nested model and datamodule
         if hasattr(self.config, self.subcommand) and hasattr(getattr(self.config, self.subcommand), 'model'):
             model_config = getattr(self.config, self.subcommand).model
