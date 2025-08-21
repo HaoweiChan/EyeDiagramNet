@@ -83,7 +83,7 @@ class TraceEWModule(LightningModule):
         tau_min: float = 0.1,
         augment_insert_frac: int = 20,  # Less aggressive augmentation
         # Unified loss options
-        unified_ew_loss: str = 'separate',  # 'separate', 'focus_weighted', 'min_focused'
+        unified_ew_loss: str = 'focus_weighted',  # 'separate', 'focus_weighted', 'min_focused'
         focus_weight: float = 5.0,  # For focus_weighted loss
         min_focused_alpha: float = 0.7,  # For min_focused loss
     ):
@@ -561,41 +561,3 @@ class TraceEWModule(LightningModule):
         if self.logger:
             tag = "_".join(['sparam', str(dataloader_idx)])
             self.logger.experiment.add_image(f'{stage}/{tag}', image_to_buffer(fig), self.current_epoch)
-
-    def on_before_optimizer_step(self, optimizer):
-        """Debug: Track which parameters receive gradients after backward pass"""
-        # Only run when profiling is enabled to avoid overhead during normal training
-        profiling_enabled = (
-            hasattr(self.trainer, 'profiler') and 
-            self.trainer.profiler is not None and
-            self.trainer.profiler.__class__.__name__ not in ['PassThroughProfiler', 'SimpleProfiler']
-        )
-        
-        if profiling_enabled and self.current_epoch == 0 and self.global_step % 100 == 0:
-            unused_params = []
-            total_params = 0
-            
-            # When gradient checkpointing is enabled, it's expected that parameters
-            # within the checkpointed modules will not have gradients available at this point.
-            grad_checkpointing_active = getattr(self.model, 'use_gradient_checkpointing', False)
-            checkpointed_modules = ['trace_encoder', 'snp_encoder', 'signal_encoder']
-
-            for name, param in self.named_parameters():
-                if param.requires_grad:
-                    total_params += 1
-
-                    # If checkpointing is on, skip checking params from modules we know are wrapped.
-                    if grad_checkpointing_active and any(mod_name in name for mod_name in checkpointed_modules):
-                        continue
-
-                    if param.grad is None:
-                        unused_params.append(name)
-            
-            if unused_params:
-                print(f"Step {self.global_step} - Found {len(unused_params)}/{total_params} unused parameters:")
-                for param_name in unused_params[:10]:  # Show first 10 to avoid spam
-                    print(f"  - {param_name}")
-                if len(unused_params) > 10:
-                    print(f"  ... and {len(unused_params) - 10} more")
-            else:
-                print(f"Step {self.global_step} - All {total_params} parameters received gradients")

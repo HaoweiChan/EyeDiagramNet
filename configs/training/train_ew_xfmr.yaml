@@ -53,7 +53,7 @@ trainer:
     - class_path: lightning.pytorch.callbacks.LearningRateMonitor
       init_args:
         logging_interval: epoch
-    - class_path: ml.callbacks.dynamic_threshold.DynamicThresholdOptimizer
+    - class_path: ml.callbacks.DynamicThresholdOptimizer
       init_args:
         warm_up_epochs: 3
         update_frequency: 1
@@ -72,7 +72,7 @@ model:
   init_args:
     ckpt_path: null
     strict: false
-    ew_scaler: 100
+    ew_scaler: 10
     ew_threshold: 0.3
     compile_model: false
     use_laplace_on_fit_end: false
