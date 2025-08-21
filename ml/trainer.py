@@ -14,6 +14,51 @@ class ConfigProcessor:
         self.subcommand = subcommand
         self.sub_config = getattr(config, subcommand)
     
+    def _find_checkpoint_directory(self):
+        """Find the checkpoint directory from various config sources."""
+        ckpt_dir = None
+        
+        if self.subcommand == "predict":
+            # For predict mode, get from config array
+            ckpt_config = self.config.predict.config[0]
+            ckpt_dir = Path(str(ckpt_config)).parent
+        elif self.subcommand == "test":
+            # For test mode, look for checkpoint path in model config or use config directory
+            if hasattr(self.sub_config, 'model') and hasattr(self.sub_config.model, 'init_args'):
+                if hasattr(self.sub_config.model.init_args, 'ckpt_path'):
+                    ckpt_path = self.sub_config.model.init_args.ckpt_path
+                    ckpt_dir = Path(str(ckpt_path)).parent
+            
+            # Fallback: try to find from the main config file path if available
+            if ckpt_dir is None and hasattr(self.config, 'config') and self.config.config:
+                config_path = Path(str(self.config.config[0]))
+                # Check if this looks like a checkpoint directory structure
+                if config_path.parent.name.startswith('version_'):
+                    ckpt_dir = config_path.parent
+        
+        return ckpt_dir
+    
+    def _auto_load_scaler(self, ckpt_dir):
+        """Automatically find and set scaler path from checkpoint directory."""
+        try:
+            scaler_path = next(ckpt_dir.glob("scaler.pth"))
+            if hasattr(self.sub_config, 'data') and hasattr(self.sub_config.data, 'init_args'):
+                self.sub_config.data.init_args.scaler_path = str(scaler_path)
+                print(f"Automatically using scaler: {scaler_path}")
+                return True
+        except StopIteration:
+            try:
+                # Fallback to any .pth file
+                scaler_path = next(ckpt_dir.glob("*.pth"))
+                if hasattr(self.sub_config, 'data') and hasattr(self.sub_config.data, 'init_args'):
+                    self.sub_config.data.init_args.scaler_path = str(scaler_path)
+                    print(f"Automatically using scaler: {scaler_path}")
+                    return True
+            except StopIteration:
+                print(f"Warning: No scaler file found in {ckpt_dir}")
+                return False
+        return False
+    
     def process_predict_config(self):
         """Process configuration for predict mode - auto-find checkpoint and scaler."""
         ckpt_config = self.config.predict.config[0]
@@ -24,144 +69,40 @@ class ConfigProcessor:
         self.config.predict.data.init_args.scaler_path = str(scaler_path)
         print(f"Automatically using checkpoint: {ckpt_path} and scaler: {scaler_path}")
     
+    def process_config(self):
+        """Process configuration for the current subcommand."""
+        if self.subcommand == "predict":
+            self.process_predict_config()
+        elif self.subcommand == "test":
+            self.process_test_config()
+    
     def process_test_config(self):
-        """Process configuration for test mode - load training config from checkpoint."""
-        # Get ckpt_path from model.init_args.ckpt_path
-        ckpt_path = None
-        if (hasattr(self.sub_config, 'model') and 
-            hasattr(self.sub_config.model, 'init_args') and 
-            hasattr(self.sub_config.model.init_args, 'ckpt_path')):
-            ckpt_path = self.sub_config.model.init_args.ckpt_path
+        """Process configuration for test mode - auto-find and set scaler path."""
+        ckpt_dir = self._find_checkpoint_directory()
         
-        if not ckpt_path:
-            print("No checkpoint path found in test config")
+        if ckpt_dir is None:
+            print("Warning: Could not determine checkpoint directory for auto-loading scaler")
             return
-            
-        ckpt = torch.load(ckpt_path, map_location="cpu")
-        print(f"Loading training config from checkpoint: {ckpt_path}")
         
-        if "hyper_parameters" not in ckpt:
-            print("Warning: No hyper_parameters found in checkpoint")
-            return
-            
-        train_hparams = ckpt["hyper_parameters"]
-        print(f"Found {len(train_hparams)} hyperparameters in checkpoint")
-        print(f"Hyperparameter keys: {list(train_hparams.keys()) if hasattr(train_hparams, 'keys') else 'Not dict-like'}")
-        
-        self._merge_training_config(train_hparams)
-        print("Successfully merged training config with test config.")
-    
-    def _merge_training_config(self, train_hparams):
-        """Merge training hyperparameters with test config."""
-        # Preserve test-specific overrides first
-        test_overrides = self._get_test_overrides()
-        
-        # Convert train_hparams to dict if it's not already
-        if hasattr(train_hparams, '__dict__'):
-            hparams_dict = vars(train_hparams)
-        elif hasattr(train_hparams, 'items'):
-            hparams_dict = dict(train_hparams.items())
-        else:
-            hparams_dict = dict(train_hparams)
-        
-        print(f"Loading {len(hparams_dict)} hyperparameters from checkpoint")
-        if 'model' in hparams_dict:
-            print("Found model configuration in checkpoint - applying to test config")
-        
-        # Merge all training hyperparameters into model.init_args
-        for key, value in hparams_dict.items():
-            # Skip test-specific overrides to preserve them
-            if key not in test_overrides:
-                # Ensure the attribute exists in init_args or create it
-                if not hasattr(self.sub_config.model.init_args, key):
-                    setattr(self.sub_config.model.init_args, key, None)
-                setattr(self.sub_config.model.init_args, key, value)
-        
-        # Restore test-specific overrides (these take precedence)
-        for key, value in test_overrides.items():
-            setattr(self.sub_config.model.init_args, key, value)
-            
-        print(f"Model configuration successfully loaded: {getattr(self.sub_config.model.init_args, 'model', None) is not None}")
-    
-    def _get_test_overrides(self):
-        """Get test-specific configuration overrides that should be preserved."""
-        test_overrides = {}
-        # Common test-specific parameters that should override training config
-        override_keys = [
-            'ckpt_path',                # Checkpoint path for loading weights
-            'use_laplace_on_fit_end',   # Disable Laplace for testing
-            'compile_model',            # Disable compilation for testing
-            'strict'                    # Checkpoint loading strictness
-        ]
-        
-        for key in override_keys:
-            if hasattr(self.sub_config.model.init_args, key):
-                value = getattr(self.sub_config.model.init_args, key)
-                # Only preserve non-None values
-                if value is not None:
-                    test_overrides[key] = value
-        
-        return test_overrides
+        print(f"Found checkpoint directory: {ckpt_dir}")
+        success = self._auto_load_scaler(ckpt_dir)
 
 class CustomLightningCLI(LightningCLI):
-    """Custom CLI to handle checkpoint and scaler path resolution for predictions."""
+    """Custom CLI to handle checkpoint and scaler path resolution for predictions and testing."""
     def __init__(self, *args, **kwargs):
-        if 'predict' in sys.argv:
+        if 'predict' in sys.argv or 'test' in sys.argv:
             kwargs['save_config_callback'] = None
         super().__init__(*args, **kwargs)
-    
-    def add_arguments_to_parser(self, parser):
-        """Override to make model optional for test subcommand."""
-        super().add_arguments_to_parser(parser)
-        
-        # Make model parameter optional for test subcommand
-        if hasattr(parser, '_subparsers') and parser._subparsers:
-            for action in parser._subparsers._actions:
-                if hasattr(action, 'choices') and 'test' in action.choices:
-                    test_parser = action.choices['test']
-                    # Find the model argument group and make it optional
-                    for group in test_parser._action_groups:
-                        for action in group._group_actions:
-                            if hasattr(action, 'dest') and action.dest.endswith('.model'):
-                                # Make this argument optional by changing required to False
-                                if hasattr(action, 'required'):
-                                    action.required = False
-
-    def parse_arguments(self, parser, args):
-        """Override to load checkpoint config after parsing."""
-        # Detect subcommand from args since self.subcommand might not be set yet
-        subcommand = None
-        if args and len(args) > 0:
-            for arg in args:
-                if arg in ["fit", "validate", "test", "predict"]:
-                    subcommand = arg
-                    break
-        
-        # Call parent to get initial parsed config
-        cfg = super().parse_arguments(parser, args)
-        
-        # Use detected subcommand or self.subcommand
-        effective_subcommand = self.subcommand if hasattr(self, 'subcommand') else subcommand
-        
-        # Process test/predict configs immediately after parsing
-        if effective_subcommand in ["predict", "test"]:
-            try:
-                # Create processor with the raw config
-                processor = ConfigProcessor(cfg, effective_subcommand)
-                
-                if effective_subcommand == "predict":
-                    processor.process_predict_config()
-                elif effective_subcommand == "test":
-                    processor.process_test_config()
-                    
-            except (IndexError, StopIteration, FileNotFoundError, AttributeError) as e:
-                print(f"Warning: Could not process config for {effective_subcommand}: {e}")
-                import traceback
-                traceback.print_exc()
-        
-        return cfg
 
     def before_instantiate_classes(self):
+        # Handle predict and test mode config processing
+        if self.subcommand in ["predict", "test"]:
+            try:
+                processor = ConfigProcessor(self.config, self.subcommand)
+                processor.process_config()
+            except (IndexError, StopIteration, FileNotFoundError) as e:
+                print(f"Warning: Could not process config for {self.subcommand}: {e}")
+        
         # Pass ignore_snp flag from TraceEWModule to both nested model and datamodule
         if hasattr(self.config, self.subcommand) and hasattr(getattr(self.config, self.subcommand), 'model'):
             model_config = getattr(self.config, self.subcommand).model

@@ -22,7 +22,9 @@ echo "Starting model testing with performance settings..."
 
 bhosts GPU_3090_4
 set python_cmd = ( \
-    python3 -m ml.trainer test --config configs/training/test_ew_xfmr.yaml \
+    python3 -m ml.trainer test \
+    --config saved/ew_xfmr/version_58/config.yaml \
+    --config configs/training/test_ew_xfmr.yaml \
     --trainer.num_nodes 1 \
 )
 
