@@ -28,17 +28,33 @@ class ConfigProcessor:
         """Process configuration for test mode - auto-find and set scaler path."""
         print("Processing test config to auto-load scaler")
         
-        # Find the version directory from the config path
+        # Find the version directory from the config paths (handle multiple --config arguments)
         version_dir = None
         if hasattr(self.config, 'config') and self.config.config:
-            config_path = Path(str(self.config.config[0]))
-            # Config file should be in version_X/ directory
-            if config_path.parent.name.startswith('version_'):
-                version_dir = config_path.parent
-                print(f"Found version directory from config: {version_dir}")
+            print(f"Found config paths: {self.config.config}")
+            
+            # Check each config path to find one in a version directory
+            for config_path_str in self.config.config:
+                config_path = Path(str(config_path_str))
+                print(f"Checking config path: {config_path}")
+                
+                # Check if config file is in version_X/ directory
+                if config_path.parent.name.startswith('version_'):
+                    version_dir = config_path.parent
+                    print(f"Found version directory from config: {version_dir}")
+                    break
+                # Also check grandparent in case config is in version_X/subdir/
+                elif config_path.parent.parent.name.startswith('version_'):
+                    version_dir = config_path.parent.parent
+                    print(f"Found version directory from config (grandparent): {version_dir}")
+                    break
         
         if version_dir is None:
             print("Warning: Could not determine version directory for scaler auto-loading")
+            print("Available config paths checked:")
+            if hasattr(self.config, 'config') and self.config.config:
+                for config_path_str in self.config.config:
+                    print(f"  - {config_path_str}")
             return
         
         # Look for scaler.pth in the version directory (not in checkpoints subdirectory)
