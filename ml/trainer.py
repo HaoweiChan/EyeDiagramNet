@@ -40,20 +40,34 @@ class ConfigProcessor:
     
     def _auto_load_scaler(self, ckpt_dir):
         """Automatically find and set scaler path from checkpoint directory."""
+        print(f"DEBUG: Looking for scaler files in {ckpt_dir}")
+        
+        # List all files in the directory for debugging
+        all_files = list(ckpt_dir.glob("*"))
+        print(f"DEBUG: All files in checkpoint dir: {all_files}")
+        
         try:
             scaler_path = next(ckpt_dir.glob("scaler.pth"))
+            print(f"DEBUG: Found scaler.pth at {scaler_path}")
             if hasattr(self.sub_config, 'data') and hasattr(self.sub_config.data, 'init_args'):
                 self.sub_config.data.init_args.scaler_path = str(scaler_path)
                 print(f"Automatically using scaler: {scaler_path}")
                 return True
+            else:
+                print("DEBUG: Could not set scaler_path - no data.init_args found")
         except StopIteration:
+            print("DEBUG: No scaler.pth found, trying any .pth file")
             try:
                 # Fallback to any .pth file
+                pth_files = list(ckpt_dir.glob("*.pth"))
+                print(f"DEBUG: Found .pth files: {pth_files}")
                 scaler_path = next(ckpt_dir.glob("*.pth"))
                 if hasattr(self.sub_config, 'data') and hasattr(self.sub_config.data, 'init_args'):
                     self.sub_config.data.init_args.scaler_path = str(scaler_path)
                     print(f"Automatically using scaler: {scaler_path}")
                     return True
+                else:
+                    print("DEBUG: Could not set scaler_path - no data.init_args found")
             except StopIteration:
                 print(f"Warning: No scaler file found in {ckpt_dir}")
                 return False
@@ -78,6 +92,9 @@ class ConfigProcessor:
     
     def process_test_config(self):
         """Process configuration for test mode - auto-find and set scaler path."""
+        print(f"DEBUG: Processing test config, sub_config type: {type(self.sub_config)}")
+        print(f"DEBUG: sub_config attributes: {dir(self.sub_config)}")
+        
         ckpt_dir = self._find_checkpoint_directory()
         
         if ckpt_dir is None:
@@ -85,7 +102,20 @@ class ConfigProcessor:
             return
         
         print(f"Found checkpoint directory: {ckpt_dir}")
+        
+        # Debug data config
+        if hasattr(self.sub_config, 'data'):
+            print(f"DEBUG: Found data config: {self.sub_config.data}")
+            if hasattr(self.sub_config.data, 'init_args'):
+                print(f"DEBUG: Found data init_args: {self.sub_config.data.init_args}")
+                print(f"DEBUG: Current scaler_path: {getattr(self.sub_config.data.init_args, 'scaler_path', 'NOT_SET')}")
+            else:
+                print("DEBUG: No init_args in data config")
+        else:
+            print("DEBUG: No data config found")
+        
         success = self._auto_load_scaler(ckpt_dir)
+        print(f"DEBUG: Auto-load scaler result: {success}")
 
 class CustomLightningCLI(LightningCLI):
     """Custom CLI to handle checkpoint and scaler path resolution for predictions and testing."""

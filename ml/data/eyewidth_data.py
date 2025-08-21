@@ -265,13 +265,27 @@ class TraceSeqEWDataloader(LightningDataModule):
         # Scalers
         fit_scaler = True
         try:
+            if self.scaler_path is None:
+                raise FileNotFoundError("No scaler path provided")
             self.seq_scaler, self.fix_scaler = torch.load(self.scaler_path)
             rank_zero_info(f"Loaded scalers from {self.scaler_path}")
             fit_scaler = False
-        except (FileNotFoundError, AttributeError, EOFError):
+        except (FileNotFoundError, AttributeError, EOFError) as e:
+            # In test/predict modes, we must have valid scalers - don't create new ones
+            if stage in ["test", "predict"] or stage is None:
+                error_msg = f"Cannot find or load scaler file for {stage or 'test/predict'} mode"
+                if self.scaler_path:
+                    error_msg += f" at path: {self.scaler_path}"
+                else:
+                    error_msg += " (no scaler_path provided)"
+                error_msg += f". Original error: {e}"
+                rank_zero_info(f"ERROR: {error_msg}")
+                raise FileNotFoundError(error_msg)
+            
+            # Only create new scalers during training
             self.seq_scaler = MinMaxScaler(nan=nan)
             self.fix_scaler = MinMaxScaler(nan=nan)
-            rank_zero_info("Could not find scalers on disk, creating new ones.")
+            rank_zero_info("Could not find scalers on disk, creating new ones for training.")
 
         # locate every CSV once via processor
         processor = CSVProcessor()
