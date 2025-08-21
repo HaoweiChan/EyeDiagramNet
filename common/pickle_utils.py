@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Dict, Any, List
 from dataclasses import dataclass
 
+
 @dataclass
 class SimulationResult:
     """
@@ -87,7 +88,6 @@ class DataWriter:
         """Returns the number of samples currently in the data."""
         return len(self.data.get('configs', []))
 
-
 def load_pickle_data(pfile: Path) -> List[SimulationResult]:
     """
     Loads a pickle file and converts its contents into a list of SimulationResult dataclasses.
@@ -99,17 +99,23 @@ def load_pickle_data(pfile: Path) -> List[SimulationResult]:
     Returns:
         List of SimulationResult dataclasses, empty list if file is malformed or missing
     """
+    from lightning.pytorch.utilities.rank_zero import rank_zero_info
+    
     try:
         with open(pfile, 'rb') as f:
             data = pickle.load(f)
-    except (pickle.UnpicklingError, EOFError, FileNotFoundError):
+    except FileNotFoundError:
+        rank_zero_info(f"File not found: {pfile}")
+        return []
+    except (pickle.UnpicklingError, EOFError) as e:
+        rank_zero_info(f"Error loading pickle file {pfile}: {e}")
         return []
 
     results = []
     
     # Check for the expected dictionary structure
     if not isinstance(data, dict) or not all(k in data for k in ['configs', 'line_ews', 'meta']):
-        print(f"Warning: Pickle file {pfile.name} has an unexpected format. Skipping.")
+        rank_zero_info(f"Warning: Pickle file {pfile.name} has an unexpected format. Skipping.")
         return []
 
     n_samples = len(data.get('configs', []))
@@ -147,11 +153,10 @@ def load_pickle_data(pfile: Path) -> List[SimulationResult]:
             )
             results.append(result)
         except (IndexError, KeyError) as e:
-            print(f"Warning: Skipping malformed sample {i} in {pfile.name} due to missing data: {e}")
+            rank_zero_info(f"Warning: Skipping malformed sample {i} in {pfile.name} due to missing data: {e}")
             continue
             
     return results
-
 
 def load_pickle_directory(label_dir: Path, dataset_name: str, config_keys: list = None) -> dict:
     """
@@ -167,13 +172,19 @@ def load_pickle_directory(label_dir: Path, dataset_name: str, config_keys: list 
         (configs, directions_list, line_ews_list, snp_vert, meta)
     """
     from common.param_types import SampleResult, to_new_param_name
+    from lightning.pytorch.utilities.rank_zero import rank_zero_info
     
     labels = {}
     processed_files = 0
     skipped_files = 0
     
-    pkl_files = list(Path(label_dir, dataset_name).glob("*.pkl"))
-    print(f"Found {len(pkl_files)} pickle files in {label_dir}/{dataset_name}")
+    dataset_path = Path(label_dir, dataset_name)
+    if not dataset_path.exists():
+        rank_zero_info(f"Dataset path does not exist: {dataset_path}")
+        return {}
+        
+    pkl_files = list(dataset_path.glob("*.pkl"))
+    rank_zero_info(f"Found {len(pkl_files)} pickle files in {dataset_path}")
     
     for pkl_file in pkl_files:
         try:
@@ -181,7 +192,7 @@ def load_pickle_directory(label_dir: Path, dataset_name: str, config_keys: list 
             results = load_pickle_data(pkl_file)
             
             if not results:
-                print(f"Warning: Skipping malformed or empty pickle: {pkl_file.name}")
+                rank_zero_info(f"Warning: Skipping malformed or empty pickle: {pkl_file.name}")
                 skipped_files += 1
                 continue
 
@@ -190,7 +201,7 @@ def load_pickle_directory(label_dir: Path, dataset_name: str, config_keys: list 
             snp_horiz_path = first_result.snp_horiz
 
             if not snp_horiz_path:
-                print(f"Warning: Skipping malformed pickle: {pkl_file.name} ('snp_horiz' not found).")
+                rank_zero_info(f"Warning: Skipping malformed pickle: {pkl_file.name} ('snp_horiz' not found).")
                 skipped_files += 1
                 continue
 
@@ -221,16 +232,16 @@ def load_pickle_directory(label_dir: Path, dataset_name: str, config_keys: list 
             if key is None:
                 import hashlib
                 key = int(hashlib.md5(pkl_file.name.encode()).hexdigest()[:8], 16)
-                print(f"Warning: Could not parse case ID from '{snp_horiz_path}' or '{pkl_file.name}'. "
+                rank_zero_info(f"Warning: Could not parse case ID from '{snp_horiz_path}' or '{pkl_file.name}'. "
                       f"Using hash-based key: {key}")
             
             # Check for duplicate keys
             if key in labels:
-                print(f"Warning: Duplicate key {key} found for file {pkl_file.name}. "
+                rank_zero_info(f"Warning: Duplicate key {key} found for file {pkl_file.name}. "
                       f"Previous file will be overwritten.")
                 
         except Exception as e:
-            print(f"Error processing file {pkl_file.name}: {str(e)}")
+            rank_zero_info(f"Error processing file {pkl_file.name}: {str(e)}")
             skipped_files += 1
             continue
 
@@ -255,12 +266,12 @@ def load_pickle_directory(label_dir: Path, dataset_name: str, config_keys: list 
                     snp_drvs.append(result.snp_drv)
                     snp_odts.append(result.snp_odt)
                 except Exception as e:
-                    print(f"Warning: Error processing result in {pkl_file.name}: {str(e)}")
+                    rank_zero_info(f"Warning: Error processing result in {pkl_file.name}: {str(e)}")
                     continue
 
             # Skip file if no valid results were processed
             if not configs:
-                print(f"Warning: No valid results found in {pkl_file.name}")
+                rank_zero_info(f"Warning: No valid results found in {pkl_file.name}")
                 skipped_files += 1
                 continue
 
@@ -294,15 +305,14 @@ def load_pickle_directory(label_dir: Path, dataset_name: str, config_keys: list 
             processed_files += 1
             
         except Exception as e:
-            print(f"Error processing data from {pkl_file.name}: {str(e)}")
+            rank_zero_info(f"Error processing data from {pkl_file.name}: {str(e)}")
             skipped_files += 1
             continue
     
     # Print summary
-    print(f"Successfully processed {processed_files} pickle files, skipped {skipped_files} files")
+    rank_zero_info(f"Successfully processed {processed_files} pickle files, skipped {skipped_files} files")
     
     return labels
-
 
 def convert_configs_to_boundaries(configs_list: list, config_keys: list):
     """
