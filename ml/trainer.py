@@ -31,12 +31,19 @@ class ConfigProcessor:
         # Find the version directory from the config paths (handle multiple --config arguments)
         version_dir = None
         if hasattr(self.config, 'config') and self.config.config:
-            print(f"Found config paths: {self.config.config}")
+            print(f"Found {len(self.config.config)} config paths")
             
             # Check each config path to find one in a version directory
-            for config_path_str in self.config.config:
-                config_path = Path(str(config_path_str))
-                print(f"Checking config path: {config_path}")
+            for i, config_path_obj in enumerate(self.config.config):
+                # Handle Path_fsr objects by accessing their path attribute or converting properly
+                if hasattr(config_path_obj, '__fspath__'):
+                    config_path = Path(config_path_obj.__fspath__())
+                elif hasattr(config_path_obj, 'path'):
+                    config_path = Path(str(config_path_obj.path))
+                else:
+                    config_path = Path(str(config_path_obj))
+                
+                print(f"Checking config path {i}: {config_path}")
                 
                 # Check if config file is in version_X/ directory
                 if config_path.parent.name.startswith('version_'):
@@ -44,7 +51,7 @@ class ConfigProcessor:
                     print(f"Found version directory from config: {version_dir}")
                     break
                 # Also check grandparent in case config is in version_X/subdir/
-                elif config_path.parent.parent.name.startswith('version_'):
+                elif len(config_path.parts) > 2 and config_path.parent.parent.name.startswith('version_'):
                     version_dir = config_path.parent.parent
                     print(f"Found version directory from config (grandparent): {version_dir}")
                     break
