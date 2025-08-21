@@ -14,65 +14,6 @@ class ConfigProcessor:
         self.subcommand = subcommand
         self.sub_config = getattr(config, subcommand)
     
-    def _find_checkpoint_directory(self):
-        """Find the checkpoint directory from various config sources."""
-        ckpt_dir = None
-        
-        if self.subcommand == "predict":
-            # For predict mode, get from config array
-            ckpt_config = self.config.predict.config[0]
-            ckpt_dir = Path(str(ckpt_config)).parent
-        elif self.subcommand == "test":
-            # For test mode, look for checkpoint path in model config or use config directory
-            if hasattr(self.sub_config, 'model') and hasattr(self.sub_config.model, 'init_args'):
-                if hasattr(self.sub_config.model.init_args, 'ckpt_path'):
-                    ckpt_path = self.sub_config.model.init_args.ckpt_path
-                    ckpt_dir = Path(str(ckpt_path)).parent
-            
-            # Fallback: try to find from the main config file path if available
-            if ckpt_dir is None and hasattr(self.config, 'config') and self.config.config:
-                config_path = Path(str(self.config.config[0]))
-                # Check if this looks like a checkpoint directory structure
-                if config_path.parent.name.startswith('version_'):
-                    ckpt_dir = config_path.parent
-        
-        return ckpt_dir
-    
-    def _auto_load_scaler(self, ckpt_dir):
-        """Automatically find and set scaler path from checkpoint directory."""
-        print(f"DEBUG: Looking for scaler files in {ckpt_dir}")
-        
-        # List all files in the directory for debugging
-        all_files = list(ckpt_dir.glob("*"))
-        print(f"DEBUG: All files in checkpoint dir: {all_files}")
-        
-        try:
-            scaler_path = next(ckpt_dir.glob("scaler.pth"))
-            print(f"DEBUG: Found scaler.pth at {scaler_path}")
-            if hasattr(self.sub_config, 'data') and hasattr(self.sub_config.data, 'init_args'):
-                self.sub_config.data.init_args.scaler_path = str(scaler_path)
-                print(f"Automatically using scaler: {scaler_path}")
-                return True
-            else:
-                print("DEBUG: Could not set scaler_path - no data.init_args found")
-        except StopIteration:
-            print("DEBUG: No scaler.pth found, trying any .pth file")
-            try:
-                # Fallback to any .pth file
-                pth_files = list(ckpt_dir.glob("*.pth"))
-                print(f"DEBUG: Found .pth files: {pth_files}")
-                scaler_path = next(ckpt_dir.glob("*.pth"))
-                if hasattr(self.sub_config, 'data') and hasattr(self.sub_config.data, 'init_args'):
-                    self.sub_config.data.init_args.scaler_path = str(scaler_path)
-                    print(f"Automatically using scaler: {scaler_path}")
-                    return True
-                else:
-                    print("DEBUG: Could not set scaler_path - no data.init_args found")
-            except StopIteration:
-                print(f"Warning: No scaler file found in {ckpt_dir}")
-                return False
-        return False
-    
     def process_predict_config(self):
         """Process configuration for predict mode - auto-find checkpoint and scaler."""
         ckpt_config = self.config.predict.config[0]
@@ -83,39 +24,53 @@ class ConfigProcessor:
         self.config.predict.data.init_args.scaler_path = str(scaler_path)
         print(f"Automatically using checkpoint: {ckpt_path} and scaler: {scaler_path}")
     
+    def process_test_config(self):
+        """Process configuration for test mode - auto-find and set scaler path."""
+        print("Processing test config to auto-load scaler")
+        
+        # Find the version directory from the config path
+        version_dir = None
+        if hasattr(self.config, 'config') and self.config.config:
+            config_path = Path(str(self.config.config[0]))
+            # Config file should be in version_X/ directory
+            if config_path.parent.name.startswith('version_'):
+                version_dir = config_path.parent
+                print(f"Found version directory from config: {version_dir}")
+        
+        if version_dir is None:
+            print("Warning: Could not determine version directory for scaler auto-loading")
+            return
+        
+        # Look for scaler.pth in the version directory (not in checkpoints subdirectory)
+        scaler_files = list(version_dir.glob("*.pth"))
+        print(f"Found {len(scaler_files)} .pth files in {version_dir}: {[f.name for f in scaler_files]}")
+        
+        if not scaler_files:
+            print(f"No .pth scaler files found in {version_dir}")
+            return
+        
+        # Use scaler.pth if exists, otherwise the first .pth file
+        scaler_path = None
+        for f in scaler_files:
+            if f.name == "scaler.pth":
+                scaler_path = f
+                break
+        if scaler_path is None:
+            scaler_path = scaler_files[0]
+        
+        # Set scaler path in data configuration
+        if hasattr(self.sub_config, 'data') and hasattr(self.sub_config.data, 'init_args'):
+            self.sub_config.data.init_args.scaler_path = str(scaler_path)
+            print(f"Set scaler_path to: {scaler_path}")
+        else:
+            print("Warning: Could not set scaler_path - data config structure not found")
+    
     def process_config(self):
         """Process configuration for the current subcommand."""
         if self.subcommand == "predict":
             self.process_predict_config()
         elif self.subcommand == "test":
             self.process_test_config()
-    
-    def process_test_config(self):
-        """Process configuration for test mode - auto-find and set scaler path."""
-        print(f"DEBUG: Processing test config, sub_config type: {type(self.sub_config)}")
-        print(f"DEBUG: sub_config attributes: {dir(self.sub_config)}")
-        
-        ckpt_dir = self._find_checkpoint_directory()
-        
-        if ckpt_dir is None:
-            print("Warning: Could not determine checkpoint directory for auto-loading scaler")
-            return
-        
-        print(f"Found checkpoint directory: {ckpt_dir}")
-        
-        # Debug data config
-        if hasattr(self.sub_config, 'data'):
-            print(f"DEBUG: Found data config: {self.sub_config.data}")
-            if hasattr(self.sub_config.data, 'init_args'):
-                print(f"DEBUG: Found data init_args: {self.sub_config.data.init_args}")
-                print(f"DEBUG: Current scaler_path: {getattr(self.sub_config.data.init_args, 'scaler_path', 'NOT_SET')}")
-            else:
-                print("DEBUG: No init_args in data config")
-        else:
-            print("DEBUG: No data config found")
-        
-        success = self._auto_load_scaler(ckpt_dir)
-        print(f"DEBUG: Auto-load scaler result: {success}")
 
 class CustomLightningCLI(LightningCLI):
     """Custom CLI to handle checkpoint and scaler path resolution for predictions and testing."""
