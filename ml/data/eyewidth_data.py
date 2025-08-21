@@ -267,7 +267,8 @@ class TraceSeqEWDataloader(LightningDataModule):
         try:
             if self.scaler_path is None:
                 raise FileNotFoundError("No scaler path provided")
-            self.seq_scaler, self.fix_scaler = torch.load(self.scaler_path)
+            # Use weights_only=False for backward compatibility with custom scaler classes
+            self.seq_scaler, self.fix_scaler = torch.load(self.scaler_path, weights_only=False)
             rank_zero_info(f"Loaded scalers from {self.scaler_path}")
             fit_scaler = False
         except (FileNotFoundError, AttributeError, EOFError) as e:
