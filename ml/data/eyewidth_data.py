@@ -436,11 +436,12 @@ class InferenceTraceSeqEWDataloader(LightningDataModule):
     def __init__(
         self,
         data_dirs: list[str],
-        drv_snp: str,
-        odt_snp: str,
-        batch_size: int,
+        drv_snp: str = None,
+        odt_snp: str = None,
+        batch_size: int = 100,
         bound_path: str = None,
         scaler_path: str = None,
+        ignore_snp: bool = False,
     ):
         super().__init__()
         self.data_dirs = data_dirs
@@ -449,6 +450,7 @@ class InferenceTraceSeqEWDataloader(LightningDataModule):
         self.batch_size = batch_size
         self.bound_path = bound_path
         self.scaler_path = scaler_path
+        self.ignore_snp = ignore_snp
 
     def setup(self, stage=None):
         # Initialize processor and locate CSV files
@@ -456,13 +458,30 @@ class InferenceTraceSeqEWDataloader(LightningDataModule):
         csv_paths = processor.locate(self.data_dirs)
 
         # Load scaler
-        scalers = torch.load(self.scaler_path)
+        scalers = torch.load(self.scaler_path, weights_only=False)
         rank_zero_info(f"Loaded scaler object from {self.scaler_path}")
 
-        drv = read_snp(Path(self.drv_snp))
-        odt = read_snp(Path(self.odt_snp))
-        assert drv.s.shape[-1] == odt.s.shape[-1], \
-            f"DRV {self.drv_snp} and ODT {self.odt_snp} must match ports."
+        # Handle SNP loading based on ignore_snp flag
+        if self.ignore_snp:
+            rank_zero_info("Using dummy SNP data (ignore_snp=True)")
+            # Create dummy SNP data with minimal structure
+            dummy_freq = np.array([1e9])  # Single frequency point
+            dummy_s = np.zeros((1, 4, 4), dtype=complex)  # 4x4 S-parameter matrix
+            
+            class DummySNP:
+                def __init__(self):
+                    self.s = dummy_s
+            
+            drv = DummySNP()
+            odt = DummySNP()
+        else:
+            if self.drv_snp is None or self.odt_snp is None:
+                raise ValueError("drv_snp and odt_snp must be provided when ignore_snp=False")
+            
+            drv = read_snp(Path(self.drv_snp))
+            odt = read_snp(Path(self.odt_snp))
+            assert drv.s.shape[-1] == odt.s.shape[-1], \
+                f"DRV {self.drv_snp} and ODT {self.odt_snp} must match ports."
 
         # Load boundary JSON
         with open(self.bound_path, 'r') as f:

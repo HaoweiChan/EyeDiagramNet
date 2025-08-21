@@ -1,0 +1,43 @@
+# lightning.pytorch==2.5.1.post0
+# Inference configuration - minimal config that will be merged with training config from checkpoint
+seed_everything: true
+
+trainer:
+  accelerator: gpu
+  devices: 1
+  num_nodes: 1
+  precision: 16-mixed
+  logger:
+    - class_path: lightning.pytorch.loggers.TensorBoardLogger
+      init_args:
+        save_dir: ./saved/
+        name: infer_ew_xfmr
+  callbacks:
+    - class_path: ml.callbacks.ew_prediction_writer.EWPredictionWriter
+      init_args:
+        file_prefix: ew_predictions
+        write_interval: epoch
+
+# Inference-specific overrides - these will override training config
+model:
+  class_path: ml.modules.trace_ew_module.TraceEWModule
+  init_args:
+    ckpt_path: ./saved/ew_xfmr/version_23/checkpoints/last.ckpt 
+    use_laplace_on_fit_end: false  # Disable Laplace for inference
+    compile_model: false  # Disable compilation for inference
+
+# Inference data configuration - uses InferenceTraceSeqEWDataloader
+data:
+  class_path: ml.data.eyewidth_data.InferenceTraceSeqEWDataloader
+  init_args:
+    data_dirs:
+      - /proj/siaiadm/ew_predictor/test_data/sub_task/trace_input/5mi
+      - /proj/siaiadm/ew_predictor/test_data/sub_task/trace_input/8mi
+      - /proj/siaiadm/ew_predictor/test_data/sub_task/trace_input/9mi
+    # SNP files - only required if ignore_snp=False in model config
+    drv_snp: /proj/siaiadm/ew_predictor/test_data/sub_task/snp_input/drv.s4p
+    odt_snp: /proj/siaiadm/ew_predictor/test_data/sub_task/snp_input/odt.s4p
+    bound_path: /proj/siaiadm/ew_predictor/test_data/sub_task/boundary.json
+    batch_size: 100
+    ignore_snp: false  # Will be overridden by trainer.py if model has ignore_snp=true
+    # scaler_path will be auto-set by trainer.py config processor

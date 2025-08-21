@@ -53,9 +53,9 @@ endif
 # Build the python command
 set ckpt_cfg = "saved/ew_xfmr/version_58/config.yaml"
 set python_cmd = ( \
-    python3 -m ml.trainer test \
+    python3 -m ml.trainer predict \
     --config $ckpt_cfg \
-    --config configs/training/test_ew_xfmr.yaml \
+    --config configs/training/infer_ew_xfmr.yaml \
     --trainer.num_nodes 1 \
     $batch_args \
 )

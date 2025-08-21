@@ -16,13 +16,64 @@ class ConfigProcessor:
     
     def process_predict_config(self):
         """Process configuration for predict mode - auto-find checkpoint and scaler."""
-        ckpt_config = self.config.predict.config[0]
-        ckpt_dir = Path(str(ckpt_config)).parent
-        ckpt_path = next(reversed(sorted(ckpt_dir.glob("*.ckpt"))))
-        self.config.predict.ckpt_path = str(ckpt_path)
-        scaler_path = next(ckpt_dir.glob("*.pth"))
-        self.config.predict.data.init_args.scaler_path = str(scaler_path)
-        print(f"Automatically using checkpoint: {ckpt_path} and scaler: {scaler_path}")
+        print("Processing predict config to auto-load scaler")
+        
+        # Find the version directory from the config paths 
+        version_dir = None
+        if hasattr(self.config.predict, 'config') and self.config.predict.config:
+            print(f"Found {len(self.config.predict.config)} config paths")
+            
+            # Check each config path to find one in a version directory
+            for i, config_path_obj in enumerate(self.config.predict.config):
+                # Handle Path_fsr objects
+                if hasattr(config_path_obj, '__fspath__'):
+                    config_path = Path(config_path_obj.__fspath__())
+                elif hasattr(config_path_obj, 'path'):
+                    config_path = Path(str(config_path_obj.path))
+                else:
+                    config_path = Path(str(config_path_obj))
+                
+                print(f"Checking config path {i}: {config_path}")
+                
+                # Check if config file is in version_X/ directory
+                if config_path.parent.name.startswith('version_'):
+                    version_dir = config_path.parent
+                    print(f"Found version directory from config: {version_dir}")
+                    break
+                elif len(config_path.parts) > 2 and config_path.parent.parent.name.startswith('version_'):
+                    version_dir = config_path.parent.parent
+                    print(f"Found version directory from config (grandparent): {version_dir}")
+                    break
+        
+        if version_dir is None:
+            print("Warning: Could not determine version directory for scaler auto-loading")
+            return
+        
+        # Find checkpoint and scaler in version directory
+        checkpoint_dir = version_dir / "checkpoints"
+        if checkpoint_dir.exists():
+            ckpt_path = next(reversed(sorted(checkpoint_dir.glob("*.ckpt"))))
+            self.config.predict.ckpt_path = str(ckpt_path)
+            print(f"Found checkpoint: {ckpt_path}")
+        
+        # Look for scaler.pth in version directory (not in checkpoints)
+        scaler_files = list(version_dir.glob("*.pth"))
+        print(f"Found {len(scaler_files)} .pth files in {version_dir}: {[f.name for f in scaler_files]}")
+        
+        if scaler_files:
+            # Use scaler.pth if exists, otherwise the first .pth file
+            scaler_path = None
+            for f in scaler_files:
+                if f.name == "scaler.pth":
+                    scaler_path = f
+                    break
+            if scaler_path is None:
+                scaler_path = scaler_files[0]
+            
+            self.config.predict.data.init_args.scaler_path = str(scaler_path)
+            print(f"Set scaler_path to: {scaler_path}")
+        else:
+            print(f"No .pth scaler files found in {version_dir}")
     
     def process_test_config(self):
         """Process configuration for test mode - auto-find and set scaler path."""
