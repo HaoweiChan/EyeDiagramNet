@@ -30,11 +30,11 @@ class ConfigProcessor:
         
         # Find the version directory from the config paths (handle multiple --config arguments)
         version_dir = None
-        if hasattr(self.config, 'config') and self.config.config:
-            print(f"Found {len(self.config.config)} config paths")
+        if hasattr(self.sub_config, 'config') and self.sub_config.config:
+            print(f"Found {len(self.sub_config.config)} config paths")
             
             # Check each config path to find one in a version directory
-            for i, config_path_obj in enumerate(self.config.config):
+            for i, config_path_obj in enumerate(self.sub_config.config):
                 # Handle Path_fsr objects by accessing their path attribute or converting properly
                 if hasattr(config_path_obj, '__fspath__'):
                     config_path = Path(config_path_obj.__fspath__())
@@ -59,9 +59,9 @@ class ConfigProcessor:
         if version_dir is None:
             print("Warning: Could not determine version directory for scaler auto-loading")
             print("Available config paths checked:")
-            if hasattr(self.config, 'config') and self.config.config:
-                for config_path_str in self.config.config:
-                    print(f"  - {config_path_str}")
+            if hasattr(self.sub_config, 'config') and self.sub_config.config:
+                for config_path_obj in self.sub_config.config:
+                    print(f"  - {config_path_obj}")
             return
         
         # Look for scaler.pth in the version directory (not in checkpoints subdirectory)
