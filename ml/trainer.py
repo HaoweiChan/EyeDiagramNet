@@ -45,45 +45,55 @@ class ConfigProcessor:
             return
             
         train_hparams = ckpt["hyper_parameters"]
+        print(f"Found {len(train_hparams)} hyperparameters in checkpoint")
+        print(f"Hyperparameter keys: {list(train_hparams.keys()) if hasattr(train_hparams, 'keys') else 'Not dict-like'}")
+        
         self._merge_training_config(train_hparams)
         print("Successfully merged training config with test config.")
     
     def _merge_training_config(self, train_hparams):
         """Merge training hyperparameters with test config."""
-        # Check if model config exists in training hyperparameters
-        if not (hasattr(train_hparams, 'model') or 'model' in train_hparams):
-            return
-            
-        # Get training model config
-        if hasattr(train_hparams, 'model'):
-            train_model_config = train_hparams.model
-        else:
-            train_model_config = train_hparams['model']
-        
-        # Preserve test-specific overrides
+        # Preserve test-specific overrides first
         test_overrides = self._get_test_overrides()
         
-        # Update model config with training parameters
-        config_items = (train_model_config.items() 
-                       if isinstance(train_model_config, dict) 
-                       else vars(train_model_config).items())
+        # Convert train_hparams to dict if it's not already
+        if hasattr(train_hparams, '__dict__'):
+            hparams_dict = vars(train_hparams)
+        elif hasattr(train_hparams, 'items'):
+            hparams_dict = dict(train_hparams.items())
+        else:
+            hparams_dict = dict(train_hparams)
         
-        for key, value in config_items:
-            if hasattr(self.sub_config.model.init_args, key) and key not in test_overrides:
+        # Merge all training hyperparameters into model.init_args
+        for key, value in hparams_dict.items():
+            # Skip test-specific overrides to preserve them
+            if key not in test_overrides:
+                # Ensure the attribute exists in init_args or create it
+                if not hasattr(self.sub_config.model.init_args, key):
+                    setattr(self.sub_config.model.init_args, key, None)
                 setattr(self.sub_config.model.init_args, key, value)
         
-        # Restore test-specific overrides
+        # Restore test-specific overrides (these take precedence)
         for key, value in test_overrides.items():
             setattr(self.sub_config.model.init_args, key, value)
     
     def _get_test_overrides(self):
         """Get test-specific configuration overrides that should be preserved."""
         test_overrides = {}
-        override_keys = ['ckpt_path', 'use_laplace_on_fit_end']
+        # Common test-specific parameters that should override training config
+        override_keys = [
+            'ckpt_path',                # Checkpoint path for loading weights
+            'use_laplace_on_fit_end',   # Disable Laplace for testing
+            'compile_model',            # Disable compilation for testing
+            'strict'                    # Checkpoint loading strictness
+        ]
         
         for key in override_keys:
             if hasattr(self.sub_config.model.init_args, key):
-                test_overrides[key] = getattr(self.sub_config.model.init_args, key)
+                value = getattr(self.sub_config.model.init_args, key)
+                # Only preserve non-None values
+                if value is not None:
+                    test_overrides[key] = value
         
         return test_overrides
 
