@@ -2,6 +2,7 @@ import torch
 import numpy as np
 from abc import ABC, abstractmethod
 
+
 class BaseScaler(ABC):
     """
     Base class for all scalers.
@@ -35,7 +36,6 @@ class BaseScaler(ABC):
     @abstractmethod
     def inverse_transform(self, values):
         pass
-
 
 class StandardScaler(BaseScaler):
     def __init__(self, mean=None, std=None, epsilon=1e-7, nan=0.0):
@@ -88,7 +88,6 @@ class StandardScaler(BaseScaler):
         std_tensor = self.std.to(device=values.device, dtype=values.dtype)
         mean_tensor = self.mean.to(device=values.device, dtype=values.dtype)
         return values * std_tensor + mean_tensor
-
 
 class MinMaxScaler(BaseScaler):
     def __init__(self, min_=None, max_=None, nan=0.0):
@@ -166,7 +165,6 @@ class MinMaxScaler(BaseScaler):
         max_tensor = self.max_.to(device=values.device, dtype=values.dtype)
         min_tensor = self.min_.to(device=values.device, dtype=values.dtype)
         return values * (max_tensor - min_tensor) + min_tensor
-
 
 class MaxAbsScaler(BaseScaler):
     def __init__(self, max_=None, nan=0.0):

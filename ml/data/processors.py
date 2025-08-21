@@ -172,7 +172,6 @@ class TraceSequenceProcessor:
         Returns:
             layers, types, feats, spatials - matching current model expectations
         """
-        feat_dim = seq_input.size(-1) - 4  # Total features excluding layer, type, x_dim, z_dim
         layers = seq_input[:, :, cls.LAYER_IDX:cls.LAYER_IDX+1]  # Keep dim
         types = seq_input[:, :, cls.TYPE_IDX:cls.TYPE_IDX+1]     # Keep dim  
         feats = seq_input[:, :, cls.GEOM_START:cls.SPATIAL_START]  # All middle features

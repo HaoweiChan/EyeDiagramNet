@@ -76,7 +76,7 @@ def parse_snps(snp_dir, indices):
 
 def flip_snp(s_matrix: torch.Tensor) -> torch.Tensor:
     """
-    Invert the ports of a network's scattering parameter matrix (s-matrix), 'flipping' it over left and right.
+    Invert the ports of a network's scattering parameter matrix (s-matrix), 'flipping' it over tx and rx.
     In case the network is a 2n-port and n > 1, the 'second' numbering scheme is
     assumed to be consistent with the ** cascade operator.
 

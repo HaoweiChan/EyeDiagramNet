@@ -7,13 +7,11 @@ import torchmetrics as tm
 from dataclasses import dataclass
 from lightning import LightningModule
 from lightning.pytorch.utilities.rank_zero import rank_zero_info
-from lightning.pytorch.utilities.combined_loader import CombinedLoader
 
 from ..models.layers import LearnableLossWeighting
 from ..utils import losses
 from ..utils.losses import focus_weighted_eye_width_loss, min_focused_loss
 from ..utils.init_weights import init_weights
-from ..utils.laplace_utils import setup_laplace_dataloader, get_sample_inputs_from_datamodule
 from ..utils.visualization import image_to_buffer, plot_ew_curve
 
 @torch.jit.script
@@ -83,7 +81,6 @@ class TraceEWModule(LightningModule):
         use_laplace_on_fit_end: bool = True,
         ignore_snp: bool = False,
         tau_min: float = 0.1,
-        min_loss_weight: float = 0.1,
         augment_insert_frac: int = 20,  # Less aggressive augmentation
         # Unified loss options
         unified_ew_loss: str = 'separate',  # 'separate', 'focus_weighted', 'min_focused'
@@ -197,9 +194,10 @@ class TraceEWModule(LightningModule):
         if not self.hparams.use_laplace_on_fit_end or self.trainer.global_rank != 0:
             return
             
-        rank_zero_info("Fitting Laplace approximation on the last layer...")
-        
+        from ..utils.laplace_utils import setup_laplace_dataloader
+
         # Setup Laplace-compatible dataloader using utility functions
+        rank_zero_info("Fitting Laplace approximation on the last layer...")
         laplace_loader = setup_laplace_dataloader(self.trainer.datamodule, self.device)
         
         # Pass the datamodule to fit_laplace
@@ -346,10 +344,8 @@ class TraceEWModule(LightningModule):
         """Calculate composite loss and prepare everything needed for metric updates."""
         pred_ew, pred_logits = forward_out["train"]
 
-        # --- classification helpers --------------------------------------------------
-        true_prob = (item.true_ew > 0).float()
-        
         # --- Classification loss -----------------------------------------------------
+        true_prob = (item.true_ew > 0).float()
         bce_loss = F.binary_cross_entropy_with_logits(pred_logits, true_prob)
 
         # --- Eye width regression loss --------------------------------------------
@@ -415,17 +411,11 @@ class TraceEWModule(LightningModule):
 
     def _prepare_boundary_meta(self, boundary: torch.Tensor, meta: dict) -> dict:
         """Inverse transforms boundary data and formats it for logging."""
-        # This function is computationally expensive and should only be called when needed for logging.
-        # It involves moving data to the CPU for scikit-learn's inverse_transform.
-        
-        # Ensure boundary tensor is on the CPU
-        boundary_cpu = boundary.cpu()
-        
         # Get the scaler from datamodule
         fix_scaler = self.trainer.datamodule.fix_scaler
         
         # Reshape boundary data for inverse transform
-        boundary_reshaped = boundary_cpu.reshape(-1, boundary_cpu.shape[-1])
+        boundary_reshaped = boundary.reshape(-1, boundary.shape[-1])
         
         # Apply inverse transform
         boundary_inverse = fix_scaler.inverse_transform(boundary_reshaped)
@@ -436,7 +426,7 @@ class TraceEWModule(LightningModule):
             boundary_inverse[boundary_inverse == nan_val] = torch.nan
         
         # Reshape back to original shape
-        boundary_inverse_reshaped = boundary_inverse.reshape(boundary_cpu.shape)
+        boundary_inverse_reshaped = boundary_inverse.reshape(boundary.shape)
         
         # Convert to proper format for meta - create boundary dict for each item in batch
         boundary_dicts = []

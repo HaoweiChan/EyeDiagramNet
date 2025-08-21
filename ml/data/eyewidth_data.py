@@ -1,3 +1,4 @@
+import os
 import json
 import psutil
 import random
@@ -14,9 +15,9 @@ from lightning.pytorch.utilities.rank_zero import rank_zero_info
 
 from ..utils.scaler import MinMaxScaler
 from .processors import CSVProcessor, TraceSequenceProcessor
+from common.signal_utils import read_snp, flip_snp
 from common.param_types import SampleResult, to_new_param_name
 from common.pickle_utils import load_pickle_directory, convert_configs_to_boundaries
-from common.signal_utils import read_snp, flip_snp
 
 def get_loader_from_dataset(
     dataset: Dataset,
@@ -26,9 +27,7 @@ def get_loader_from_dataset(
     drop_last = shuffle
 
     # Optimize num_workers based on system capabilities
-    import os
     cpu_count = os.cpu_count()
-    # Use fewer workers to avoid overwhelming the system
     num_workers = min(4, cpu_count // 2) if cpu_count else 2
 
     loader = DataLoader(
@@ -69,7 +68,7 @@ class TraceEWDataset(Dataset):
     ):
         super().__init__()
 
-        self.trace_seqs = torch.from_numpy(trace_seqs.copy()).float()
+        self.trace_seqs = torch.from_numpy(trace_seqs).float()
         self.directions = torch.from_numpy(directions).int()
         self.boundaries = torch.from_numpy(boundaries).float()
         self.config_keys = metas[0]['config_keys']
@@ -102,7 +101,7 @@ class TraceEWDataset(Dataset):
             # Return dummy SNP data without loading files
             vert_snp = self.dummy_snp.clone()
         else:
-            # Retrieve the left and right snps
+            # Retrieve the drv and odt snps
             drv_vert_file, odt_vert_file = self.vert_snps[seq_index, bnd_index]
             drv_vert_snp = self.vert_snp(drv_vert_file)
             odt_vert_snp = self.vert_snp(odt_vert_file)
@@ -138,6 +137,10 @@ class TraceEWDataset(Dataset):
         
         return self
 
+    def vert_snp(self, snp_file):
+        """Load and cache vertical SNP data."""
+        return self.load_snp(snp_file)
+    
     def load_snp(self, snp_file):
         snp_data = self.vert_cache.get(snp_file)
         if snp_data is None:
@@ -182,10 +185,6 @@ class TraceEWDataset(Dataset):
         trace_seq[:, -2:] += (torch.rand((2,)) * (max_pos - max_spatial_dim)).unsqueeze(0).expand(seq_len, 2)
 
         return trace_seq, direction, eye_width, vert_snp
-
-    def vert_snp(self, snp_file):
-        """Load and cache vertical SNP data."""
-        return self.load_snp(snp_file)
 
 class InferenceTraceEWDataset(Dataset):
     def __init__(
@@ -310,7 +309,6 @@ class TraceSeqEWDataloader(LightningDataModule):
             input_arr = input_arr[keep_indices]
 
             configs_list, directions_list, eye_widths_list, snp_paths_list, metas_list = zip(*sorted_vals)
-            # Convert config dictionaries to structured boundary arrays using utility function
             config_keys = metas_list[0]['config_keys']
             boundaries = convert_configs_to_boundaries(configs_list, config_keys)
             
