@@ -500,8 +500,12 @@ class InferenceTraceSeqEWDataloader(LightningDataModule):
         for csv_path in csv_paths:
             case_id, input_arr = processor.parse(csv_path)
             rank_zero_info(f"Input array: {input_arr.shape}")
-            # Use structured boundary array for the new processor
-            ds = InferenceTraceEWDataset(input_arr, directions, self.boundary.to_structured_array(), drv.s, odt.s)
+            # Convert SampleResult to structured array format
+            # Create a single configuration array with shape (1, 1, n_parameters) to match training format
+            boundary_values = list(self.boundary.values())
+            boundary_array = np.array([[boundary_values]], dtype=np.float64)
+            
+            ds = InferenceTraceEWDataset(input_arr, directions, boundary_array, drv.s, odt.s)
             self.predict_dataset.append(ds.transform(*scalers))
 
     def predict_dataloader(self):
