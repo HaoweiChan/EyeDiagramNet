@@ -401,11 +401,18 @@ class TraceSeqEWDataloader(LightningDataModule):
                     self.seq_scaler, self.fix_scaler
                 )
 
-        # persist scalers for future runs
+        # persist scalers for future runs with config_keys metadata
         if fit_scaler and self.trainer and self.trainer.is_global_zero and self.trainer.logger:
             save_path = Path(self.trainer.logger.log_dir) / "scaler.pth"
-            torch.save((self.seq_scaler, self.fix_scaler), save_path)
-            rank_zero_info(f"Saved scalers to {save_path}")
+            
+            # Get config_keys from the first dataset for metadata
+            first_dataset = next(iter(self.train_dataset.values()))
+            config_keys = first_dataset.config_keys
+            
+            # Use the new enhanced scaler saving with metadata
+            from common.boundary_utils import save_scaler_with_config_keys
+            save_scaler_with_config_keys((self.seq_scaler, self.fix_scaler), config_keys, save_path)
+            rank_zero_info(f"Saved scalers with config_keys metadata to {save_path}: {config_keys}")
 
     def train_dataloader(self):
         per_loader_bs = self.batch_size // max(1, len(self.train_dataset))
@@ -457,47 +464,26 @@ class InferenceTraceSeqEWDataloader(LightningDataModule):
         processor = CSVProcessor()
         csv_paths = processor.locate(self.data_dirs)
 
-        # Load boundary JSON first to determine config_keys
-        with open(self.bound_path, 'r') as f:
-            loaded = json.load(f)
-            ctle = loaded.get('CTLE', {"AC_gain": np.nan, "DC_gain": np.nan, "fp1": np.nan, "fp2": np.nan})
-            
-            # Handle backward compatibility for boundary parameter names
-            boundary = loaded['boundary']
-            if isinstance(boundary, dict):
-                boundary = to_new_param_name(boundary)
-            boundary = boundary | ctle
-            self.boundary = SampleResult(**boundary)
-            
-            # Automatically infer config_keys from converted boundary parameters
-            # Sort keys to ensure consistent ordering
-            self.config_keys = sorted(list(self.boundary.keys()))
-            rank_zero_info(f"Auto-detected config_keys from boundary JSON: {self.config_keys}")
-
-        # Load scaler and validate dimensions match config_keys
-        scalers = torch.load(self.scaler_path, weights_only=False)
-        seq_scaler, fix_scaler = scalers
-        rank_zero_info(f"Loaded scaler object from {self.scaler_path}")
+        # Load scaler with training config_keys metadata
+        from common.boundary_utils import (
+            load_scaler_with_config_keys, 
+            process_boundary_for_inference,
+            validate_boundary_dimensions,
+            get_directions_from_boundary_json
+        )
         
-        # Validate scaler dimensions match boundary parameters
-        expected_boundary_dim = len(self.config_keys)
-        # Get scaler dimension by checking the min/max arrays
-        if hasattr(fix_scaler, '_min') and fix_scaler._min is not None:
-            scaler_boundary_dim = len(fix_scaler._min)
-        elif hasattr(fix_scaler, 'min_') and fix_scaler.min_ is not None:
-            scaler_boundary_dim = len(fix_scaler.min_)
-        else:
-            raise ValueError(f"Cannot determine boundary scaler dimensions from {self.scaler_path}")
-            
-        if expected_boundary_dim != scaler_boundary_dim:
-            raise ValueError(
-                f"Boundary parameter dimension mismatch! "
-                f"JSON boundary has {expected_boundary_dim} parameters: {self.config_keys}, "
-                f"but scaler expects {scaler_boundary_dim} parameters. "
-                f"Ensure the boundary JSON matches the training data format."
-            )
+        scalers, training_config_keys = load_scaler_with_config_keys(Path(self.scaler_path))
+        rank_zero_info(f"Loaded scaler with training config_keys: {training_config_keys}")
         
-        rank_zero_info(f"✓ Boundary dimensions validated: {expected_boundary_dim} parameters")
+        # Process boundary JSON for inference compatibility
+        self.boundary, boundary_values, self.config_keys = process_boundary_for_inference(
+            self.bound_path, training_config_keys
+        )
+        rank_zero_info(f"Processed boundary with {len(boundary_values)} parameters: {self.config_keys}")
+        
+        # Validate dimensions match
+        validate_boundary_dimensions(boundary_values, scalers, self.config_keys)
+        rank_zero_info(f"✓ Boundary dimensions validated: {len(boundary_values)} parameters")
 
         # Handle SNP loading based on ignore_snp flag
         if self.ignore_snp:
@@ -512,6 +498,7 @@ class InferenceTraceSeqEWDataloader(LightningDataModule):
             
             drv = DummySNP()
             odt = DummySNP()
+            directions = get_directions_from_boundary_json(self.bound_path, default_ports=8)
         else:
             if self.drv_snp is None or self.odt_snp is None:
                 raise ValueError("drv_snp and odt_snp must be provided when ignore_snp=False")
@@ -520,19 +507,13 @@ class InferenceTraceSeqEWDataloader(LightningDataModule):
             odt = read_snp(Path(self.odt_snp))
             assert drv.s.shape[-1] == odt.s.shape[-1], \
                 f"DRV {self.drv_snp} and ODT {self.odt_snp} must match ports."
-
-        # Get directions after SNP loading
-        directions = np.array(loaded['directions']) if 'directions' in loaded else np.ones(drv.s.shape[-1] // 2, dtype=int)
+            
+            directions = get_directions_from_boundary_json(self.bound_path, default_ports=drv.s.shape[-1])
 
         self.predict_dataset = []
         for csv_path in csv_paths:
             case_id, input_arr = processor.parse(csv_path)
             rank_zero_info(f"Input array: {input_arr.shape}")
-            
-            # Extract boundary values in the order specified by config_keys
-            boundary_values = [self.boundary.get(key, np.nan) for key in self.config_keys]
-            rank_zero_info(f"Boundary config_keys: {self.config_keys}")
-            rank_zero_info(f"Boundary values: {boundary_values}")
             
             # Create a single configuration array with shape (1, 1, n_parameters) to match training format
             boundary_array = np.array([[boundary_values]], dtype=np.float64)
