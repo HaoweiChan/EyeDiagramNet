@@ -442,7 +442,6 @@ class InferenceTraceSeqEWDataloader(LightningDataModule):
         bound_path: str = None,
         scaler_path: str = None,
         ignore_snp: bool = False,
-        config_keys: list[str] = None,
     ):
         super().__init__()
         self.data_dirs = data_dirs
@@ -452,20 +451,53 @@ class InferenceTraceSeqEWDataloader(LightningDataModule):
         self.bound_path = bound_path
         self.scaler_path = scaler_path
         self.ignore_snp = ignore_snp
-        
-        if config_keys is None:
-            raise ValueError("config_keys must be provided for inference. "
-                           "Use the same config_keys that were used during training to ensure compatibility.")
-        self.config_keys = config_keys
 
     def setup(self, stage=None):
         # Initialize processor and locate CSV files
         processor = CSVProcessor()
         csv_paths = processor.locate(self.data_dirs)
 
-        # Load scaler
+        # Load boundary JSON first to determine config_keys
+        with open(self.bound_path, 'r') as f:
+            loaded = json.load(f)
+            ctle = loaded.get('CTLE', {"AC_gain": np.nan, "DC_gain": np.nan, "fp1": np.nan, "fp2": np.nan})
+            
+            # Handle backward compatibility for boundary parameter names
+            boundary = loaded['boundary']
+            if isinstance(boundary, dict):
+                boundary = to_new_param_name(boundary)
+            boundary = boundary | ctle
+            self.boundary = SampleResult(**boundary)
+            
+            # Automatically infer config_keys from converted boundary parameters
+            # Sort keys to ensure consistent ordering
+            self.config_keys = sorted(list(self.boundary.keys()))
+            rank_zero_info(f"Auto-detected config_keys from boundary JSON: {self.config_keys}")
+
+        # Load scaler and validate dimensions match config_keys
         scalers = torch.load(self.scaler_path, weights_only=False)
+        seq_scaler, fix_scaler = scalers
         rank_zero_info(f"Loaded scaler object from {self.scaler_path}")
+        
+        # Validate scaler dimensions match boundary parameters
+        expected_boundary_dim = len(self.config_keys)
+        # Get scaler dimension by checking the min/max arrays
+        if hasattr(fix_scaler, '_min') and fix_scaler._min is not None:
+            scaler_boundary_dim = len(fix_scaler._min)
+        elif hasattr(fix_scaler, 'min_') and fix_scaler.min_ is not None:
+            scaler_boundary_dim = len(fix_scaler.min_)
+        else:
+            raise ValueError(f"Cannot determine boundary scaler dimensions from {self.scaler_path}")
+            
+        if expected_boundary_dim != scaler_boundary_dim:
+            raise ValueError(
+                f"Boundary parameter dimension mismatch! "
+                f"JSON boundary has {expected_boundary_dim} parameters: {self.config_keys}, "
+                f"but scaler expects {scaler_boundary_dim} parameters. "
+                f"Ensure the boundary JSON matches the training data format."
+            )
+        
+        rank_zero_info(f"✓ Boundary dimensions validated: {expected_boundary_dim} parameters")
 
         # Handle SNP loading based on ignore_snp flag
         if self.ignore_snp:
@@ -489,25 +521,15 @@ class InferenceTraceSeqEWDataloader(LightningDataModule):
             assert drv.s.shape[-1] == odt.s.shape[-1], \
                 f"DRV {self.drv_snp} and ODT {self.odt_snp} must match ports."
 
-        # Load boundary JSON
-        with open(self.bound_path, 'r') as f:
-            loaded = json.load(f)
-            directions = np.array(loaded['directions']) if 'directions' in loaded else np.ones(drv.s.shape[-1] // 2, dtype=int)
-            ctle = loaded.get('CTLE', {"AC_gain": np.nan, "DC_gain": np.nan, "fp1": np.nan, "fp2": np.nan})
-            
-            # Handle backward compatibility for boundary parameter names
-            boundary = loaded['boundary']
-            if isinstance(boundary, dict):
-                boundary = to_new_param_name(boundary)
-            boundary = boundary | ctle
-            self.boundary = SampleResult(**boundary)
+        # Get directions after SNP loading
+        directions = np.array(loaded['directions']) if 'directions' in loaded else np.ones(drv.s.shape[-1] // 2, dtype=int)
 
         self.predict_dataset = []
         for csv_path in csv_paths:
             case_id, input_arr = processor.parse(csv_path)
             rank_zero_info(f"Input array: {input_arr.shape}")
             
-            # Extract boundary values in the order specified by config_keys (matching training)
+            # Extract boundary values in the order specified by config_keys
             boundary_values = [self.boundary.get(key, np.nan) for key in self.config_keys]
             rank_zero_info(f"Boundary config_keys: {self.config_keys}")
             rank_zero_info(f"Boundary values: {boundary_values}")
