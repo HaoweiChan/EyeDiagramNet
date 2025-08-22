@@ -442,6 +442,7 @@ class InferenceTraceSeqEWDataloader(LightningDataModule):
         bound_path: str = None,
         scaler_path: str = None,
         ignore_snp: bool = False,
+        config_keys: list[str] = None,
     ):
         super().__init__()
         self.data_dirs = data_dirs
@@ -451,6 +452,11 @@ class InferenceTraceSeqEWDataloader(LightningDataModule):
         self.bound_path = bound_path
         self.scaler_path = scaler_path
         self.ignore_snp = ignore_snp
+        
+        if config_keys is None:
+            raise ValueError("config_keys must be provided for inference. "
+                           "Use the same config_keys that were used during training to ensure compatibility.")
+        self.config_keys = config_keys
 
     def setup(self, stage=None):
         # Initialize processor and locate CSV files
@@ -500,9 +506,13 @@ class InferenceTraceSeqEWDataloader(LightningDataModule):
         for csv_path in csv_paths:
             case_id, input_arr = processor.parse(csv_path)
             rank_zero_info(f"Input array: {input_arr.shape}")
-            # Convert SampleResult to structured array format
+            
+            # Extract boundary values in the order specified by config_keys (matching training)
+            boundary_values = [self.boundary.get(key, np.nan) for key in self.config_keys]
+            rank_zero_info(f"Boundary config_keys: {self.config_keys}")
+            rank_zero_info(f"Boundary values: {boundary_values}")
+            
             # Create a single configuration array with shape (1, 1, n_parameters) to match training format
-            boundary_values = list(self.boundary.values())
             boundary_array = np.array([[boundary_values]], dtype=np.float64)
             
             ds = InferenceTraceEWDataset(input_arr, directions, boundary_array, drv.s, odt.s)

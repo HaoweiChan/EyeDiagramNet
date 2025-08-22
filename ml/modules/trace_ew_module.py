@@ -132,7 +132,12 @@ class TraceEWModule(LightningModule):
             self.config_keys = next(iter(self.trainer.datamodule.val_dataset.values())).config_keys
         else:
             loader = self.trainer.datamodule.predict_dataloader()
-            self.config_keys = self.trainer.datamodule.boundary.to_dict().keys()
+            # For prediction/inference, get config_keys from the datamodule
+            if hasattr(self.trainer.datamodule, 'config_keys'):
+                self.config_keys = self.trainer.datamodule.config_keys
+            else:
+                # Fallback to boundary keys if config_keys not available
+                self.config_keys = list(self.trainer.datamodule.boundary.to_dict().keys())
         
         dummy_batch, *_ = next(iter(loader))
         key = next(iter(dummy_batch.keys()))
