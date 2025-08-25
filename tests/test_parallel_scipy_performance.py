@@ -49,7 +49,7 @@ except ImportError as e:
 
 try:
     from common.signal_utils import read_snp
-    from common.param_types import SampleResult
+    from common.parameters import SampleResult
     from simulation.engine.sbr_simulator import snp_eyewidth_simulation, EyeWidthSimulator
     from simulation.engine.network_utils import s2y, y2s, s2z, z2s, nudge_eig, rsolve
     SIMULATION_AVAILABLE = True

@@ -7,12 +7,12 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 
 from common.pickle_utils import load_pickle_data
-from common.param_types import SampleResult as SimulationResult
+from common.parameters import SampleResult as SimulationResult
 
 # Try to import simulation functions for comparison
 try:
     from simulation.engine.sbr_simulator import snp_eyewidth_simulation as legacy_snp_eyewidth_simulation
-    from common.param_types import SampleResult
+    from common.parameters import SampleResult
     VALIDATION_AVAILABLE = True
 except ImportError as e:
     print(f"Warning: Could not import validation modules: {e}")

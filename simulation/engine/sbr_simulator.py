@@ -1286,7 +1286,7 @@ def snp_eyewidth_simulation(config, snp_files=None, directions=None, use_optimiz
 
 def main():
     try:
-        from common.param_types import SampleResult
+        from common.parameters import SampleResult
     except ImportError:
         print("Error: Could not import SampleResult from common.param_types")
         raise

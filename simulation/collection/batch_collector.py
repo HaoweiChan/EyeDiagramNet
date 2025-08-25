@@ -6,9 +6,8 @@ import numpy as np
 from tqdm import tqdm
 from pathlib import Path
 
-
 from common.signal_utils import read_snp
-from common.param_types import ParameterSet, SampleResult
+from common.parameters import ParameterSet, SampleResult
 from common.pickle_utils import DataWriter, SimulationResult
 
 from simulation.parameters.bound_param import PARAM_SETS_MAP

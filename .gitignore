@@ -87,7 +87,7 @@ celerybeat-schedule
 *.sage.py
 
 # Environments
-.env
+.env*
 .venv
 venv/
 ENV/
@@ -194,5 +194,6 @@ simulation/engine/der/
 *.s*p
 *.pkl
 *.csv
+*.png
 *.json
 

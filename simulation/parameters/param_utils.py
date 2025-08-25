@@ -1,7 +1,7 @@
 """Parameter utilities for training data collection."""
 
 from typing import List
-from common.param_types import ParameterSet, DiscreteParameter, RandomToggledParameterSet, CombinedParameterSet
+from common.parameters import ParameterSet, DiscreteParameter, RandomToggledParameterSet, CombinedParameterSet
 from simulation.parameters.bound_param import PARAM_SETS_MAP
 
 def parse_param_types(param_type_str: str) -> List[str]:

@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import List
 
 from common.pickle_utils import DataWriter, load_pickle_data
-from common.param_types import SampleResult as SimulationResult
+from common.parameters import SampleResult as SimulationResult
 
 # Try to import direction_utils, handle potential ImportError
 try:

@@ -16,8 +16,8 @@ from lightning.pytorch.utilities.rank_zero import rank_zero_info
 from ..utils.scaler import MinMaxScaler
 from .processors import CSVProcessor, TraceSequenceProcessor
 from common.signal_utils import read_snp, flip_snp
-from common.param_types import SampleResult, to_new_param_name
-from common.pickle_utils import load_pickle_directory, convert_configs_to_boundaries
+from common.parameters import SampleResult, to_new_param_name, convert_configs_to_boundaries
+from common.pickle_utils import load_pickle_directory
 
 def get_loader_from_dataset(
     dataset: Dataset,
@@ -465,7 +465,7 @@ class InferenceTraceSeqEWDataloader(LightningDataModule):
         csv_paths = processor.locate(self.data_dirs)
 
         # Load scaler with training config_keys metadata
-        from common.boundary_utils import (
+        from common.parameters import (
             load_scaler_with_config_keys, 
             process_boundary_for_inference,
             validate_boundary_dimensions,

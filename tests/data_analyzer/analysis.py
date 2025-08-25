@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 from typing import List
 
-from common.param_types import SampleResult as SimulationResult
+from common.parameters import SampleResult as SimulationResult
 
 # Try to import seaborn, make it optional
 try:

@@ -1,13 +1,25 @@
+"""
+Core parameter types and classes for EyeDiagramNet.
+
+This module contains the fundamental parameter classes used for
+both simulation parameter generation and ML data processing.
+"""
+
 import random
 import numpy as np
 
+
 def _get_decimal_places(value):
+    """Helper function to determine decimal places in a value."""
     value_str = str(value).rstrip('0')  # Remove trailing zeros
     if '.' in value_str:
         return len(value_str.split('.')[-1])  # Count decimal places after the dot
     return 0  # No decimal places for integers
 
+
 class Parameter:
+    """Base class for all parameter types."""
+    
     def __init__(self, low=None, high=None, step=None, numbers=None):
         self.low = low
         self.high = high
@@ -20,7 +32,10 @@ class Parameter:
     def is_within_range(self, value):
         return self.low <= value <= self.high
 
+
 class DiscreteParameter(Parameter):
+    """Parameter with discrete values to choose from."""
+    
     def __init__(self, values):
         super().__init__()
         assert isinstance(values, list)
@@ -32,7 +47,10 @@ class DiscreteParameter(Parameter):
     def is_within_range(self, value):
         return value in self.values
 
+
 class LinearParameter(Parameter):
+    """Parameter with linear sampling distribution."""
+    
     def __init__(self, low, high, step=None, numbers=None, additional_values=None, scaler=1):
         super().__init__(low, high, step, numbers)
         self.additional_values = additional_values if additional_values is not None else []
@@ -62,7 +80,10 @@ class LinearParameter(Parameter):
         
         return np.random.choice(values)
 
+
 class LogParameter(Parameter):
+    """Parameter with logarithmic sampling distribution."""
+    
     def __init__(self, low, high, step=None, numbers=None, additional_values=None, scaler=1):
         super().__init__(low, high, step, numbers)
         self.additional_values = additional_values if additional_values is not None else []
@@ -88,7 +109,10 @@ class LogParameter(Parameter):
         
         return np.random.choice(values)
 
+
 class SampleResult:
+    """Container for parameter sampling results with dict-like interface."""
+    
     def __init__(self, bound_type=None, **kwargs):
         for key, value in kwargs.items():
             setattr(self, key, value)
@@ -147,7 +171,10 @@ class SampleResult:
     def items(self):
         return self._data.items()
 
+
 class ParameterSet:
+    """Collection of parameters that can be sampled together."""
+    
     def __init__(self, **params):
         self.params = params
 
@@ -167,7 +194,10 @@ class ParameterSet:
                     return False
         return True
 
+
 class RandomToggledParameterSet(ParameterSet):
+    """Parameter set where each parameter is randomly included based on probability."""
+    
     def __init__(self, toggle_probability=0.5, **params):
         super().__init__(**params)
         self.toggle_probability = toggle_probability
@@ -179,7 +209,10 @@ class RandomToggledParameterSet(ParameterSet):
                 sample_data[param_name] = param.sample()
         return SampleResult(**sample_data)
 
+
 class CombinedParameterSet(ParameterSet):
+    """Combines multiple parameter sets into one."""
+    
     def __init__(self, *parameter_sets):
         self.parameter_sets = parameter_sets
 
@@ -190,30 +223,35 @@ class CombinedParameterSet(ParameterSet):
             combined_result = combined_result + result
         return combined_result
 
+
+class CombinedParameterSet(ParameterSet):
+    """Combines multiple parameter sets into one."""
+    
+    def __init__(self, *parameter_sets):
+        self.parameter_sets = parameter_sets
+
+    def sample(self):
+        combined_result = SampleResult()
+        for param_set in self.parameter_sets:
+            result = param_set.sample()
+            combined_result = combined_result + result
+        return combined_result
+
+
 class DiscreteParameterSet(ParameterSet):
+    """Parameter set that samples from a discrete list of SampleResult objects."""
+    
     def __init__(self, samples):
         self.samples = samples
 
     def sample(self):
         return random.choice(self.samples)
 
+
 def constraint_fp2_ge_fp1(sample):
     """Constraint function to ensure fp2 >= fp1."""
     return getattr(sample, 'fp2', float('inf')) >= getattr(sample, 'fp1', -float('inf'))
 
-def to_new_param_name(d: dict):
-    """
-    Convert old parameter names to new ones for backward compatibility.
-    e.g. R_tx -> R_drv, R_rx -> R_odt
-    """
-    key_map = {
-        'R_tx': 'R_drv', 'C_tx': 'C_drv', 'L_tx': 'L_drv',
-        'R_rx': 'R_odt', 'C_rx': 'C_odt', 'L_rx': 'L_odt',
-    }
-    for old_key, new_key in key_map.items():
-        if old_key in d:
-            d[new_key] = d.pop(old_key)
-    return d
 
 # Constraint ranges placeholder - can be populated if needed
 CONSTRAINT_RANGES = {}

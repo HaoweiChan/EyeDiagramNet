@@ -171,7 +171,7 @@ def load_pickle_directory(label_dir: Path, dataset_name: str, config_keys: list 
         Dictionary mapping case_ids to processed data tuples containing:
         (configs, directions_list, line_ews_list, snp_vert, meta)
     """
-    from common.param_types import SampleResult, to_new_param_name
+    from common.parameters import SampleResult, to_new_param_name
     from lightning.pytorch.utilities.rank_zero import rank_zero_info
     
     labels = {}
