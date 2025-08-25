@@ -1,0 +1,26 @@
+# Test user configuration  
+# This file contains user-specific paths and settings for testing/evaluation
+# Modify paths for your specific use case
+
+# Model checkpoint configuration - will be used to find training config
+ckpt_path: saved/ew_xfmr/version_58/checkpoints/best_model.ckpt
+
+# Logging configuration
+save_dir: ./test_results
+file_prefix: test_results
+
+# Data configuration for testing (usually same as training data)
+data_dirs:
+  - /proj/siaiadm/AI_training_data/D2D/UCIe_Trace/pattern2/cowos_8mi
+  - /proj/siaiadm/AI_training_data/D2D/UCIe_Trace/pattern2/cowos_9mi
+  - /proj/siaiadm/AI_training_data/D2D/UCIe_Trace/pattern2/emib
+  - /proj/siaiadm/AI_training_data/D2D/UCIe_Trace/pattern2/cowos_8mi_0124
+  - /proj/siaiadm/AI_training_data/D2D/UCIe_Trace/pattern2/cowos_9mi_0124
+  - /proj/siaiadm/AI_training_data/D2D/UCIe_Trace/pattern2/emib_9mi_0124
+  - /proj/siaiadm/AI_training_data/D2D/UCIe_Trace/pattern2/emib_10mi_0124
+
+# Label directory for testing
+label_dir: /proj/siaiadm/ew_predictor/data/sbr/naive
+
+# Processing options  
+ignore_snp: true

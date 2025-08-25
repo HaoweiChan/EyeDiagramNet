@@ -153,21 +153,16 @@ class TraceEWModule(LightningModule):
 
         # load model checkpoint or initialize weights
         if self.hparams.ckpt_path is not None:
-            rank_zero_info(f'Loading model checkpoint: {self.hparams.ckpt_path}')
             try:
                 ckpt = torch.load(self.hparams.ckpt_path, map_location=self.device)
                 missing_keys, unexpected_keys = self.load_state_dict(ckpt['state_dict'], strict=self.hparams.strict)
-                if missing_keys:
-                    rank_zero_info(f"Missing keys when loading checkpoint: {missing_keys}")
-                if unexpected_keys:
-                    rank_zero_info(f"Unexpected keys when loading checkpoint: {unexpected_keys}")
-                rank_zero_info(f"Successfully loaded checkpoint from {self.hparams.ckpt_path}")
+                if missing_keys or unexpected_keys:
+                    rank_zero_info(f"Checkpoint loaded with issues - Missing: {len(missing_keys)}, Unexpected: {len(unexpected_keys)}")
             except Exception as e:
-                rank_zero_info(f"Failed to load checkpoint from {self.hparams.ckpt_path}: {e}")
-                rank_zero_info("Falling back to random weight initialization")
+                rank_zero_info(f"Failed to load checkpoint: {e}")
+                rank_zero_info("Falling back to Xavier initialization")
                 self.apply(init_weights('xavier'))
         else:
-            rank_zero_info("No checkpoint provided, initializing weights with Xavier initialization")
             self.apply(init_weights('xavier'))
         
         # Compile model for performance optimization after setup

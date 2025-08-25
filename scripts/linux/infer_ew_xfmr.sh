@@ -50,12 +50,12 @@ if ($bsub_flag == 1) then
     endif
 endif
 
-# Build the python command
-set ckpt_cfg = "saved/ew_xfmr/version_58/config.yaml"
+# Build the python command with user config
+set user_config = "configs/user/infer_setting.yaml"
 set python_cmd = ( \
     python3 -m ml.trainer predict \
-    --config $ckpt_cfg \
     --config configs/training/infer_ew_xfmr.yaml \
+    --user_config $user_config \
     --trainer.num_nodes 1 \
     $batch_args \
 )

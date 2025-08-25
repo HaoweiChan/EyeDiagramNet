@@ -1,4 +1,5 @@
 import sys
+import yaml
 import torch
 import warnings
 from pathlib import Path
@@ -139,6 +140,89 @@ class ConfigProcessor:
         else:
             print("Warning: Could not set scaler_path - data config structure not found")
     
+    def process_user_config(self, user_config_path):
+        """Process user configuration file and extract checkpoint/training config paths."""
+        print(f"Processing user config: {user_config_path}")
+        
+        # Load user config
+        with open(user_config_path, 'r') as f:
+            user_config = yaml.safe_load(f)
+        
+        # Extract checkpoint path
+        ckpt_path = user_config.get('ckpt_path')
+        if not ckpt_path:
+            raise ValueError("User config must contain 'ckpt_path'")
+        
+        ckpt_path = Path(ckpt_path)
+        if not ckpt_path.exists():
+            raise FileNotFoundError(f"Checkpoint file not found: {ckpt_path}")
+        
+        # Find training config in the checkpoint's version directory
+        version_dir = ckpt_path.parent.parent  # checkpoints/model.ckpt -> version_X/
+        training_config = version_dir / "config.yaml"
+        
+        if not training_config.exists():
+            raise FileNotFoundError(f"Training config not found: {training_config}")
+        
+        print(f"Found checkpoint: {ckpt_path}")
+        print(f"Found training config: {training_config}")
+        
+        # Return paths for CLI to use
+        return str(training_config), user_config
+    
+    def apply_user_config_overrides(self, user_config):
+        """Apply user config overrides to the loaded configuration."""
+        print("Applying user config overrides")
+        
+        # Apply model checkpoint path
+        if 'ckpt_path' in user_config:
+            self.sub_config.ckpt_path = user_config['ckpt_path']
+            print(f"Set checkpoint path: {user_config['ckpt_path']}")
+        
+        # Apply logging configuration
+        if hasattr(self.sub_config, 'trainer') and hasattr(self.sub_config.trainer, 'logger'):
+            if 'save_dir' in user_config:
+                for logger in self.sub_config.trainer.logger:
+                    if hasattr(logger, 'init_args') and hasattr(logger.init_args, 'save_dir'):
+                        logger.init_args.save_dir = user_config['save_dir']
+                        print(f"Set logger save_dir: {user_config['save_dir']}")
+        
+        # Apply prediction writer configuration
+        if hasattr(self.sub_config, 'trainer') and hasattr(self.sub_config.trainer, 'callbacks'):
+            if 'file_prefix' in user_config:
+                for callback in self.sub_config.trainer.callbacks:
+                    if hasattr(callback, 'init_args') and hasattr(callback.init_args, 'file_prefix'):
+                        callback.init_args.file_prefix = user_config['file_prefix']
+                        print(f"Set prediction file_prefix: {user_config['file_prefix']}")
+        
+        # Apply data configuration
+        if hasattr(self.sub_config, 'data') and hasattr(self.sub_config.data, 'init_args'):
+            data_args = self.sub_config.data.init_args
+            
+            # Data directories
+            if 'data_dirs' in user_config:
+                data_args.data_dirs = user_config['data_dirs']
+                print(f"Set data_dirs: {len(user_config['data_dirs'])} directories")
+            
+            # SNP files
+            if 'drv_snp' in user_config:
+                data_args.drv_snp = user_config['drv_snp']
+                print(f"Set drv_snp: {user_config['drv_snp']}")
+            
+            if 'odt_snp' in user_config:
+                data_args.odt_snp = user_config['odt_snp']
+                print(f"Set odt_snp: {user_config['odt_snp']}")
+            
+            # Boundary path
+            if 'bound_path' in user_config:
+                data_args.bound_path = user_config['bound_path']
+                print(f"Set bound_path: {user_config['bound_path']}")
+            
+            # Processing options
+            if 'ignore_snp' in user_config:
+                data_args.ignore_snp = user_config['ignore_snp']
+                print(f"Set ignore_snp: {user_config['ignore_snp']}")
+    
     def process_config(self):
         """Process configuration for the current subcommand."""
         if self.subcommand == "predict":
@@ -151,11 +235,99 @@ class CustomLightningCLI(LightningCLI):
     def __init__(self, *args, **kwargs):
         if 'predict' in sys.argv or 'test' in sys.argv:
             kwargs['save_config_callback'] = None
+        
+        # Handle user config preprocessing
+        self.user_config = None
+        self._preprocess_user_config()
+        
         super().__init__(*args, **kwargs)
+    
+    def _preprocess_user_config(self):
+        """Preprocess user config and modify sys.argv if needed."""
+        # Check if --user_config is in arguments
+        user_config_arg = None
+        user_config_path = None
+        
+        for i, arg in enumerate(sys.argv):
+            if arg == '--user_config' and i + 1 < len(sys.argv):
+                user_config_arg = i
+                user_config_path = sys.argv[i + 1]
+                break
+            elif arg.startswith('--user_config='):
+                user_config_arg = i
+                user_config_path = arg.split('=', 1)[1]
+                break
+        
+        if user_config_path:
+            print(f"Detected user config: {user_config_path}")
+            
+            # Determine subcommand
+            subcommand = None
+            for arg in sys.argv[1:]:
+                if arg in ['predict', 'test', 'fit', 'validate']:
+                    subcommand = arg
+                    break
+            
+            if subcommand in ['predict', 'test']:
+                try:
+                    # Create temporary config processor to extract paths
+                    class TempConfig:
+                        def __init__(self):
+                            pass
+                    
+                    temp_config = TempConfig()
+                    setattr(temp_config, subcommand, TempConfig())
+                    
+                    processor = ConfigProcessor(temp_config, subcommand)
+                    training_config_path, user_config = processor.process_user_config(user_config_path)
+                    
+                    # Store user config for later application
+                    self.user_config = user_config
+                    
+                    # Insert training config into sys.argv right after --config arguments
+                    config_insert_pos = None
+                    for i, arg in enumerate(sys.argv):
+                        if arg.startswith('--config'):
+                            config_insert_pos = i + 2  # After --config and its value
+                    
+                    if config_insert_pos is None:
+                        # No --config found, insert after subcommand
+                        for i, arg in enumerate(sys.argv):
+                            if arg == subcommand:
+                                config_insert_pos = i + 1
+                                break
+                    
+                    if config_insert_pos:
+                        sys.argv.insert(config_insert_pos, training_config_path)
+                        sys.argv.insert(config_insert_pos, '--config')
+                        print(f"Added training config to command line: {training_config_path}")
+                    
+                    # Remove --user_config arguments from sys.argv
+                    if user_config_arg is not None:
+                        if sys.argv[user_config_arg].startswith('--user_config='):
+                            # Single argument with =
+                            sys.argv.pop(user_config_arg)
+                        else:
+                            # Two arguments: --user_config path
+                            sys.argv.pop(user_config_arg)  # Remove --user_config
+                            sys.argv.pop(user_config_arg)  # Remove path (indices shift after first pop)
+                    
+                except Exception as e:
+                    print(f"Warning: Failed to process user config: {e}")
+                    self.user_config = None
 
     def before_instantiate_classes(self):
         # Handle predict and test mode config processing
         if self.subcommand in ["predict", "test"]:
+            # Apply user config overrides first
+            if self.user_config:
+                try:
+                    processor = ConfigProcessor(self.config, self.subcommand)
+                    processor.apply_user_config_overrides(self.user_config)
+                except Exception as e:
+                    print(f"Warning: Failed to apply user config overrides: {e}")
+            
+            # Then run standard config processing
             try:
                 processor = ConfigProcessor(self.config, self.subcommand)
                 processor.process_config()

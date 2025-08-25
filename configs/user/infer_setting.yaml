@@ -1,0 +1,25 @@
+# Inference user configuration
+# This file contains user-specific paths and settings for inference/prediction
+# Modify paths for your specific use case
+
+# Model checkpoint configuration - will be used to find training config
+ckpt_path: saved/ew_xfmr/version_58/checkpoints/best_model.ckpt
+
+# Logging configuration
+save_dir: ./results
+file_prefix: prediction_results
+
+# Data configuration for inference
+data_dirs:
+  - /proj/siaiadm/AI_training_data/D2D/UCIe_Trace/pattern2/cowos_8mi
+  - /proj/siaiadm/AI_training_data/D2D/UCIe_Trace/pattern2/cowos_9mi
+
+# SNP files for inference (set to null to use dummy data when ignore_snp=true)
+drv_snp: null
+odt_snp: null
+
+# Boundary parameters - path to your boundary configuration JSON
+bound_path: /path/to/your/boundary_config.json
+
+# Processing options
+ignore_snp: true
