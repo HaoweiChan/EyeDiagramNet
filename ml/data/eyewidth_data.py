@@ -410,12 +410,12 @@ class TraceSeqEWDataloader(LightningDataModule):
             config_keys = first_dataset.config_keys
             
             # Use the new enhanced scaler saving with metadata
-            from common.boundary_utils import save_scaler_with_config_keys
+            from common.parameters import save_scaler_with_config_keys
             save_scaler_with_config_keys((self.seq_scaler, self.fix_scaler), config_keys, save_path)
             rank_zero_info(f"Saved scalers with config_keys metadata to {save_path}: {config_keys}")
 
     def train_dataloader(self):
-        per_loader_bs = self.batch_size // max(1, len(self.train_dataset))
+        per_loader_bs = max(1, self.batch_size // max(1, len(self.train_dataset)))
         loaders = {
             name: get_loader_from_dataset(ds, batch_size=per_loader_bs, shuffle=True)
             for name, ds in self.train_dataset.items()
@@ -424,7 +424,7 @@ class TraceSeqEWDataloader(LightningDataModule):
         return combined_loader
 
     def val_dataloader(self):
-        per_loader_bs = int(self.batch_size * 1.6 / max(1, len(self.val_dataset)))
+        per_loader_bs = max(1, int(self.batch_size * 1.6 / max(1, len(self.val_dataset))))
         loaders = {
             name: get_loader_from_dataset(ds, batch_size=per_loader_bs, shuffle=False)
             for name, ds in self.val_dataset.items()
@@ -432,7 +432,7 @@ class TraceSeqEWDataloader(LightningDataModule):
         return CombinedLoader(loaders, mode="min_size")
     
     def test_dataloader(self):
-        per_loader_bs = int(self.batch_size * 1.6 / max(1, len(self.test_dataset)))
+        per_loader_bs = max(1, int(self.batch_size * 1.6 / max(1, len(self.test_dataset))))
         loaders = {
             name: get_loader_from_dataset(ds, batch_size=per_loader_bs, shuffle=False)
             for name, ds in self.test_dataset.items()
