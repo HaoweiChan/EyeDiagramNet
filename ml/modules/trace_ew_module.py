@@ -74,7 +74,7 @@ class TraceEWModule(LightningModule):
         self,
         model: nn.Module,
         ckpt_path: str = None,
-        strict: bool = False,
+        strict: bool = True,
         compile_model: bool = False,
         ew_scaler: int = 100,
         ew_threshold: float = 0.3,
@@ -150,13 +150,25 @@ class TraceEWModule(LightningModule):
         except (ValueError, RuntimeError) as e:
             rank_zero_info(traceback.format_exc())
             raise
-        self.apply(init_weights('xavier'))
 
-        # load model checkpoint
+        # load model checkpoint or initialize weights
         if self.hparams.ckpt_path is not None:
             rank_zero_info(f'Loading model checkpoint: {self.hparams.ckpt_path}')
-            ckpt = torch.load(self.hparams.ckpt_path, map_location=self.device)
-            self.load_state_dict(ckpt['state_dict'], strict=self.hparams.strict)
+            try:
+                ckpt = torch.load(self.hparams.ckpt_path, map_location=self.device)
+                missing_keys, unexpected_keys = self.load_state_dict(ckpt['state_dict'], strict=self.hparams.strict)
+                if missing_keys:
+                    rank_zero_info(f"Missing keys when loading checkpoint: {missing_keys}")
+                if unexpected_keys:
+                    rank_zero_info(f"Unexpected keys when loading checkpoint: {unexpected_keys}")
+                rank_zero_info(f"Successfully loaded checkpoint from {self.hparams.ckpt_path}")
+            except Exception as e:
+                rank_zero_info(f"Failed to load checkpoint from {self.hparams.ckpt_path}: {e}")
+                rank_zero_info("Falling back to random weight initialization")
+                self.apply(init_weights('xavier'))
+        else:
+            rank_zero_info("No checkpoint provided, initializing weights with Xavier initialization")
+            self.apply(init_weights('xavier'))
         
         # Compile model for performance optimization after setup
         if stage in ('fit', None) and self.hparams.compile_model:
