@@ -25,7 +25,9 @@ def preprocess_user_config():
             subcommand = sys.argv[1]
             if subcommand == "fit":
                 user_config_path = Path("configs/user/train_setting.yaml")
-            elif subcommand in ["predict", "test"]:
+            elif subcommand == "predict":
+                user_config_path = Path("configs/user/infer_setting.yaml")
+            elif subcommand == "test":
                 user_config_path = Path("configs/user/test_setting.yaml")
     
     # Load user settings if the file exists
@@ -34,25 +36,42 @@ def preprocess_user_config():
             with open(user_config_path, 'r') as f:
                 user_settings = yaml.safe_load(f)
             
-            # For predict/test modes, add model_config_path to sys.argv if specified
+            # For predict/test modes, find training config from ckpt_path and inject it
             if len(sys.argv) > 1 and sys.argv[1] in ["predict", "test"]:
-                if user_settings.get('model_config_path'):
-                    model_config = user_settings['model_config_path']
-                    # Add the model config as a second --config argument
-                    # Find where to insert it (after main config)
+                if user_settings.get('ckpt_path'):
+                    ckpt_path = Path(user_settings['ckpt_path'])
+                    version_dir = ckpt_path.parent.parent
+
+                    # Find training config
+                    training_config_path = version_dir / 'config.yaml'
+                    if not training_config_path.exists():
+                        possible_configs = list(version_dir.glob("*.yaml"))
+                        if not possible_configs:
+                            raise FileNotFoundError(f"No training config (.yaml) found in {version_dir}")
+                        
+                        filtered_configs = [p for p in possible_configs if p.name != 'hparams.yaml']
+                        if len(filtered_configs) == 1:
+                            training_config_path = filtered_configs[0]
+                        elif len(filtered_configs) == 0 and len(possible_configs) == 1:
+                            training_config_path = possible_configs[0]
+                        else:
+                            # Raise error if ambiguity cannot be resolved
+                            configs_to_report = filtered_configs if filtered_configs else possible_configs
+                            raise FileNotFoundError(f"Ambiguous training config in {version_dir}. Found: {[p.name for p in configs_to_report]}. Please create a 'config.yaml' file in that directory or ensure only one non-hparams config file is present.")
+                    
+                    # Insert training config before main config
+                    # LightningCLI merges configs, so training config should come first
                     config_index = -1
                     for i, arg in enumerate(sys.argv):
-                        if arg == "--config" and i + 1 < len(sys.argv):
-                            config_index = i + 2  # After the config file path
+                        if arg == "--config":
+                            config_index = i
                             break
                     
-                    if config_index > 0:
-                        # Insert model config after main config
+                    if config_index != -1:
                         sys.argv.insert(config_index, "--config")
-                        sys.argv.insert(config_index + 1, model_config)
+                        sys.argv.insert(config_index + 1, str(training_config_path))
                     else:
-                        # If no --config found, add it
-                        sys.argv.extend(["--config", model_config])
+                        sys.argv.extend(["--config", str(training_config_path)])
             
             return user_settings
         except Exception as e:
@@ -104,45 +123,27 @@ class CustomLightningCLI(LightningCLI):
                                 callback.init_args.file_prefix = self.user_settings['file_prefix']
                                 break
             
-                # Handle predict and test modes - both need checkpoint and scaler loading
+                # Handle predict and test modes - load checkpoint and scaler from user settings
                 config_attr = getattr(self.config, self.subcommand)
                 
-                # The model config should now be loaded as part of the configs
-                # Find the model config from the loaded configs
-                if hasattr(config_attr, 'config') and len(config_attr.config) > 1:
-                    ckpt_config = config_attr.config[1]  # Second config should be the model config
-                elif hasattr(config_attr, 'config') and len(config_attr.config) > 0:
-                    ckpt_config = config_attr.config[0]  # Fallback to first config
+                if self.user_settings.get('ckpt_path'):
+                    ckpt_path_str = self.user_settings['ckpt_path']
+                    # The ckpt_path for the trainer should be set from user config
+                    config_attr.ckpt_path = ckpt_path_str
+                    print(f"Set ckpt_path from user settings: {ckpt_path_str}")
+                    
+                    # Find scaler in the model version directory, derived from ckpt_path
+                    version_dir = Path(ckpt_path_str).parent.parent
+                    scaler_files = list(version_dir.glob("*.pth"))
+                    if scaler_files:
+                        scaler_path = scaler_files[0]  # Use first scaler found
+                        config_attr.data.init_args.scaler_path = str(scaler_path)
+                        print(f"Found and set scaler_path to: {scaler_path}")
+                    else:
+                        print(f"Warning: No .pth scaler files found in {version_dir}")
                 else:
-                    print("Warning: No model config found in loaded configs. Please specify model_config_path in user settings or use --config argument.")
-                    return
-                
-                if 'ckpt_config' in locals():
-                    try:
-                        # Find checkpoint in the model config directory
-                        ckpt_dir = Path(str(ckpt_config)).parent / "checkpoints"
-                        if ckpt_dir.exists():
-                            ckpt_files = list(ckpt_dir.glob("*.ckpt"))
-                            if ckpt_files:
-                                ckpt_path = ckpt_files[0]  # Use first checkpoint found
-                                config_attr.ckpt_path = str(ckpt_path)
-                                print(f"Found checkpoint: {ckpt_path}")
-                            else:
-                                print(f"No .ckpt files found in {ckpt_dir}")
-                        else:
-                            print(f"Checkpoint directory not found: {ckpt_dir}")
+                    print("Warning: 'ckpt_path' not found in user settings. Checkpoint and scaler paths may not be set correctly.")
 
-                        # Find scaler in the model config directory  
-                        scaler_files = list(Path(str(ckpt_config)).parent.glob("*.pth"))
-                        if scaler_files:
-                            scaler_path = scaler_files[0]  # Use first scaler found
-                            config_attr.data.init_args.scaler_path = str(scaler_path)
-                            print(f"Set scaler_path to: {scaler_path}")
-                        else:
-                            print(f"No .pth scaler files found in {Path(str(ckpt_config)).parent}")
-                        
-                    except Exception as e:
-                        print(f"Warning: Failed to process checkpoint/scaler from config: {e}")
             
             # Pass ignore_snp flag from TraceEWModule to both nested model and datamodule
             if hasattr(self.config, self.subcommand) and hasattr(getattr(self.config, self.subcommand), 'model'):
