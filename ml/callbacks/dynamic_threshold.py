@@ -27,6 +27,7 @@ Usage example:
 """
 
 import torch
+import traceback
 from lightning import LightningModule, Trainer
 from lightning.pytorch.callbacks import Callback
 from lightning.pytorch.utilities.rank_zero import rank_zero_info
@@ -147,7 +148,7 @@ class DynamicThresholdOptimizer(Callback):
         """Print final threshold evolution."""
         if trainer.global_rank == 0 and self.optimal_threshold is not None:
             improvement = self.optimal_threshold - self.initial_threshold
-            print(f"\n🎯 Threshold Evolution: {self.initial_threshold:.4f} → {self.optimal_threshold:.4f} (Δ={improvement:+.4f})")
+            print(f"\nThreshold Evolution: {self.initial_threshold:.4f} → {self.optimal_threshold:.4f} (Δ={improvement:+.4f})")
     
     def _optimize_threshold(self):
         """Find optimal threshold by maximizing F1 score."""
@@ -182,7 +183,7 @@ class DynamicThresholdOptimizer(Callback):
             return best_tau
             
         except Exception as e:
-            rank_zero_info(f"Error during threshold optimization: {str(e)}")
+            rank_zero_info(f"Error during threshold optimization: {str(e)}\nFull traceback:\n{traceback.format_exc()}")
             return None
     
     def _update_metrics_threshold(self, pl_module: LightningModule):
