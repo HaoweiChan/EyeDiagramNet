@@ -109,12 +109,25 @@ class ConfigProcessor:
                     break
         
         if version_dir is None:
-            print("Warning: Could not determine version directory for scaler auto-loading")
+            print("Warning: Could not determine version directory for checkpoint and scaler auto-loading")
             print("Available config paths checked:")
             if hasattr(self.sub_config, 'config') and self.sub_config.config:
                 for config_path_obj in self.sub_config.config:
                     print(f"  - {config_path_obj}")
             return
+        
+        # Find checkpoint in version directory (same as predict mode)
+        checkpoint_dir = version_dir / "checkpoints"
+        if checkpoint_dir.exists():
+            ckpt_files = list(checkpoint_dir.glob("*.ckpt"))
+            if ckpt_files:
+                ckpt_path = next(reversed(sorted(ckpt_files)))
+                self.sub_config.ckpt_path = str(ckpt_path)
+                print(f"Found checkpoint: {ckpt_path}")
+            else:
+                print(f"No .ckpt files found in {checkpoint_dir}")
+        else:
+            print(f"Checkpoint directory not found: {checkpoint_dir}")
         
         # Look for scaler.pth in the version directory (not in checkpoints subdirectory)
         scaler_files = list(version_dir.glob("*.pth"))
