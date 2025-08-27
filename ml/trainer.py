@@ -5,6 +5,10 @@ import warnings
 from pathlib import Path
 from lightning.pytorch.cli import LightningCLI
 from lightning.pytorch.utilities import disable_possible_user_warnings
+from lightning.pytorch.callbacks import ModelCheckpoint
+
+# Suppress UserWarnings from PyTorch
+warnings.filterwarnings("ignore", category=UserWarning)
 
 
 def preprocess_user_config():
@@ -144,23 +148,23 @@ class CustomLightningCLI(LightningCLI):
                 else:
                     print("Warning: 'ckpt_path' not found in user settings. Checkpoint and scaler paths may not be set correctly.")
 
-            
-            # Pass ignore_snp flag from TraceEWModule to both nested model and datamodule
-            if hasattr(self.config, self.subcommand) and hasattr(getattr(self.config, self.subcommand), 'model'):
-                model_config = getattr(self.config, self.subcommand).model
-                if hasattr(model_config, 'init_args') and hasattr(model_config.init_args, 'ignore_snp'):
-                    ignore_snp = model_config.init_args.ignore_snp
-                    
-                    # Pass to nested model (EyeWidthRegressor)
-                    if hasattr(model_config.init_args, 'model') and hasattr(model_config.init_args.model, 'init_args'):
-                        model_config.init_args.model.init_args.ignore_snp = ignore_snp
-                        print(f"Propagated ignore_snp={ignore_snp} from TraceEWModule to EyeWidthRegressor")
-                    
-                    # Pass to datamodule
-                    data_config = getattr(self.config, self.subcommand).data
-                    if hasattr(data_config, 'init_args'):
-                        data_config.init_args.ignore_snp = ignore_snp
-                        print(f"Propagated ignore_snp={ignore_snp} from TraceEWModule to datamodule")
+        # Pass ignore_snp flag from model to datamodule for all subcommands
+        if self.subcommand and hasattr(self.config, self.subcommand):
+            subcommand_config = getattr(self.config, self.subcommand)
+            if hasattr(subcommand_config, 'model') and hasattr(subcommand_config.model, 'init_args') and \
+               hasattr(subcommand_config.model.init_args, 'ignore_snp'):
+                
+                ignore_snp = subcommand_config.model.init_args.ignore_snp
+                
+                # Pass to nested model (EyeWidthRegressor) if it exists
+                if hasattr(subcommand_config.model.init_args, 'model') and hasattr(subcommand_config.model.init_args.model, 'init_args'):
+                    subcommand_config.model.init_args.model.init_args.ignore_snp = ignore_snp
+                    print(f"Propagated ignore_snp={ignore_snp} to EyeWidthRegressor")
+
+                # Pass to datamodule
+                if hasattr(subcommand_config, 'data') and hasattr(subcommand_config.data, 'init_args'):
+                    subcommand_config.data.init_args.ignore_snp = ignore_snp
+                    print(f"Propagated ignore_snp={ignore_snp} to datamodule")
 
 def setup_torch_compile_fallback():
     """Fallback to eager mode if torch.compile fails."""
