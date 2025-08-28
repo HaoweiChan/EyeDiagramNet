@@ -101,22 +101,19 @@ class CustomLightningCLI(LightningCLI):
     
     def prepare_config(self, cfg, command: str):
         """Override to inject user settings before config validation."""
-        # Call parent to get the merged config
-        config = super().prepare_config(cfg, command)
-        
-        # Inject user settings into the config before validation
+        # Inject user settings into the raw config BEFORE calling parent
         if command in ["predict", "test"] and self.user_settings:
-            print(f"Injecting user settings for {command} mode before validation...")
+            print(f"Injecting user settings for {command} mode BEFORE parent validation...")
             
-            # Ensure the command config structure exists
-            if command not in config:
-                config[command] = {}
-            if 'data' not in config[command]:
-                config[command]['data'] = {}
-            if 'init_args' not in config[command]['data']:
-                config[command]['data']['init_args'] = {}
+            # Ensure the command config structure exists in the raw cfg
+            if command not in cfg:
+                cfg[command] = {}
+            if 'data' not in cfg[command]:
+                cfg[command]['data'] = {}
+            if 'init_args' not in cfg[command]['data']:
+                cfg[command]['data']['init_args'] = {}
             
-            data_init_args = config[command]['data']['init_args']
+            data_init_args = cfg[command]['data']['init_args']
             
             # Inject user settings into data configuration
             if self.user_settings.get('data_dirs'):
@@ -143,6 +140,8 @@ class CustomLightningCLI(LightningCLI):
                 data_init_args['ignore_snp'] = self.user_settings['ignore_snp']
                 print(f"Injected ignore_snp: {self.user_settings['ignore_snp']}")
         
+        # Now call parent with the modified config
+        config = super().prepare_config(cfg, command)
         return config
 
     def before_instantiate_classes(self):
