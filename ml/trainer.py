@@ -110,82 +110,93 @@ class CustomLightningCLI(LightningCLI):
         self.user_settings = preprocess_user_config()
         print(f"DEBUG: CustomLightningCLI initialized with user_settings: {self.user_settings}")
         super().__init__(*args, **kwargs)
+        
+        # Apply user settings immediately after Lightning CLI initialization
+        self._apply_user_settings_to_config()
     
     def add_arguments_to_parser(self, parser):
         # Add user config argument for all modes
         parser.add_argument("--user_config", type=str, help="Path to user configuration file")
+    
+    def _apply_user_settings_to_config(self):
+        """Apply user settings to config immediately after Lightning CLI initialization."""
+        print(f"DEBUG: _apply_user_settings_to_config called for subcommand: {self.subcommand}")
+        print(f"DEBUG: user_settings available: {self.user_settings is not None}")
+        
+        if self.subcommand in ["predict", "test"] and self.user_settings:
+            print("DEBUG: Applying user settings to configuration")
+            config_attr = getattr(self.config, self.subcommand)
+            print(f"DEBUG: Got config_attr for {self.subcommand}")
+            print(f"DEBUG: config_attr.data: {config_attr.data}")
+            print(f"DEBUG: config_attr.data.init_args: {config_attr.data.init_args}")
+            print(f"DEBUG: Current data_dirs value: {getattr(config_attr.data.init_args, 'data_dirs', 'NOT_FOUND')}")
+            
+            # Apply user settings to data configuration if specified
+            if self.user_settings.get('data_dirs'):
+                data_dirs = self.user_settings['data_dirs']
+                # Convert dictionary format to list format if needed
+                if isinstance(data_dirs, dict):
+                    data_dirs_list = list(data_dirs.values())
+                    print(f"DEBUG: Converting data_dirs from dict to list: {data_dirs_list}")
+                else:
+                    data_dirs_list = data_dirs
+                    print(f"DEBUG: Using data_dirs as list: {data_dirs_list}")
+                
+                config_attr.data.init_args.data_dirs = data_dirs_list
+                print(f"DEBUG: Set data_dirs to: {data_dirs_list}")
+                # Verify the assignment worked
+                actual_value = getattr(config_attr.data.init_args, 'data_dirs', 'NOT_FOUND')
+                print(f"DEBUG: Verification - data_dirs is now: {actual_value}")
+                print(f"DEBUG: Assignment successful: {actual_value == data_dirs_list}")
+                
+            if self.user_settings.get('label_dir'):
+                config_attr.data.init_args.label_dir = self.user_settings['label_dir']
+                print(f"DEBUG: Set label_dir to: {self.user_settings['label_dir']}")
+                
+            if self.user_settings.get('batch_size'):
+                config_attr.data.init_args.batch_size = self.user_settings['batch_size']
+                print(f"DEBUG: Set batch_size to: {self.user_settings['batch_size']}")
+                
+            if 'drv_snp' in self.user_settings:
+                config_attr.data.init_args.drv_snp = self.user_settings['drv_snp']
+                print(f"DEBUG: Set drv_snp to: {self.user_settings['drv_snp']}")
+                
+            if 'odt_snp' in self.user_settings:
+                config_attr.data.init_args.odt_snp = self.user_settings['odt_snp']
+                print(f"DEBUG: Set odt_snp to: {self.user_settings['odt_snp']}")
+                
+            if 'bound_path' in self.user_settings:
+                config_attr.data.init_args.bound_path = self.user_settings['bound_path']
+                print(f"DEBUG: Set bound_path to: {self.user_settings['bound_path']}")
+                
+            if self.user_settings.get('ignore_snp') is not None:
+                config_attr.data.init_args.ignore_snp = self.user_settings['ignore_snp']
+                print(f"DEBUG: Set ignore_snp to: {self.user_settings['ignore_snp']}")
+            
+            # Handle checkpoint and scaler paths
+            if self.user_settings.get('ckpt_path'):
+                ckpt_path_str = self.user_settings['ckpt_path']
+                config_attr.ckpt_path = ckpt_path_str
+                print(f"DEBUG: Set ckpt_path from user settings: {ckpt_path_str}")
+                
+                # Find scaler in the model version directory, derived from ckpt_path
+                version_dir = Path(ckpt_path_str).parent.parent
+                scaler_files = list(version_dir.glob("*.pth"))
+                print(f"DEBUG: Looking for scaler files in {version_dir}, found: {scaler_files}")
+                if scaler_files:
+                    scaler_path = scaler_files[0]  # Use first scaler found
+                    config_attr.data.init_args.scaler_path = str(scaler_path)
+                    print(f"DEBUG: Set scaler_path to: {scaler_path}")
+                else:
+                    print(f"DEBUG: Warning - No .pth scaler files found in {version_dir}")
+            else:
+                print("DEBUG: Warning - ckpt_path not found in user settings")
+        else:
+            print("DEBUG: No user settings to apply or not in predict/test mode")
 
     def before_instantiate_classes(self):
         print(f"DEBUG: before_instantiate_classes called for subcommand: {self.subcommand}")
-        print(f"DEBUG: user_settings available: {self.user_settings is not None}")
         
-        if self.subcommand in ["predict", "test"]:
-            # Apply user settings to predict/test configuration
-            if self.user_settings:
-                print("DEBUG: Applying user settings to configuration")
-                config_attr = getattr(self.config, self.subcommand)
-                print(f"DEBUG: Got config_attr for {self.subcommand}")
-                
-                # Apply user settings to data configuration if specified
-                if self.user_settings.get('data_dirs'):
-                    config_attr.data.init_args.data_dirs = self.user_settings['data_dirs']
-                    print(f"DEBUG: Set data_dirs to: {self.user_settings['data_dirs']}")
-                    
-                if self.user_settings.get('label_dir'):
-                    config_attr.data.init_args.label_dir = self.user_settings['label_dir']
-                    print(f"DEBUG: Set label_dir to: {self.user_settings['label_dir']}")
-                    
-                if self.user_settings.get('batch_size'):
-                    config_attr.data.init_args.batch_size = self.user_settings['batch_size']
-                    print(f"DEBUG: Set batch_size to: {self.user_settings['batch_size']}")
-                    
-                if 'drv_snp' in self.user_settings:
-                    config_attr.data.init_args.drv_snp = self.user_settings['drv_snp']
-                    print(f"DEBUG: Set drv_snp to: {self.user_settings['drv_snp']}")
-                    
-                if 'odt_snp' in self.user_settings:
-                    config_attr.data.init_args.odt_snp = self.user_settings['odt_snp']
-                    print(f"DEBUG: Set odt_snp to: {self.user_settings['odt_snp']}")
-                    
-                if 'bound_path' in self.user_settings:
-                    config_attr.data.init_args.bound_path = self.user_settings['bound_path']
-                    print(f"DEBUG: Set bound_path to: {self.user_settings['bound_path']}")
-                    
-                if self.user_settings.get('ignore_snp') is not None:
-                    config_attr.data.init_args.ignore_snp = self.user_settings['ignore_snp']
-                    print(f"DEBUG: Set ignore_snp to: {self.user_settings['ignore_snp']}")
-                
-                # Apply user settings to callback configuration (for predict mode)
-                if self.subcommand == "predict" and hasattr(config_attr, 'trainer') and hasattr(config_attr.trainer, 'callbacks'):
-                    for callback in config_attr.trainer.callbacks:
-                        if hasattr(callback, 'class_path') and 'PredictionWriter' in callback.class_path:
-                            if self.user_settings.get('file_prefix'):
-                                callback.init_args.file_prefix = self.user_settings['file_prefix']
-                                print(f"DEBUG: Set file_prefix to: {self.user_settings['file_prefix']}")
-                                break
-            
-                # Handle predict and test modes - load checkpoint and scaler from user settings
-                if self.user_settings.get('ckpt_path'):
-                    ckpt_path_str = self.user_settings['ckpt_path']
-                    # The ckpt_path for the trainer should be set from user config
-                    config_attr.ckpt_path = ckpt_path_str
-                    print(f"DEBUG: Set ckpt_path from user settings: {ckpt_path_str}")
-                    
-                    # Find scaler in the model version directory, derived from ckpt_path
-                    version_dir = Path(ckpt_path_str).parent.parent
-                    scaler_files = list(version_dir.glob("*.pth"))
-                    print(f"DEBUG: Looking for scaler files in {version_dir}, found: {scaler_files}")
-                    if scaler_files:
-                        scaler_path = scaler_files[0]  # Use first scaler found
-                        config_attr.data.init_args.scaler_path = str(scaler_path)
-                        print(f"DEBUG: Set scaler_path to: {scaler_path}")
-                    else:
-                        print(f"DEBUG: Warning - No .pth scaler files found in {version_dir}")
-                else:
-                    print("DEBUG: Warning - ckpt_path not found in user settings")
-            else:
-                print("DEBUG: No user settings available to apply")
-
         # Pass ignore_snp flag from model to datamodule for all subcommands
         if self.subcommand and hasattr(self.config, self.subcommand):
             subcommand_config = getattr(self.config, self.subcommand)
