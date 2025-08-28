@@ -41,6 +41,19 @@ def create_temp_config_with_user_settings(base_config_path, user_settings, subco
         config['data']['init_args']['label_dir'] = user_settings['label_dir']
         print(f"DEBUG: Set label_dir to: {user_settings['label_dir']}")
     
+    # Handle scaler path from checkpoint directory
+    if user_settings.get('ckpt_path'):
+        ckpt_path = Path(user_settings['ckpt_path'])
+        version_dir = ckpt_path.parent.parent
+        scaler_files = list(version_dir.glob("*.pth"))
+        print(f"DEBUG: Looking for scaler files in {version_dir}, found: {scaler_files}")
+        if scaler_files:
+            scaler_path = str(scaler_files[0])
+            config['data']['init_args']['scaler_path'] = scaler_path
+            print(f"DEBUG: Set scaler_path to: {scaler_path}")
+        else:
+            print(f"DEBUG: Warning - No .pth scaler files found in {version_dir}")
+    
     # Create temporary file
     temp_fd, temp_path = tempfile.mkstemp(suffix='.yaml', prefix=f'temp_{subcommand}_')
     try:
