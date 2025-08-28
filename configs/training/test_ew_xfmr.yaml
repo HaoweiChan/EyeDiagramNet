@@ -17,7 +17,6 @@ trainer:
 model:
   class_path: ml.modules.trace_ew_module.TraceEWModule
   init_args:
-    ckpt_path: ./saved/ew_xfmr/version_23/checkpoints/last.ckpt 
     use_laplace_on_fit_end: false  # Disable Laplace for testing
     compile_model: false  # Disable compilation for testing
 
@@ -25,9 +24,6 @@ model:
 data:
   class_path: ml.data.eyewidth_data.TraceSeqEWDataloader
   init_args:
-    data_dirs:
-      5mi: /proj/siaiadm/ew_predictor/test_data/sub_task/trace_input/5mi
-      8mi: /proj/siaiadm/ew_predictor/test_data/sub_task/trace_input/8mi
-      9mi: /proj/siaiadm/ew_predictor/test_data/sub_task/trace_input/9mi
-    label_dir: /proj/siaiadm/ew_predictor/data/sbr/test
+    data_dirs: []  # Will be populated from user settings
+    label_dir: ""  # Will be populated from user settings
     batch_size: 100

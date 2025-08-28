@@ -108,13 +108,15 @@ class CustomLightningCLI(LightningCLI):
                 # Apply user settings to data configuration if specified
                 if self.user_settings.get('data_dirs'):
                     config_attr.data.init_args.data_dirs = self.user_settings['data_dirs']
+                if self.user_settings.get('label_dir'):
+                    config_attr.data.init_args.label_dir = self.user_settings['label_dir']
                 if self.user_settings.get('batch_size'):
                     config_attr.data.init_args.batch_size = self.user_settings['batch_size']
-                if self.user_settings.get('drv_snp'):
+                if 'drv_snp' in self.user_settings:
                     config_attr.data.init_args.drv_snp = self.user_settings['drv_snp']
-                if self.user_settings.get('odt_snp'):
+                if 'odt_snp' in self.user_settings:
                     config_attr.data.init_args.odt_snp = self.user_settings['odt_snp']
-                if self.user_settings.get('bound_path'):
+                if 'bound_path' in self.user_settings:
                     config_attr.data.init_args.bound_path = self.user_settings['bound_path']
                 if self.user_settings.get('ignore_snp') is not None:
                     config_attr.data.init_args.ignore_snp = self.user_settings['ignore_snp']
