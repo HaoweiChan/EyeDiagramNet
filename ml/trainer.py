@@ -1,3 +1,4 @@
+import os
 import sys
 import yaml
 import torch
@@ -10,11 +11,56 @@ from lightning.pytorch.utilities import disable_possible_user_warnings
 warnings.filterwarnings("ignore", category=UserWarning)
 
 
+def create_temp_config_with_user_settings(base_config_path, user_settings, subcommand):
+    """Create a temporary config file with user settings injected."""
+    import tempfile
+    
+    # Load the base config
+    with open(base_config_path, 'r') as f:
+        config = yaml.safe_load(f)
+    
+    print(f"DEBUG: Creating temp config for {subcommand} with user settings")
+    
+    # Inject user settings into the config
+    if user_settings.get('data_dirs'):
+        data_dirs = user_settings['data_dirs']
+        # Convert list format to dictionary format
+        if isinstance(data_dirs, list):
+            data_dirs_dict = {}
+            for path in data_dirs:
+                key = Path(path).name
+                data_dirs_dict[key] = path
+            print(f"DEBUG: Converted data_dirs to dict: {data_dirs_dict}")
+        else:
+            data_dirs_dict = data_dirs
+            print(f"DEBUG: Using data_dirs as dict: {data_dirs_dict}")
+        
+        config['data']['init_args']['data_dirs'] = data_dirs_dict
+    
+    if user_settings.get('label_dir'):
+        config['data']['init_args']['label_dir'] = user_settings['label_dir']
+        print(f"DEBUG: Set label_dir to: {user_settings['label_dir']}")
+    
+    # Create temporary file
+    temp_fd, temp_path = tempfile.mkstemp(suffix='.yaml', prefix=f'temp_{subcommand}_')
+    try:
+        with os.fdopen(temp_fd, 'w') as f:
+            yaml.safe_dump(config, f)
+        print(f"DEBUG: Created temporary config at: {temp_path}")
+        return temp_path
+    except Exception as e:
+        os.close(temp_fd)
+        os.unlink(temp_path)
+        raise e
+
+
 def preprocess_user_config():
     """
     Preprocess user config and modify sys.argv to include model config if specified.
     This needs to happen before Lightning CLI initialization.
     """
+    import os
+    
     print("DEBUG: Starting preprocess_user_config")
     
     # Check if we have a user_config argument
@@ -88,6 +134,31 @@ def preprocess_user_config():
                     else:
                         sys.argv.extend(["--config", str(training_config_path)])
                         print("DEBUG: Added training config to end of sys.argv")
+            
+            # For predict/test modes, create a temporary config with user settings pre-injected
+            if len(sys.argv) > 1 and sys.argv[1] in ["predict", "test"]:
+                subcommand = sys.argv[1]
+                
+                # Find the main config file in sys.argv
+                main_config_path = None
+                for i, arg in enumerate(sys.argv):
+                    if arg == "--config" and i + 1 < len(sys.argv):
+                        potential_config = sys.argv[i + 1]
+                        if subcommand in potential_config and "training" in potential_config:
+                            main_config_path = potential_config
+                            main_config_index = i + 1
+                            break
+                
+                if main_config_path:
+                    print(f"DEBUG: Found main config: {main_config_path}")
+                    # Create temporary config with user settings injected
+                    temp_config_path = create_temp_config_with_user_settings(
+                        main_config_path, user_settings, subcommand
+                    )
+                    
+                    # Replace the main config path in sys.argv
+                    sys.argv[main_config_index] = temp_config_path
+                    print(f"DEBUG: Replaced config in sys.argv with temp config: {temp_config_path}")
             
             return user_settings
         except Exception as e:
