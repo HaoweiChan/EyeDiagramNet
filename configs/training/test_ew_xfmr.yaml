@@ -24,6 +24,4 @@ model:
 data:
   class_path: ml.data.eyewidth_data.TraceSeqEWDataloader
   init_args:
-    data_dirs: []  # Will be populated from user settings
-    label_dir: ""  # Will be populated from user settings
     batch_size: 100
