@@ -110,9 +110,17 @@ class CustomLightningCLI(LightningCLI):
         self.user_settings = preprocess_user_config()
         print(f"DEBUG: CustomLightningCLI initialized with user_settings: {self.user_settings}")
         super().__init__(*args, **kwargs)
+        print("DEBUG: Lightning CLI super().__init__() completed")
         
         # Apply user settings immediately after Lightning CLI initialization
-        self._apply_user_settings_to_config()
+        try:
+            print("DEBUG: About to call _apply_user_settings_to_config()")
+            self._apply_user_settings_to_config()
+            print("DEBUG: _apply_user_settings_to_config() completed successfully")
+        except Exception as e:
+            print(f"DEBUG: Error in _apply_user_settings_to_config(): {e}")
+            import traceback
+            print(f"DEBUG: Traceback: {traceback.format_exc()}")
     
     def add_arguments_to_parser(self, parser):
         # Add user config argument for all modes
@@ -134,20 +142,25 @@ class CustomLightningCLI(LightningCLI):
             # Apply user settings to data configuration if specified
             if self.user_settings.get('data_dirs'):
                 data_dirs = self.user_settings['data_dirs']
-                # Convert dictionary format to list format if needed
-                if isinstance(data_dirs, dict):
-                    data_dirs_list = list(data_dirs.values())
-                    print(f"DEBUG: Converting data_dirs from dict to list: {data_dirs_list}")
+                # Convert list format to dictionary format (dataloader expects dict[str, str])
+                if isinstance(data_dirs, list):
+                    # Convert list to dictionary with auto-generated keys
+                    data_dirs_dict = {}
+                    for i, path in enumerate(data_dirs):
+                        # Extract basename from path for the key
+                        key = Path(path).name
+                        data_dirs_dict[key] = path
+                    print(f"DEBUG: Converting data_dirs from list to dict: {data_dirs_dict}")
                 else:
-                    data_dirs_list = data_dirs
-                    print(f"DEBUG: Using data_dirs as list: {data_dirs_list}")
+                    data_dirs_dict = data_dirs
+                    print(f"DEBUG: Using data_dirs as dict: {data_dirs_dict}")
                 
-                config_attr.data.init_args.data_dirs = data_dirs_list
-                print(f"DEBUG: Set data_dirs to: {data_dirs_list}")
+                config_attr.data.init_args.data_dirs = data_dirs_dict
+                print(f"DEBUG: Set data_dirs to: {data_dirs_dict}")
                 # Verify the assignment worked
                 actual_value = getattr(config_attr.data.init_args, 'data_dirs', 'NOT_FOUND')
                 print(f"DEBUG: Verification - data_dirs is now: {actual_value}")
-                print(f"DEBUG: Assignment successful: {actual_value == data_dirs_list}")
+                print(f"DEBUG: Assignment successful: {actual_value == data_dirs_dict}")
                 
             if self.user_settings.get('label_dir'):
                 config_attr.data.init_args.label_dir = self.user_settings['label_dir']
