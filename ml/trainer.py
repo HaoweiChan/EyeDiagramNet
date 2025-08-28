@@ -19,27 +19,58 @@ def create_temp_config_with_user_settings(base_config_path, user_settings, subco
     with open(base_config_path, 'r') as f:
         config = yaml.safe_load(f)
     
+    # Check which dataloader is being used to handle parameters correctly
+    dataloader_class = config['data']['class_path']
+    is_inference_dataloader = 'InferenceTraceSeqEWDataloader' in dataloader_class
+    
     # Inject user settings into the config
     if user_settings.get('data_dirs'):
         data_dirs = user_settings['data_dirs']
-        # Convert list format to dictionary format
-        if isinstance(data_dirs, list):
-            data_dirs_dict = {}
-            for path in data_dirs:
-                key = Path(path).name
-                data_dirs_dict[key] = path
-        else:
-            data_dirs_dict = data_dirs
         
-        config['data']['init_args']['data_dirs'] = data_dirs_dict
+        if is_inference_dataloader:
+            # InferenceTraceSeqEWDataloader expects data_dirs as a list
+            if isinstance(data_dirs, dict):
+                data_dirs_list = list(data_dirs.values())
+            else:
+                data_dirs_list = data_dirs
+            config['data']['init_args']['data_dirs'] = data_dirs_list
+        else:
+            # TraceSeqEWDataloader expects data_dirs as a dictionary
+            if isinstance(data_dirs, list):
+                data_dirs_dict = {}
+                for path in data_dirs:
+                    key = Path(path).name
+                    data_dirs_dict[key] = path
+            else:
+                data_dirs_dict = data_dirs
+            config['data']['init_args']['data_dirs'] = data_dirs_dict
     
-    if user_settings.get('label_dir'):
-        config['data']['init_args']['label_dir'] = user_settings['label_dir']
+    # Handle different parameters based on dataloader type
+    if is_inference_dataloader:
+        # InferenceTraceSeqEWDataloader specific parameters
+        if 'drv_snp' in user_settings:
+            config['data']['init_args']['drv_snp'] = user_settings['drv_snp']
+        if 'odt_snp' in user_settings:
+            config['data']['init_args']['odt_snp'] = user_settings['odt_snp']
+        if 'bound_path' in user_settings:
+            config['data']['init_args']['bound_path'] = user_settings['bound_path']
+    else:
+        # TraceSeqEWDataloader specific parameters
+        if user_settings.get('label_dir'):
+            config['data']['init_args']['label_dir'] = user_settings['label_dir']
     
     # Handle scaler path from checkpoint directory
     if user_settings.get('ckpt_path'):
-        ckpt_path = Path(user_settings['ckpt_path'])
+        ckpt_path_str = user_settings['ckpt_path']
+        ckpt_path = Path(ckpt_path_str)
         version_dir = ckpt_path.parent.parent
+        
+        # Set checkpoint path for the trainer to load model weights
+        if 'ckpt_path' not in config:
+            config['ckpt_path'] = ckpt_path_str
+            print(f"Using checkpoint: {ckpt_path_str}")
+        
+        # Find and set scaler path for dataloader
         scaler_files = list(version_dir.glob("*.pth"))
         if scaler_files:
             scaler_path = str(scaler_files[0])
