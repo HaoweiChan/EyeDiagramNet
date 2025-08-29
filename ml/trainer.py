@@ -54,6 +54,8 @@ def create_temp_config_with_user_settings(base_config_path, user_settings, subco
             config['data']['init_args']['odt_snp'] = user_settings['odt_snp']
         if 'bound_path' in user_settings:
             config['data']['init_args']['bound_path'] = user_settings['bound_path']
+        if 'training_config_keys' in user_settings:
+            config['data']['init_args']['training_config_keys'] = user_settings['training_config_keys']
     else:
         # TraceSeqEWDataloader specific parameters
         if user_settings.get('label_dir'):
@@ -173,6 +175,26 @@ def preprocess_user_config():
                             break
                 
                 if main_config_path:
+                    # Extract training_config_keys from the training config
+                    with open(training_config_path, 'r') as f:
+                        training_config = yaml.safe_load(f)
+                    
+                    # Look for config_keys in the loaded training config
+                    training_config_keys = None
+                    if 'data' in training_config and 'init_args' in training_config['data']:
+                        # This path is for TraceSeqEWDataloader during training
+                        if 'config_keys' in training_config['data']['init_args']:
+                            training_config_keys = training_config['data']['init_args']['config_keys']
+                    
+                    # Fallback for older configs where it might be at the top level
+                    if not training_config_keys and 'config_keys' in training_config:
+                        training_config_keys = training_config['config_keys']
+                    
+                    # Inject training_config_keys into user settings for the dataloader
+                    if training_config_keys:
+                        user_settings['training_config_keys'] = training_config_keys
+                        print(f"Found and injected training_config_keys: {training_config_keys}")
+
                     # Create temporary config with user settings injected
                     temp_config_path = create_temp_config_with_user_settings(
                         main_config_path, user_settings, subcommand

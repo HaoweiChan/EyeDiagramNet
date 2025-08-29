@@ -36,7 +36,8 @@ from .validation import (
 # Scaler metadata utilities
 from .scaler_metadata import (
     save_scaler_with_config_keys,
-    load_scaler_with_config_keys
+    load_scaler_with_config_keys,
+    is_enhanced_scaler
 )
 
 __all__ = [
@@ -64,5 +65,6 @@ __all__ = [
     
     # Scaler metadata
     'save_scaler_with_config_keys',
-    'load_scaler_with_config_keys'
+    'load_scaler_with_config_keys',
+    'is_enhanced_scaler'
 ]
