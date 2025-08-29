@@ -96,8 +96,6 @@ def preprocess_user_config():
     Preprocess user config and modify sys.argv to include model config if specified.
     This needs to happen before Lightning CLI initialization.
     """
-    import os
-    
     # Check if we have a user_config argument
     user_config_path = None
     for i, arg in enumerate(sys.argv):
@@ -169,7 +167,7 @@ def preprocess_user_config():
                 for i, arg in enumerate(sys.argv):
                     if arg == "--config" and i + 1 < len(sys.argv):
                         potential_config = sys.argv[i + 1]
-                        if subcommand in potential_config and "training" in potential_config:
+                        if (subcommand in potential_config or (subcommand == 'predict' and 'infer' in potential_config)) and "training" in potential_config:
                             main_config_path = potential_config
                             main_config_index = i + 1
                             break
