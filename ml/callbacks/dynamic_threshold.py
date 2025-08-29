@@ -103,8 +103,8 @@ class DynamicThresholdOptimizer(Callback):
                 true_prob = (true_ew > 0).float()
                 
                 # Cache for threshold optimization (detach and move to CPU)
-                self.val_cache["probs"].append(pred_prob.squeeze().detach().cpu())
-                self.val_cache["labels"].append(true_prob.squeeze().detach().cpu())
+                self.val_cache["probs"].append(pred_prob.flatten().detach().cpu())
+                self.val_cache["labels"].append(true_prob.flatten().detach().cpu())
     
     def on_validation_epoch_end(self, trainer: Trainer, pl_module: LightningModule) -> None:
         """Optimize threshold based on collected validation data."""
