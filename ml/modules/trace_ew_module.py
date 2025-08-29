@@ -6,6 +6,7 @@ import torch.nn.functional as F
 import torchmetrics as tm
 from dataclasses import dataclass
 from lightning import LightningModule
+from lightning.pytorch.utilities import CombinedLoader
 from lightning.pytorch.utilities.rank_zero import rank_zero_info
 
 from ..models.layers import LearnableLossWeighting
@@ -135,7 +136,14 @@ class TraceEWModule(LightningModule):
             # For prediction/inference, config_keys are auto-determined in setup()
             self.config_keys = self.trainer.datamodule.config_keys
         
-        dummy_batch, *_ = next(iter(loader))
+        # Handle CombinedLoader case for predict_dataloader
+        if isinstance(loader, CombinedLoader):
+            # Get the first sub-loader from CombinedLoader
+            first_loader = next(iter(loader.loaders.values()))
+            dummy_batch, *_ = next(iter(first_loader))
+        else:
+            dummy_batch, *_ = next(iter(loader))
+        
         key = next(iter(dummy_batch.keys()))
         inputs = dummy_batch[key]
         
