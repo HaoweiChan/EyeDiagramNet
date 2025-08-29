@@ -138,9 +138,11 @@ class TraceEWModule(LightningModule):
         
         # Handle CombinedLoader case for predict_dataloader
         if isinstance(loader, CombinedLoader):
-            # Get the first sub-loader from CombinedLoader
-            first_loader = next(iter(loader.loaders.values()))
-            dummy_batch, *_ = next(iter(first_loader))
+            # For CombinedLoader, we can iterate directly to get the combined batch
+            # which should be a dict with keys corresponding to the original loaders
+            combined_batch = next(iter(loader))
+            # Get the first loader's batch from the combined batch
+            dummy_batch = next(iter(combined_batch.values()))
         else:
             dummy_batch, *_ = next(iter(loader))
         
