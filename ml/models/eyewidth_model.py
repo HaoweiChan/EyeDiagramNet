@@ -157,7 +157,6 @@ class EyeWidthRegressor(nn.Module):
             self.signal_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
         
         self.norm_trace_seq = RMSNorm(model_dim)
-        self.norm_concat_tokens = RMSNorm(model_dim)
 
         # Direction embedding (0 for Tx, 1 for Rx)
         self.dir_projection = nn.Embedding(2, model_dim)
@@ -289,23 +288,16 @@ class EyeWidthRegressor(nn.Module):
         if not self.ignore_snp:
             hidden_states_vert = hidden_states_vert + signal_embeds.unsqueeze(0)
         
-        # Concatenate all hidden states
+        # Concatenate all hidden states (except hidden_states_fix which will be added later)
         if not self.ignore_snp:
             hidden_states_vert = rearrange(hidden_states_vert, "b d p e -> b (d p) e") # concat drv and odt snp states
             hidden_states = torch.cat((
                 hidden_states_seq,
-                hidden_states_vert,
-                hidden_states_fix
+                hidden_states_vert
             ), dim=1)
         else:
             # Skip SNP states when ignoring SNPs
-            hidden_states = torch.cat((
-                hidden_states_seq,
-                hidden_states_fix
-            ), dim=1)
-
-        # Final norm before signal transformer
-        hidden_states = self.norm_concat_tokens(hidden_states)
+            hidden_states = hidden_states_seq
 
         # Run transformer for the signals
         if self.use_gradient_checkpointing and self.training:
@@ -315,6 +307,9 @@ class EyeWidthRegressor(nn.Module):
         else:
             hidden_states_sig = self.signal_encoder(hidden_states)
         hidden_states_sig = hidden_states_sig[:, :num_signals]
+
+        # Add hidden_states_fix to hidden_states_sig right before prediction head
+        hidden_states_sig = hidden_states_sig + hidden_states_fix.squeeze(1)
 
         # Predict eye width and open eye probabilities respectively
         output = self.pred_head(hidden_states_sig)
