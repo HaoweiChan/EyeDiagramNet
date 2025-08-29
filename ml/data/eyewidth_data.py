@@ -219,7 +219,13 @@ class InferenceTraceEWDataset(Dataset):
 
     def __getitem__(self, index):
         trace_seq = self.trace_seqs[index]
-        return trace_seq, self.direction, self.boundary, self.vert_snp, self.config
+        if self.boundary.shape[0] == len(self.trace_seqs):
+            # Transformed
+            boundary = self.boundary[index]
+        else:
+            # Not transformed
+            boundary = self.boundary.squeeze(0)
+        return trace_seq, self.direction, boundary, self.vert_snp, self.config
 
     def transform(self, seq_scaler, fix_scaler):
         """Apply scaling transformations using semantic feature access."""
@@ -236,7 +242,8 @@ class InferenceTraceEWDataset(Dataset):
 
         # Scale boundary features  
         bound_dim = self.boundary.size(-1)
-        scaled_boundary = fix_scaler.transform(self.boundary).reshape(num, -1, bound_dim)
+        expanded_boundary = self.boundary.expand(num, *self.boundary.shape[1:])
+        scaled_boundary = fix_scaler.transform(expanded_boundary).reshape(num, -1, bound_dim)
         self.boundary = scaled_boundary.float()
         
         return self
