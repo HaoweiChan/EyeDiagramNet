@@ -16,7 +16,10 @@ from lightning.pytorch.utilities.rank_zero import rank_zero_info
 from ..utils.scaler import MinMaxScaler
 from .processors import CSVProcessor, TraceSequenceProcessor
 from common.signal_utils import read_snp, flip_snp
-from common.parameters import SampleResult, to_new_param_name, convert_configs_to_boundaries
+from common.parameters import (
+    SampleResult, to_new_param_name, convert_configs_to_boundaries,
+    load_scaler_with_config_keys, is_enhanced_scaler
+)
 from common.pickle_utils import load_pickle_directory
 
 def get_loader_from_dataset(
@@ -449,6 +452,7 @@ class InferenceTraceSeqEWDataloader(LightningDataModule):
         bound_path: str = None,
         scaler_path: str = None,
         ignore_snp: bool = False,
+        training_config_keys: list | None = None,
     ):
         super().__init__()
         self.data_dirs = data_dirs
@@ -458,6 +462,7 @@ class InferenceTraceSeqEWDataloader(LightningDataModule):
         self.bound_path = bound_path
         self.scaler_path = scaler_path
         self.ignore_snp = ignore_snp
+        self.training_config_keys = training_config_keys
 
     def setup(self, stage=None):
         # Initialize processor and locate CSV files
@@ -466,14 +471,24 @@ class InferenceTraceSeqEWDataloader(LightningDataModule):
 
         # Load scaler with training config_keys metadata
         from common.parameters import (
-            load_scaler_with_config_keys, 
             process_boundary_for_inference,
             validate_boundary_dimensions,
             get_directions_from_boundary_json
         )
         
-        scalers, training_config_keys = load_scaler_with_config_keys(Path(self.scaler_path))
-        rank_zero_info(f"Loaded scaler with training config_keys: {training_config_keys}")
+        scaler_path_obj = Path(self.scaler_path)
+        if is_enhanced_scaler(scaler_path_obj):
+            scalers, training_config_keys = load_scaler_with_config_keys(scaler_path_obj)
+            rank_zero_info(f"Loaded enhanced scaler with training config_keys: {training_config_keys}")
+        else:
+            rank_zero_info(f"Legacy scaler detected at {self.scaler_path}. Using provided training_config_keys.")
+            if not self.training_config_keys:
+                raise ValueError(
+                    "Legacy scaler file detected, but no 'training_config_keys' were provided "
+                    "to the dataloader. Please provide them in the inference config."
+                )
+            scalers = torch.load(self.scaler_path, weights_only=False)
+            training_config_keys = self.training_config_keys
         
         # Process boundary JSON for inference compatibility
         self.boundary, boundary_values, self.config_keys = process_boundary_for_inference(
