@@ -25,37 +25,54 @@ NEW_TO_LEGACY_PARAM_MAP = {v: k for k, v in LEGACY_TO_NEW_PARAM_MAP.items()}
 
 def convert_legacy_param_names(param_names_or_dict, target_format='new'):
     """
-    Convert parameter names between legacy and new formats.
-    
+    Convert parameter names to a target format (legacy or new).
+
+    This function is idempotent and safe to call on data that may already be
+    in the target format. It ensures all convertible keys are in the
+    specified format in the output. For dictionaries with mixed-format keys
+    (e.g., both 'R_tx' and 'R_drv'), it gives precedence to the key that is
+    already in the target format.
+
     Args:
-        param_names_or_dict: Either a list of parameter names, a dict with parameter keys,
-                            or a dict to be converted in-place
-        target_format: Either 'new' (legacy->new) or 'legacy' (new->legacy)
-        
+        param_names_or_dict: A list of parameter names or a dictionary.
+        target_format: The desired output format, 'new' or 'legacy'.
+
     Returns:
-        Converted list, dict, or modified input dict
-        
-    Examples:
-        >>> convert_legacy_param_names(['R_tx', 'C_rx'], 'new')
-        ['R_drv', 'C_odt']
-        >>> convert_legacy_param_names({'R_drv': 50, 'C_odt': 1e-12}, 'legacy')
-        {'R_tx': 50, 'C_rx': 1e-12}
+        A new list or dictionary with names in the target format.
     """
-    if target_format == 'new':
-        param_map = LEGACY_TO_NEW_PARAM_MAP
-    elif target_format == 'legacy':
-        param_map = NEW_TO_LEGACY_PARAM_MAP
-    else:
+    if target_format not in ('new', 'legacy'):
         raise ValueError("target_format must be 'new' or 'legacy'")
-    
+
     if isinstance(param_names_or_dict, list):
-        # Convert list of parameter names
+        param_map = LEGACY_TO_NEW_PARAM_MAP if target_format == 'new' else NEW_TO_LEGACY_PARAM_MAP
         return [param_map.get(name, name) for name in param_names_or_dict]
-    elif isinstance(param_names_or_dict, dict):
-        # Convert dict keys (creates new dict)
-        return {param_map.get(k, k): v for k, v in param_names_or_dict.items()}
-    else:
-        raise TypeError("Input must be a list or dict")
+
+    if isinstance(param_names_or_dict, dict):
+        # Make a copy to avoid modifying the original
+        out_dict = param_names_or_dict.copy()
+        
+        if target_format == 'new':
+            # Convert legacy keys to new keys
+            for legacy_key, new_key in LEGACY_TO_NEW_PARAM_MAP.items():
+                if legacy_key in out_dict:
+                    # If the new key already exists, prefer it by removing the legacy one.
+                    # Otherwise, rename the legacy key to the new key.
+                    if new_key not in out_dict:
+                        out_dict[new_key] = out_dict.pop(legacy_key)
+                    else:
+                        del out_dict[legacy_key]
+        else:  # target_format == 'legacy'
+            # Convert new keys to legacy keys
+            for legacy_key, new_key in LEGACY_TO_NEW_PARAM_MAP.items():
+                if new_key in out_dict:
+                    # If the legacy key already exists, prefer it. Otherwise, rename.
+                    if legacy_key not in out_dict:
+                        out_dict[legacy_key] = out_dict.pop(new_key)
+                    else:
+                        del out_dict[new_key]
+        return out_dict
+
+    raise TypeError("Input must be a list or dict")
 
 
 def to_new_param_name(d: dict) -> dict:
