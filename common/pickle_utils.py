@@ -162,14 +162,13 @@ def load_pickle_data(pfile: Path) -> List[SimulationResult]:
             
     return results
 
-def load_pickle_directory(label_dir: Path, dataset_name: str, config_keys: list = None) -> dict:
+def load_pickle_directory(label_dir: Path, dataset_name: str) -> dict:
     """
     Load and process all pickle files from a directory for a specific dataset.
     
     Args:
         label_dir: Path to the directory containing pickle files
         dataset_name: Name of the dataset subdirectory 
-        config_keys: Optional list of config keys for structured array conversion
         
     Returns:
         Dictionary mapping case_ids to processed data tuples containing:
@@ -282,9 +281,9 @@ def load_pickle_directory(label_dir: Path, dataset_name: str, config_keys: list 
             # Create SNP vertical data tuple
             snp_vert = tuple(zip(snp_drvs, snp_odts))
 
-            # Create metadata dict from the first result  
+            # Create metadata dict from the first result
             meta = {
-                'config_keys': config_keys,
+                'config_keys': first_result.config_keys,
                 'snp_horiz': first_result.snp_horiz,
                 'n_ports': first_result.n_ports,
                 'param_types': first_result.param_types
