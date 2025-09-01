@@ -120,6 +120,19 @@ class SampleResult:
         if bound_type is not None:
             self.is_within_range(bound_type)
             
+    @classmethod
+    def from_dict(cls, data_dict):
+        """
+        Create a SampleResult instance from a dictionary.
+        
+        Args:
+            data_dict: Dictionary containing parameter data
+            
+        Returns:
+            SampleResult instance
+        """
+        return cls(**data_dict)
+            
     def __repr__(self):
         return repr(self._data)
 

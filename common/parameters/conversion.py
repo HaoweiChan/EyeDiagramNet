@@ -14,6 +14,50 @@ from typing import List, Tuple, Dict, Any
 from .types import SampleResult
 
 
+# Centralized parameter name mappings
+LEGACY_TO_NEW_PARAM_MAP = {
+    'R_tx': 'R_drv', 'C_tx': 'C_drv', 'L_tx': 'L_drv',
+    'R_rx': 'R_odt', 'C_rx': 'C_odt', 'L_rx': 'L_odt',
+}
+
+NEW_TO_LEGACY_PARAM_MAP = {v: k for k, v in LEGACY_TO_NEW_PARAM_MAP.items()}
+
+
+def convert_legacy_param_names(param_names_or_dict, target_format='new'):
+    """
+    Convert parameter names between legacy and new formats.
+    
+    Args:
+        param_names_or_dict: Either a list of parameter names, a dict with parameter keys,
+                            or a dict to be converted in-place
+        target_format: Either 'new' (legacy->new) or 'legacy' (new->legacy)
+        
+    Returns:
+        Converted list, dict, or modified input dict
+        
+    Examples:
+        >>> convert_legacy_param_names(['R_tx', 'C_rx'], 'new')
+        ['R_drv', 'C_odt']
+        >>> convert_legacy_param_names({'R_drv': 50, 'C_odt': 1e-12}, 'legacy')
+        {'R_tx': 50, 'C_rx': 1e-12}
+    """
+    if target_format == 'new':
+        param_map = LEGACY_TO_NEW_PARAM_MAP
+    elif target_format == 'legacy':
+        param_map = NEW_TO_LEGACY_PARAM_MAP
+    else:
+        raise ValueError("target_format must be 'new' or 'legacy'")
+    
+    if isinstance(param_names_or_dict, list):
+        # Convert list of parameter names
+        return [param_map.get(name, name) for name in param_names_or_dict]
+    elif isinstance(param_names_or_dict, dict):
+        # Convert dict keys (creates new dict)
+        return {param_map.get(k, k): v for k, v in param_names_or_dict.items()}
+    else:
+        raise TypeError("Input must be a list or dict")
+
+
 def to_new_param_name(d: dict) -> dict:
     """
     Convert old parameter names to new ones for backward compatibility.
@@ -28,14 +72,8 @@ def to_new_param_name(d: dict) -> dict:
         >>> to_new_param_name({'R_tx': 50, 'R_rx': 1000})
         {'R_drv': 50, 'R_odt': 1000}
     """
-    key_map = {
-        'R_tx': 'R_drv', 'C_tx': 'C_drv', 'L_tx': 'L_drv',
-        'R_rx': 'R_odt', 'C_rx': 'C_odt', 'L_rx': 'L_odt',
-    }
-    for old_key, new_key in key_map.items():
-        if old_key in d:
-            d[new_key] = d.pop(old_key)
-    return d
+    # Use the centralized conversion function
+    return convert_legacy_param_names(d, target_format='new')
 
 
 def convert_configs_to_boundaries(configs_list: list, config_keys: list) -> np.ndarray:

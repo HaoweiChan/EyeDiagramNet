@@ -11,7 +11,16 @@ from common.parameters import SampleResult as SimulationResult
 
 # Try to import simulation functions for comparison
 try:
-    from simulation.engine.sbr_simulator import snp_eyewidth_simulation as legacy_snp_eyewidth_simulation
+    # First try to import from legacy module, fall back to current module
+    try:
+        from simulation.engine.sparam_to_ew import snp_eyewidth_simulation as legacy_snp_eyewidth_simulation
+        print("Using legacy simulation from sparam_to_ew module")
+        USE_LEGACY_FORMAT = True  # Legacy module expects legacy parameter format
+    except ImportError:
+        from simulation.engine.sbr_simulator import snp_eyewidth_simulation as legacy_snp_eyewidth_simulation
+        print("Using current simulation from sbr_simulator module")
+        USE_LEGACY_FORMAT = False  # Current module expects new parameter format
+    
     from common.parameters import SampleResult
     VALIDATION_AVAILABLE = True
 except ImportError as e:
@@ -19,6 +28,7 @@ except ImportError as e:
     VALIDATION_AVAILABLE = False
     legacy_snp_eyewidth_simulation = None
     SampleResult = dict
+    USE_LEGACY_FORMAT = False
 
 def reconstruct_config(data, sample_idx):
     """Reconstruct configuration from pickle data."""
@@ -41,9 +51,11 @@ def reconstruct_config(data, sample_idx):
 
 def convert_config_to_legacy_format(config):
     """Convert new config format to legacy format for compatibility."""
-    name_mapping = {'L_drv': 'L_tx', 'L_odt': 'L_rx', 'C_drv': 'C_tx', 'C_odt': 'C_rx', 'R_drv': 'R_tx', 'R_odt': 'R_rx'}
+    # NOTE: This function is now deprecated as the simulation code expects new format
+    # Keeping for backward compatibility but should not be used
+    from common.parameters import convert_legacy_param_names
     config_dict = config.to_dict() if hasattr(config, 'to_dict') else config
-    legacy_dict = {name_mapping.get(k, k): v for k, v in config_dict.items()}
+    legacy_dict = convert_legacy_param_names(config_dict, target_format='legacy')
     return SampleResult.from_dict(legacy_dict) if VALIDATION_AVAILABLE and hasattr(config, 'to_dict') else legacy_dict
 
 def get_snp_file_paths(data, sample_idx):
@@ -86,7 +98,14 @@ def run_validation(pickle_files: list, max_files: int, max_samples: int, output_
                     # Reconstruct config from dataclass
                     config_dict = dict(zip(sample.config_keys, sample.config_values))
                     config = SampleResult.from_dict(config_dict)
-                    legacy_config = convert_config_to_legacy_format(config)
+                    
+                    # Choose parameter format based on which simulation module is being used
+                    if USE_LEGACY_FORMAT:
+                        # Convert to legacy format for legacy simulation
+                        simulation_config = convert_config_to_legacy_format(config)
+                    else:
+                        # Use new format for current simulation
+                        simulation_config = config
                     
                     # Get SNP file paths from dataclass
                     snp_horiz = sample.snp_horiz
@@ -95,7 +114,7 @@ def run_validation(pickle_files: list, max_files: int, max_samples: int, output_
                     directions = np.array(sample.directions)
                     pickle_ew = np.array(sample.line_ews)
 
-                    sim_result = legacy_snp_eyewidth_simulation(legacy_config, (snp_horiz, snp_drv, snp_odt), directions)
+                    sim_result = legacy_snp_eyewidth_simulation(simulation_config, (snp_horiz, snp_drv, snp_odt), directions)
                     simulated_ew = np.array(sim_result[0] if isinstance(sim_result, tuple) else sim_result)
                     
                     diff = simulated_ew - pickle_ew

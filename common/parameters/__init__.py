@@ -22,9 +22,12 @@ from .types import (
 # Parameter conversion utilities
 from .conversion import (
     to_new_param_name,
+    convert_legacy_param_names,
     convert_configs_to_boundaries,
     process_boundary_for_inference,
-    get_directions_from_boundary_json
+    get_directions_from_boundary_json,
+    LEGACY_TO_NEW_PARAM_MAP,
+    NEW_TO_LEGACY_PARAM_MAP
 )
 
 # Parameter validation utilities  
@@ -55,9 +58,12 @@ __all__ = [
     
     # Conversion
     'to_new_param_name',
+    'convert_legacy_param_names',
     'convert_configs_to_boundaries',
     'process_boundary_for_inference',
     'get_directions_from_boundary_json',
+    'LEGACY_TO_NEW_PARAM_MAP',
+    'NEW_TO_LEGACY_PARAM_MAP',
     
     # Validation
     'validate_boundary_dimensions',

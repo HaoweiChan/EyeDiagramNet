@@ -126,6 +126,10 @@ def load_pickle_data(pfile: Path) -> List[SimulationResult]:
     snp_horiz = meta.get('snp_horiz', '')
     n_ports = meta.get('n_ports', 0)
     param_types = meta.get('param_types', [])
+    
+    # Convert legacy parameter names to new format using centralized mapping
+    from common.parameters import convert_legacy_param_names
+    config_keys = convert_legacy_param_names(config_keys, target_format='new')
 
     for i in range(n_samples):
         try:
@@ -278,18 +282,9 @@ def load_pickle_directory(label_dir: Path, dataset_name: str, config_keys: list 
             # Create SNP vertical data tuple
             snp_vert = tuple(zip(snp_drvs, snp_odts))
 
-            # Create metadata dict from the first result
-            # Apply the same key conversion to config_keys as done to config values
-            updated_config_keys = []
-            key_map = {
-                'R_tx': 'R_drv', 'C_tx': 'C_drv', 'L_tx': 'L_drv',
-                'R_rx': 'R_odt', 'C_rx': 'C_odt', 'L_rx': 'L_odt',
-            }
-            for config_key in first_result.config_keys:
-                updated_config_keys.append(key_map.get(config_key, config_key))
-            
+            # Create metadata dict from the first result  
             meta = {
-                'config_keys': updated_config_keys,
+                'config_keys': config_keys,
                 'snp_horiz': first_result.snp_horiz,
                 'n_ports': first_result.n_ports,
                 'param_types': first_result.param_types
@@ -313,30 +308,3 @@ def load_pickle_directory(label_dir: Path, dataset_name: str, config_keys: list 
     rank_zero_info(f"Successfully processed {processed_files} pickle files, skipped {skipped_files} files")
     
     return labels
-
-def convert_configs_to_boundaries(configs_list: list, config_keys: list):
-    """
-    Convert a list of config dictionaries directly to a pure numpy array of boundaries.
-    
-    Args:
-        configs_list: List of lists of config dictionaries
-        config_keys: List of parameter keys for array conversion
-        
-    Returns:
-        numpy.ndarray: Pure numerical array of shape (n_samples, n_configs_per_sample, n_parameters)
-    """
-    import numpy as np
-    
-    boundaries_list = []
-    for configs in configs_list:
-        # Convert each list of config dicts to numerical arrays
-        sample_boundaries = []
-        for config_dict in configs:
-            # Extract values in the order specified by config_keys
-            values = [config_dict.get(key, np.nan) for key in config_keys]
-            sample_boundaries.append(values)
-            
-        boundaries_list.append(sample_boundaries)
-    
-    # Convert to pure numpy array with proper shape
-    return np.array(boundaries_list, dtype=np.float64)
