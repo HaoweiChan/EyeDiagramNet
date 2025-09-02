@@ -260,12 +260,8 @@ class InferenceTraceEWDataset(Dataset):
 
     def __getitem__(self, index):
         trace_seq = self.trace_seqs[index]
-        if self.boundary.shape[0] == len(self.trace_seqs):
-            # Transformed
-            boundary = self.boundary[index]
-        else:
-            # Not transformed
-            boundary = self.boundary.squeeze(0)
+        # Boundary is always the same 1D tensor for all samples
+        boundary = self.boundary
         return trace_seq, self.direction, boundary, self.vert_snp, self.config
 
     def transform(self, seq_scaler, fix_scaler):
@@ -281,10 +277,8 @@ class InferenceTraceEWDataset(Dataset):
         # Update only the scalable portion of the sequence
         self.trace_seqs[:, :, TraceSequenceProcessor.get_scalable_slice()] = scaled_feats.float()
 
-        # Scale boundary features  
-        bound_dim = self.boundary.size(-1)
-        expanded_boundary = self.boundary.expand(num, *self.boundary.shape[1:])
-        scaled_boundary = fix_scaler.transform(expanded_boundary).reshape(num, -1, bound_dim)
+        # Scale boundary features (1D tensor, same for all samples)
+        scaled_boundary = fix_scaler.transform(self.boundary.unsqueeze(0)).squeeze(0)
         self.boundary = scaled_boundary.float()
         
         return self
@@ -490,13 +484,36 @@ class TraceSeqEWDataloader(LightningDataModule):
         target_total_bs = int(self.batch_size * batch_size_multiplier)
         base_per_loader_bs = max(1, target_total_bs // num_valid_datasets)
         
-        # 3. First pass: Allocate base batch size, ensuring it's at least world_size
+        # 3. First pass: Allocate batch size ensuring at least world_size batches per dataset
         batch_sizes = {}
         used_samples = 0
         for name, size in valid_datasets.items():
-            # Allocate base size, but ensure it's at least world_size and no more than the dataset size
-            allocated = max(world_size, base_per_loader_bs)
-            allocated = min(size, allocated)
+            # Start with base allocation
+            allocated = max(1, base_per_loader_bs)
+            
+            # Ensure we have at least world_size batches (so each GPU gets at least one batch)
+            max_batch_size_for_sufficient_batches = size // world_size
+            if max_batch_size_for_sufficient_batches < 1:
+                max_batch_size_for_sufficient_batches = 1
+                
+            # Apply the constraint: batch_size <= dataset_size // world_size to ensure enough batches
+            if allocated > max_batch_size_for_sufficient_batches:
+                allocated = max_batch_size_for_sufficient_batches
+                rank_zero_info(f"Dataset '{name}': Reducing batch_size to {allocated} to ensure "
+                              f"at least {world_size} batches for distributed training")
+            
+            # Also try to keep batch_size >= world_size when dataset is large enough
+            min_reasonable_batch_size = min(world_size, max_batch_size_for_sufficient_batches)
+            allocated = max(allocated, min_reasonable_batch_size)
+            
+            num_batches = size // allocated
+            rank_zero_info(f"Dataset '{name}': size={size}, batch_size={allocated}, num_batches={num_batches}")
+            
+            # Final check: ensure we have at least world_size batches
+            if num_batches < world_size:
+                rank_zero_info(f"WARNING: Dataset '{name}' only produces {num_batches} batches < {world_size} GPUs. "
+                              f"Some GPUs will be idle during training.")
+                
             batch_sizes[name] = allocated
             used_samples += allocated
             
@@ -658,10 +675,7 @@ class InferenceTraceSeqEWDataloader(LightningDataModule):
             case_id, input_arr = processor.parse(csv_path)
             rank_zero_info(f"Input array: {input_arr.shape}")
             
-            # Create a single configuration array with shape (1, 1, n_parameters) to match training format
-            boundary_array = np.array([[boundary_values]], dtype=np.float64)
-            
-            ds = InferenceTraceEWDataset(input_arr, directions, boundary_array, drv, odt)
+            ds = InferenceTraceEWDataset(input_arr, directions, boundary_values, drv, odt)
             self.predict_dataset[name] = ds.transform(*scalers)
 
     def _calculate_inference_batch_size(self, datasets: dict) -> int:
