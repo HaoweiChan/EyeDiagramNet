@@ -136,31 +136,16 @@ class TraceEWModule(LightningModule):
             # For prediction/inference, config_keys are auto-determined in setup()
             self.config_keys = self.trainer.datamodule.config_keys
         
-        # Handle CombinedLoader case
-        if isinstance(loader, CombinedLoader):
-            # Find the first dataloader that is not empty
-            dummy_batch = None
-            if isinstance(loader.loaders, dict):
-                for key in loader.loaders:
-                    try:
-                        # Iterating over the combined loader gives a dict of batches
-                        combined_batch = next(iter(loader))
-                        dummy_batch = combined_batch[key]
-                        break
-                    except (StopIteration, KeyError):
-                        continue
-            if dummy_batch is None:
-                raise RuntimeError("Could not retrieve a dummy batch from any of the dataloaders. All might be empty.")
-        else:
-            dummy_batch, *_ = next(iter(loader))
+        # Handle CombinedLoader 
+        combined_batch = next(iter(loader))
+        dummy_batch = combined_batch[0]
+        key = next(iter(dummy_batch.keys()))
+        inputs = dummy_batch[key]
         
-        # This part seems incorrect as dummy_batch is now the batch, not a dict of batches
-        # Assuming the batch itself is the desired input structure for a single dataloader
-        inputs = dummy_batch
-        
-        # The last element of the tuple from the dataloader is not part of the model's forward pass inputs.
-        # For training, it's the target `eye_width`.
-        # For prediction, it would be a config dict, which is also not a model input.
+        # Dataloader returns a tuple of tensors. The model's forward pass
+        # expects (trace_seq, direction, boundary, snp_vert).
+        # We must slice the returned tuple to exclude targets (`eye_width`) and metadata (`config`)
+        # before passing it to the model.
         forward_args = inputs[:-1] if stage == 'predict' else inputs[:-2]
 
         try:
