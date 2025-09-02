@@ -1,5 +1,4 @@
 import os
-import json
 import psutil
 import random
 import numpy as np
@@ -17,10 +16,11 @@ from ..utils.scaler import MinMaxScaler
 from .processors import CSVProcessor, TraceSequenceProcessor
 from common.signal_utils import read_snp, flip_snp
 from common.parameters import (
-    SampleResult, to_new_param_name, convert_configs_to_boundaries,
-    load_scaler_with_config_keys, is_enhanced_scaler
+    convert_configs_to_boundaries, load_scaler_with_config_keys,
+    is_enhanced_scaler, save_scaler_with_config_keys
 )
 from common.pickle_utils import load_pickle_directory
+
 
 def get_loader_from_dataset(
     dataset: Dataset,
@@ -420,7 +420,6 @@ class TraceSeqEWDataloader(LightningDataModule):
             config_keys = first_dataset.config_keys
             
             # Use the new enhanced scaler saving with metadata
-            from common.parameters import save_scaler_with_config_keys
             save_scaler_with_config_keys((self.seq_scaler, self.fix_scaler), config_keys, save_path)
             rank_zero_info(f"Saved scalers with config_keys metadata to {save_path}: {config_keys}")
 
@@ -472,9 +471,8 @@ class InferenceTraceSeqEWDataloader(LightningDataModule):
         self.training_config_keys = training_config_keys
 
     def setup(self, stage=None):
-        # Initialize processor and locate CSV files
+        # Initialize processor
         processor = CSVProcessor()
-        csv_paths = processor.locate(self.data_dirs)
 
         # Load scaler with training config_keys metadata
         from common.parameters import (
@@ -532,8 +530,16 @@ class InferenceTraceSeqEWDataloader(LightningDataModule):
             
             directions = get_directions_from_boundary_json(self.bound_path, default_ports=drv.s.shape[-1])
 
-        self.predict_dataset = []
-        for csv_path in csv_paths:
+        # Convert list to dict with directory names as keys for CombinedLoader compatibility
+        if isinstance(self.data_dirs, list):
+            data_dirs_dict = {Path(dir_path).name: dir_path for dir_path in self.data_dirs}
+        else:
+            data_dirs_dict = self.data_dirs
+            
+        csv_paths = processor.locate(data_dirs_dict)
+        
+        self.predict_dataset = {}
+        for name, csv_path in csv_paths.items():
             case_id, input_arr = processor.parse(csv_path)
             rank_zero_info(f"Input array: {input_arr.shape}")
             
@@ -541,10 +547,11 @@ class InferenceTraceSeqEWDataloader(LightningDataModule):
             boundary_array = np.array([[boundary_values]], dtype=np.float64)
             
             ds = InferenceTraceEWDataset(input_arr, directions, boundary_array, drv.s, odt.s)
-            self.predict_dataset.append(ds.transform(*scalers))
+            self.predict_dataset[name] = ds.transform(*scalers)
 
     def predict_dataloader(self):
-        return CombinedLoader(
-            get_loader_from_dataset(dataset=ds, batch_size=self.batch_size)
-            for ds in self.predict_dataset
-        )
+        loaders = {
+            name: get_loader_from_dataset(dataset=ds, batch_size=self.batch_size)
+            for name, ds in self.predict_dataset.items()
+        }
+        return CombinedLoader(loaders)
