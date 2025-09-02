@@ -445,52 +445,65 @@ class TraceSeqEWDataloader(LightningDataModule):
             save_scaler_with_config_keys((self.seq_scaler, self.fix_scaler), config_keys, save_path)
             rank_zero_info(f"Saved scalers with config_keys metadata to {save_path}: {config_keys}")
 
-    def _calculate_per_loader_batch_size(self, datasets: dict, batch_size_multiplier: float = 1.0) -> int:
+    def _calculate_per_loader_batch_size(self, datasets: dict, batch_size_multiplier: float = 1.0) -> dict:
         """
-        Calculate appropriate per-loader batch size considering dataset sizes.
+        Calculate appropriate batch sizes to limit total combined batches ≤ global_batch_size.
         
         Args:
             datasets: Dictionary of datasets to calculate batch size for
-            batch_size_multiplier: Multiplier for batch size (e.g., 1.6 for val/test)
+            batch_size_multiplier: Multiplier for target batches (e.g., 1.6 for val/test)
             
         Returns:
-            Appropriate per-loader batch size ensuring all datasets can form batches
+            Dictionary mapping dataset names to their appropriate batch sizes
         """
         if not datasets:
-            return 1
+            return {}
             
-        dataset_sizes = [len(ds) for ds in datasets.values()]
-        min_dataset_size = min(dataset_sizes)
+        dataset_sizes = {name: len(ds) for name, ds in datasets.items()}
         num_datasets = len(datasets)
         
-        # Base per-loader batch size with multiplier
-        base_per_loader_bs = max(1, int(self.batch_size * batch_size_multiplier / max(1, num_datasets)))
+        # Target total batches across all datasets
+        target_total_batches = int(self.batch_size * batch_size_multiplier)
         
-        # Adjust to ensure no batch size exceeds the smallest dataset
-        per_loader_bs = min(base_per_loader_bs, min_dataset_size)
+        # Target batches per dataset (divide equally)
+        target_batches_per_dataset = max(1, target_total_batches // max(1, num_datasets))
         
-        # Ensure minimum batch size of 1
-        per_loader_bs = max(1, per_loader_bs)
+        # Calculate batch size for each dataset to achieve target batch count
+        batch_sizes = {}
+        for name, size in dataset_sizes.items():
+            # Calculate batch_size needed to get target_batches_per_dataset batches
+            calculated_batch_size = max(1, size // target_batches_per_dataset)
+            
+            # Ensure batch size doesn't exceed dataset size
+            batch_sizes[name] = min(calculated_batch_size, size)
         
-        return per_loader_bs
+        return batch_sizes
 
     def train_dataloader(self):
-        per_loader_bs = self._calculate_per_loader_batch_size(self.train_dataset, batch_size_multiplier=1.0)
+        batch_sizes = self._calculate_per_loader_batch_size(self.train_dataset, batch_size_multiplier=1.0)
         
-        rank_zero_info(f"Training batch config: global_bs={self.batch_size}, "
-                      f"per_loader_bs={per_loader_bs}, num_datasets={len(self.train_dataset)}")
+        target_total_batches = self.batch_size
+        target_per_dataset = target_total_batches // len(self.train_dataset) if self.train_dataset else 1
+        
+        rank_zero_info(f"Training batch config: target_total_batches={target_total_batches}, "
+                      f"target_per_dataset={target_per_dataset}, num_datasets={len(self.train_dataset)}")
         
         loaders = {}
+        total_batches = 0
         for name, ds in self.train_dataset.items():
-            loader = get_loader_from_dataset(ds, batch_size=per_loader_bs, shuffle=True)
+            batch_size = batch_sizes.get(name, 1)
+            loader = get_loader_from_dataset(ds, batch_size=batch_size, shuffle=True)
             num_batches = len(loader)
-            rank_zero_info(f"Dataset '{name}': size={len(ds)}, batches={num_batches}")
+            total_batches += num_batches
+            rank_zero_info(f"Dataset '{name}': size={len(ds)}, batch_size={batch_size}, batches={num_batches}")
             
             # Only include datasets that actually have batches
             if num_batches > 0:
                 loaders[name] = loader
             else:
                 rank_zero_info(f"WARNING: Skipping dataset '{name}' - no batches created")
+        
+        rank_zero_info(f"Total batches across all datasets: {total_batches}")
         
         if not loaders:
             raise RuntimeError("No datasets have any batches! Check dataset sizes and batch configuration.")
@@ -500,21 +513,31 @@ class TraceSeqEWDataloader(LightningDataModule):
         return combined_loader
 
     def val_dataloader(self):
-        per_loader_bs = self._calculate_per_loader_batch_size(self.val_dataset, batch_size_multiplier=1.6)
+        batch_sizes = self._calculate_per_loader_batch_size(self.val_dataset, batch_size_multiplier=1.6)
         
-        loaders = {
-            name: get_loader_from_dataset(ds, batch_size=per_loader_bs, shuffle=False)
-            for name, ds in self.val_dataset.items()
-        }
+        loaders = {}
+        total_batches = 0
+        for name, ds in self.val_dataset.items():
+            batch_size = batch_sizes.get(name, 1)
+            loader = get_loader_from_dataset(ds, batch_size=batch_size, shuffle=False)
+            total_batches += len(loader)
+            loaders[name] = loader
+        
+        rank_zero_info(f"Validation total batches: {total_batches}")
         return CombinedLoader(loaders, mode="min_size")
     
     def test_dataloader(self):
-        per_loader_bs = self._calculate_per_loader_batch_size(self.test_dataset, batch_size_multiplier=1.6)
+        batch_sizes = self._calculate_per_loader_batch_size(self.test_dataset, batch_size_multiplier=1.6)
         
-        loaders = {
-            name: get_loader_from_dataset(ds, batch_size=per_loader_bs, shuffle=False)
-            for name, ds in self.test_dataset.items()
-        }
+        loaders = {}
+        total_batches = 0
+        for name, ds in self.test_dataset.items():
+            batch_size = batch_sizes.get(name, 1)
+            loader = get_loader_from_dataset(ds, batch_size=batch_size, shuffle=False)
+            total_batches += len(loader)
+            loaders[name] = loader
+        
+        rank_zero_info(f"Test total batches: {total_batches}")
         return CombinedLoader(loaders, mode="min_size")
 
 class InferenceTraceSeqEWDataloader(LightningDataModule):
