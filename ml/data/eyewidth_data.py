@@ -27,7 +27,19 @@ def get_loader_from_dataset(
     batch_size: int,
     shuffle: bool = False
 ):
-    drop_last = shuffle
+    # Smart drop_last logic: only drop last batch if dataset is large enough 
+    # and has significantly more samples than batch_size
+    dataset_size = len(dataset)
+    
+    if shuffle and dataset_size > batch_size * 1.5:
+        # Only drop last batch for large datasets to maintain consistent batch sizes
+        drop_last = True
+    else:
+        # For small datasets, keep all samples even if last batch is incomplete
+        drop_last = False
+        
+    # Adjust batch_size if it's larger than dataset to avoid issues
+    effective_batch_size = min(batch_size, dataset_size)
 
     # Optimize num_workers based on system capabilities
     cpu_count = os.cpu_count()
@@ -35,7 +47,7 @@ def get_loader_from_dataset(
 
     loader = DataLoader(
         dataset=dataset,
-        batch_size=batch_size,
+        batch_size=effective_batch_size,
         shuffle=shuffle,
         pin_memory=True,
         num_workers=num_workers,
@@ -423,8 +435,41 @@ class TraceSeqEWDataloader(LightningDataModule):
             save_scaler_with_config_keys((self.seq_scaler, self.fix_scaler), config_keys, save_path)
             rank_zero_info(f"Saved scalers with config_keys metadata to {save_path}: {config_keys}")
 
+    def _calculate_per_loader_batch_size(self, datasets: dict, batch_size_multiplier: float = 1.0) -> int:
+        """
+        Calculate appropriate per-loader batch size considering dataset sizes.
+        
+        Args:
+            datasets: Dictionary of datasets to calculate batch size for
+            batch_size_multiplier: Multiplier for batch size (e.g., 1.6 for val/test)
+            
+        Returns:
+            Appropriate per-loader batch size ensuring all datasets can form batches
+        """
+        if not datasets:
+            return 1
+            
+        dataset_sizes = [len(ds) for ds in datasets.values()]
+        min_dataset_size = min(dataset_sizes)
+        num_datasets = len(datasets)
+        
+        # Base per-loader batch size with multiplier
+        base_per_loader_bs = max(1, int(self.batch_size * batch_size_multiplier / max(1, num_datasets)))
+        
+        # Adjust to ensure no batch size exceeds the smallest dataset
+        per_loader_bs = min(base_per_loader_bs, min_dataset_size)
+        
+        # Ensure minimum batch size of 1
+        per_loader_bs = max(1, per_loader_bs)
+        
+        return per_loader_bs
+
     def train_dataloader(self):
-        per_loader_bs = max(1, self.batch_size // max(1, len(self.train_dataset)))
+        per_loader_bs = self._calculate_per_loader_batch_size(self.train_dataset, batch_size_multiplier=1.0)
+        
+        rank_zero_info(f"Training batch config: global_bs={self.batch_size}, "
+                      f"per_loader_bs={per_loader_bs}, num_datasets={len(self.train_dataset)}")
+        
         loaders = {
             name: get_loader_from_dataset(ds, batch_size=per_loader_bs, shuffle=True)
             for name, ds in self.train_dataset.items()
@@ -433,7 +478,8 @@ class TraceSeqEWDataloader(LightningDataModule):
         return combined_loader
 
     def val_dataloader(self):
-        per_loader_bs = max(1, int(self.batch_size * 1.6 / max(1, len(self.val_dataset))))
+        per_loader_bs = self._calculate_per_loader_batch_size(self.val_dataset, batch_size_multiplier=1.6)
+        
         loaders = {
             name: get_loader_from_dataset(ds, batch_size=per_loader_bs, shuffle=False)
             for name, ds in self.val_dataset.items()
@@ -441,7 +487,8 @@ class TraceSeqEWDataloader(LightningDataModule):
         return CombinedLoader(loaders, mode="min_size")
     
     def test_dataloader(self):
-        per_loader_bs = max(1, int(self.batch_size * 1.6 / max(1, len(self.test_dataset))))
+        per_loader_bs = self._calculate_per_loader_batch_size(self.test_dataset, batch_size_multiplier=1.6)
+        
         loaders = {
             name: get_loader_from_dataset(ds, batch_size=per_loader_bs, shuffle=False)
             for name, ds in self.test_dataset.items()
