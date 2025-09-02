@@ -555,12 +555,25 @@ class TraceEWModule(LightningModule):
             elif 'f1' in key or 'accuracy' in key or 'auroc' in key or 'auprc' in key:
                 metric.update(pred_prob.flatten(), true_prob.flatten().long())
             elif pred_ew_masked.numel() > 0:  # Only update if we have valid masked data
+                # Check minimum sample requirements for specific metrics
+                if key in ['r2', 'mape'] and pred_ew_masked.numel() < 2:
+                    # Skip metrics that require at least 2 samples
+                    continue
                 metric.update(pred_ew_masked, true_ew_masked)
 
     def compute_metrics(self, stage):
         log_metrics = {}
         for key, metric in self.metrics[stage].items():
-            log_metrics[f'{stage}/{key}'] = metric.compute()
+            try:
+                log_metrics[f'{stage}/{key}'] = metric.compute()
+            except ValueError as e:
+                if "at least two samples" in str(e) or "r2 score" in str(e).lower():
+                    # Handle metrics that require minimum samples - use NaN for missing values
+                    rank_zero_info(f"Skipping {key} metric computation for {stage}: {e}")
+                    log_metrics[f'{stage}/{key}'] = torch.tensor(float('nan'))
+                else:
+                    # Re-raise other ValueError exceptions
+                    raise
             metric.reset()
         if stage in ("train_", "val") and self.logger is not None:
             self.logger.log_metrics(log_metrics, self.current_epoch)

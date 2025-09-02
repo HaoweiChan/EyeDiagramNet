@@ -2,7 +2,6 @@ import os
 import psutil
 import random
 import numpy as np
-import pandas as pd
 from pathlib import Path
 from sklearn.model_selection import train_test_split
 
@@ -21,6 +20,13 @@ from common.parameters import (
     is_enhanced_scaler, save_scaler_with_config_keys
 )
 from common.pickle_utils import load_pickle_directory
+
+
+class DummySNP:
+    def __init__(self, num_ports=4, num_freqs=32):
+        s_matrix = np.zeros((num_freqs, num_ports, num_ports), dtype=complex)
+        self.s = s_matrix
+        self.name = 'dummy_snp'
 
 
 def get_loader_from_dataset(
@@ -217,8 +223,8 @@ class InferenceTraceEWDataset(Dataset):
         trace_seqs,
         direction,
         boundary,
-        drv_snp,
-        odt_snp
+        drv_snp_obj,
+        odt_snp_obj
     ):
         super().__init__()
 
@@ -226,22 +232,22 @@ class InferenceTraceEWDataset(Dataset):
         self.boundary = torch.from_numpy(boundary).float()
         self.direction = torch.from_numpy(direction).int()
 
-        drv_snp = torch.from_numpy(drv_snp).to(torch.complex64)
-        odt_snp = torch.from_numpy(odt_snp).to(torch.complex64)
+        drv_snp = torch.from_numpy(drv_snp_obj.s).to(torch.complex64)
+        odt_snp = torch.from_numpy(odt_snp_obj.s).to(torch.complex64)
         self.vert_snp = torch.stack((drv_snp, flip_snp(odt_snp)))
         
-        # Handle config creation safely - torch tensors don't have .name attribute
-        # For ignore_snp=True case, use placeholder names
-        try:
-            snp_drv_name = drv_snp.name if hasattr(drv_snp, 'name') else 'dummy_drv'
-        except:
-            snp_drv_name = 'dummy_drv'
+        # Handle SNP names - check if we have real SNP objects or dummy data
+        # For real SNP files, try to get the name; for dummy data, use dummy names
+        if hasattr(drv_snp_obj, 'name') and drv_snp_obj.name is not None:
+            snp_drv_name = drv_snp_obj.name
+        else:
+            snp_drv_name = 'dummy_drv_snp'
             
-        try:
-            snp_odt_name = odt_snp.name if hasattr(odt_snp, 'name') else 'dummy_odt'  
-        except:
-            snp_odt_name = 'dummy_odt'
-            
+        if hasattr(odt_snp_obj, 'name') and odt_snp_obj.name is not None:
+            snp_odt_name = odt_snp_obj.name
+        else:
+            snp_odt_name = 'dummy_odt_snp'
+        
         self.config = {
             'boundary': boundary,
             'directions': direction,
@@ -346,8 +352,22 @@ class TraceSeqEWDataloader(LightningDataModule):
             
             # Handle SNP vertical data based on ignore_snp flag if needed
             if self.ignore_snp:
-                for key, (configs, directions_list, line_ews_list, snp_vert, meta) in labels.items():
-                    dummy_snp_vert = (("dummy_drv.snp", "dummy_odt.snp"),) * len(directions_list)
+                dummy_snp_obj = DummySNP()
+                dummy_snp_path = "dummy_snp.s4p" # Placeholder path
+                
+                # Create a temporary directory for dummy SNP file if it doesn't exist
+                dummy_dir = self.label_dir / "dummy_snps"
+                dummy_dir.mkdir(exist_ok=True)
+                
+                # Write dummy SNP to a file so that the rest of the logic can use paths
+                # (This is a bit of a workaround to avoid changing the data structure)
+                # We can improve this later if needed
+                with open(dummy_dir / dummy_snp_path, "w") as f:
+                    f.write("# Dummy SNP file\n") # Minimal content
+                
+                for key in labels:
+                    configs, directions_list, line_ews_list, _, meta = labels[key]
+                    dummy_snp_vert = ((str(dummy_dir / dummy_snp_path), str(dummy_dir / dummy_snp_path)),) * len(directions_list)
                     labels[key] = (configs, directions_list, line_ews_list, dummy_snp_vert, meta)
 
             # keep only indices present in labels
@@ -625,16 +645,9 @@ class InferenceTraceSeqEWDataloader(LightningDataModule):
         if self.ignore_snp:
             rank_zero_info("Using dummy SNP data (ignore_snp=True)")
             # Create dummy SNP data with minimal structure
-            dummy_freq = np.array([1e9])  # Single frequency point
-            dummy_s = np.zeros((1, 4, 4), dtype=complex)  # 4x4 S-parameter matrix
-            
-            class DummySNP:
-                def __init__(self):
-                    self.s = dummy_s
-            
             drv = DummySNP()
             odt = DummySNP()
-            directions = get_directions_from_boundary_json(self.bound_path, default_ports=8)
+            directions = get_directions_from_boundary_json(self.bound_path, default_ports=4)
         else:
             if self.drv_snp is None or self.odt_snp is None:
                 raise ValueError("drv_snp and odt_snp must be provided when ignore_snp=False")
@@ -659,73 +672,11 @@ class InferenceTraceSeqEWDataloader(LightningDataModule):
             case_id, input_arr = processor.parse(csv_path)
             rank_zero_info(f"Input array: {input_arr.shape}")
             
-            # Check for None values in parsed data
-            if input_arr is None:
-                raise ValueError(f"Parsed input_arr is None for dataset '{name}'")
-            if np.any(pd.isna(input_arr)):
-                rank_zero_info(f"WARNING: Found NaN values in input_arr for dataset '{name}'")
-            
             # Create a single configuration array with shape (1, 1, n_parameters) to match training format
             boundary_array = np.array([[boundary_values]], dtype=np.float64)
             
-            # Check boundary_values for None
-            if boundary_values is None:
-                raise ValueError("boundary_values is None")
-            if any(v is None for v in boundary_values):
-                raise ValueError(f"Found None in boundary_values: {boundary_values}")
-            
-            # Check SNP data for None
-            if drv.s is None or odt.s is None:
-                raise ValueError("SNP data (drv.s or odt.s) is None")
-            
-            rank_zero_info(f"Dataset '{name}': Creating with input_shape={input_arr.shape}, "
-                          f"directions_shape={directions.shape}, boundary_shape={boundary_array.shape}, "
-                          f"drv_snp_shape={drv.s.shape}, odt_snp_shape={odt.s.shape}")
-            
-            ds = InferenceTraceEWDataset(input_arr, directions, boundary_array, drv.s, odt.s)
-            
-            # Check dataset after creation
-            if ds is None:
-                raise ValueError(f"Failed to create dataset '{name}'")
-            
-            # Test a sample from the dataset before transformation
-            if len(ds) > 0:
-                try:
-                    sample = ds[0]
-                    if any(item is None for item in sample):
-                        raise ValueError(f"Dataset '{name}' sample contains None values: {[type(item).__name__ for item in sample]}")
-                except Exception as e:
-                    rank_zero_info(f"ERROR: Failed to get sample from dataset '{name}': {e}")
-                    raise
-            
-            # Transform and check again
-            transformed_ds = ds.transform(*scalers)
-            if transformed_ds is None:
-                raise ValueError(f"Transformation returned None for dataset '{name}'")
-            
-            # Test sample after transformation
-            if len(transformed_ds) > 0:
-                try:
-                    sample = transformed_ds[0]
-                    if any(item is None for item in sample):
-                        raise ValueError(f"Transformed dataset '{name}' sample contains None values: {[type(item).__name__ for item in sample]}")
-                    rank_zero_info(f"Dataset '{name}': Sample types after transformation: {[type(item).__name__ for item in sample]}")
-                    
-                    # Check the config dict specifically for None values
-                    config = sample[-1]  # Last element is the config dict
-                    if isinstance(config, dict):
-                        none_keys = [k for k, v in config.items() if v is None]
-                        if none_keys:
-                            raise ValueError(f"Dataset '{name}' config dict has None values for keys: {none_keys}")
-                        rank_zero_info(f"Dataset '{name}' config dict: {config}")
-                    else:
-                        raise ValueError(f"Expected config dict as last element, got {type(config).__name__}")
-                        
-                except Exception as e:
-                    rank_zero_info(f"ERROR: Failed to get sample from transformed dataset '{name}': {e}")
-                    raise
-            
-            self.predict_dataset[name] = transformed_ds
+            ds = InferenceTraceEWDataset(input_arr, directions, boundary_array, drv, odt)
+            self.predict_dataset[name] = ds.transform(*scalers)
 
     def _calculate_inference_batch_size(self, datasets: dict) -> int:
         """
