@@ -27,19 +27,28 @@ def get_loader_from_dataset(
     batch_size: int,
     shuffle: bool = False
 ):
-    # Smart drop_last logic: only drop last batch if dataset is large enough 
-    # and has significantly more samples than batch_size
     dataset_size = len(dataset)
     
-    if shuffle and dataset_size > batch_size * 1.5:
-        # Only drop last batch for large datasets to maintain consistent batch sizes
-        drop_last = True
-    else:
-        # For small datasets, keep all samples even if last batch is incomplete
-        drop_last = False
-        
     # Adjust batch_size if it's larger than dataset to avoid issues
     effective_batch_size = min(batch_size, dataset_size)
+    
+    # Smart drop_last logic: ensure we never get 0 batches when we could get at least 1
+    if dataset_size >= effective_batch_size:
+        # Can form at least one batch
+        if shuffle and dataset_size > effective_batch_size * 2:
+            # Only drop last batch for datasets significantly larger than batch size
+            drop_last = True
+        else:
+            # Keep all samples, especially for smaller datasets
+            drop_last = False
+    else:
+        # Dataset smaller than batch size - definitely don't drop
+        drop_last = False
+    
+    # Final safety check: if drop_last would result in 0 batches, force it to False
+    potential_batches = dataset_size // effective_batch_size
+    if drop_last and potential_batches == 1:
+        drop_last = False  # Don't drop the only batch we have
 
     # Optimize num_workers based on system capabilities
     cpu_count = os.cpu_count()
@@ -470,11 +479,23 @@ class TraceSeqEWDataloader(LightningDataModule):
         rank_zero_info(f"Training batch config: global_bs={self.batch_size}, "
                       f"per_loader_bs={per_loader_bs}, num_datasets={len(self.train_dataset)}")
         
-        loaders = {
-            name: get_loader_from_dataset(ds, batch_size=per_loader_bs, shuffle=True)
-            for name, ds in self.train_dataset.items()
-        }
-        combined_loader = CombinedLoader(loaders, mode="min_size")
+        loaders = {}
+        for name, ds in self.train_dataset.items():
+            loader = get_loader_from_dataset(ds, batch_size=per_loader_bs, shuffle=True)
+            num_batches = len(loader)
+            rank_zero_info(f"Dataset '{name}': size={len(ds)}, batches={num_batches}")
+            
+            # Only include datasets that actually have batches
+            if num_batches > 0:
+                loaders[name] = loader
+            else:
+                rank_zero_info(f"WARNING: Skipping dataset '{name}' - no batches created")
+        
+        if not loaders:
+            raise RuntimeError("No datasets have any batches! Check dataset sizes and batch configuration.")
+        
+        # Use max_size_cycle to ensure training continues even if some datasets are smaller
+        combined_loader = CombinedLoader(loaders, mode="max_size_cycle")
         return combined_loader
 
     def val_dataloader(self):
