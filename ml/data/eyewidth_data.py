@@ -686,6 +686,17 @@ class InferenceTraceSeqEWDataloader(LightningDataModule):
                     if any(item is None for item in sample):
                         raise ValueError(f"Transformed dataset '{name}' sample contains None values: {[type(item).__name__ for item in sample]}")
                     rank_zero_info(f"Dataset '{name}': Sample types after transformation: {[type(item).__name__ for item in sample]}")
+                    
+                    # Check the config dict specifically for None values
+                    config = sample[-1]  # Last element is the config dict
+                    if isinstance(config, dict):
+                        none_keys = [k for k, v in config.items() if v is None]
+                        if none_keys:
+                            raise ValueError(f"Dataset '{name}' config dict has None values for keys: {none_keys}")
+                        rank_zero_info(f"Dataset '{name}' config dict: {config}")
+                    else:
+                        raise ValueError(f"Expected config dict as last element, got {type(config).__name__}")
+                        
                 except Exception as e:
                     rank_zero_info(f"ERROR: Failed to get sample from transformed dataset '{name}': {e}")
                     raise
