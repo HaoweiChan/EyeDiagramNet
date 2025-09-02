@@ -2,6 +2,7 @@ import os
 import psutil
 import random
 import numpy as np
+import pandas as pd
 from pathlib import Path
 from sklearn.model_selection import train_test_split
 
@@ -611,11 +612,62 @@ class InferenceTraceSeqEWDataloader(LightningDataModule):
             case_id, input_arr = processor.parse(csv_path)
             rank_zero_info(f"Input array: {input_arr.shape}")
             
+            # Check for None values in parsed data
+            if input_arr is None:
+                raise ValueError(f"Parsed input_arr is None for dataset '{name}'")
+            if np.any(pd.isna(input_arr)):
+                rank_zero_info(f"WARNING: Found NaN values in input_arr for dataset '{name}'")
+            
             # Create a single configuration array with shape (1, 1, n_parameters) to match training format
             boundary_array = np.array([[boundary_values]], dtype=np.float64)
             
+            # Check boundary_values for None
+            if boundary_values is None:
+                raise ValueError("boundary_values is None")
+            if any(v is None for v in boundary_values):
+                raise ValueError(f"Found None in boundary_values: {boundary_values}")
+            
+            # Check SNP data for None
+            if drv.s is None or odt.s is None:
+                raise ValueError("SNP data (drv.s or odt.s) is None")
+            
+            rank_zero_info(f"Dataset '{name}': Creating with input_shape={input_arr.shape}, "
+                          f"directions_shape={directions.shape}, boundary_shape={boundary_array.shape}, "
+                          f"drv_snp_shape={drv.s.shape}, odt_snp_shape={odt.s.shape}")
+            
             ds = InferenceTraceEWDataset(input_arr, directions, boundary_array, drv.s, odt.s)
-            self.predict_dataset[name] = ds.transform(*scalers)
+            
+            # Check dataset after creation
+            if ds is None:
+                raise ValueError(f"Failed to create dataset '{name}'")
+            
+            # Test a sample from the dataset before transformation
+            if len(ds) > 0:
+                try:
+                    sample = ds[0]
+                    if any(item is None for item in sample):
+                        raise ValueError(f"Dataset '{name}' sample contains None values: {[type(item).__name__ for item in sample]}")
+                except Exception as e:
+                    rank_zero_info(f"ERROR: Failed to get sample from dataset '{name}': {e}")
+                    raise
+            
+            # Transform and check again
+            transformed_ds = ds.transform(*scalers)
+            if transformed_ds is None:
+                raise ValueError(f"Transformation returned None for dataset '{name}'")
+            
+            # Test sample after transformation
+            if len(transformed_ds) > 0:
+                try:
+                    sample = transformed_ds[0]
+                    if any(item is None for item in sample):
+                        raise ValueError(f"Transformed dataset '{name}' sample contains None values: {[type(item).__name__ for item in sample]}")
+                    rank_zero_info(f"Dataset '{name}': Sample types after transformation: {[type(item).__name__ for item in sample]}")
+                except Exception as e:
+                    rank_zero_info(f"ERROR: Failed to get sample from transformed dataset '{name}': {e}")
+                    raise
+            
+            self.predict_dataset[name] = transformed_ds
 
     def _calculate_inference_batch_size(self, datasets: dict) -> int:
         """
