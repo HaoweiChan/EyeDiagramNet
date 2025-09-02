@@ -72,6 +72,25 @@ def create_temp_config_with_user_settings(base_config_path, user_settings, subco
             config['ckpt_path'] = ckpt_path_str
             print(f"Using checkpoint: {ckpt_path_str}")
         
+        # Clear any ckpt_path from model init_args to avoid double loading
+        # Lightning CLI handles checkpoint loading when ckpt_path is set at top level
+        if subcommand in ["predict", "test", "validate"]:
+            # Remove ckpt_path from model init_args to prevent manual loading in module
+            if 'model' in config and 'init_args' in config['model']:
+                model_init_args = config['model']['init_args']
+                
+                # Remove from top-level model init_args
+                if 'ckpt_path' in model_init_args:
+                    del model_init_args['ckpt_path']
+                    print("Removed ckpt_path from model init_args - Lightning CLI will handle checkpoint loading")
+                
+                # Also check nested model structure (e.g., EyeWidthRegressor containing another model)
+                if 'model' in model_init_args and isinstance(model_init_args['model'], dict) and 'init_args' in model_init_args['model']:
+                    nested_init_args = model_init_args['model']['init_args']
+                    if 'ckpt_path' in nested_init_args:
+                        del nested_init_args['ckpt_path']
+                        print("Removed ckpt_path from nested model init_args - Lightning CLI will handle checkpoint loading")
+        
         # Find and set scaler path for dataloader
         scaler_files = list(version_dir.glob("*.pth"))
         if scaler_files:

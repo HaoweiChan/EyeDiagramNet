@@ -156,7 +156,10 @@ class TraceEWModule(LightningModule):
             raise
 
         # load model checkpoint or initialize weights
-        if self.hparams.ckpt_path is not None:
+        # Skip manual checkpoint loading for predict/test/validate stages since Lightning CLI handles it
+        if stage in ('predict', 'test', 'validate'):
+            rank_zero_info("Skipping manual checkpoint loading - Lightning CLI handles checkpoint loading for inference")
+        elif self.hparams.ckpt_path is not None:
             try:
                 rank_zero_info(f"Loading checkpoint from: {self.hparams.ckpt_path}")
                 ckpt = torch.load(self.hparams.ckpt_path, map_location=self.device)
