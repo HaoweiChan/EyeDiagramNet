@@ -46,7 +46,6 @@ def save_scaler_with_config_keys(scalers: tuple, config_keys: list, save_path: P
     
     torch.save(scaler_data, save_path)
 
-
 def load_scaler_with_config_keys(load_path: Path) -> Tuple[tuple, list]:
     """
     Load scalers and extract training config_keys metadata.
@@ -97,7 +96,6 @@ def load_scaler_with_config_keys(load_path: Path) -> Tuple[tuple, list]:
     
     raise ValueError(f"Unrecognized scaler format at {load_path}")
 
-
 def extract_config_keys_from_scaler(load_path: Path) -> List[str]:
     """
     Extract just the config_keys from a scaler file without loading the full scalers.
@@ -113,7 +111,6 @@ def extract_config_keys_from_scaler(load_path: Path) -> List[str]:
     """
     _, config_keys = load_scaler_with_config_keys(load_path)
     return config_keys
-
 
 def is_enhanced_scaler(load_path: Path) -> bool:
     """
@@ -135,7 +132,6 @@ def is_enhanced_scaler(load_path: Path) -> bool:
                 'config_keys' in scaler_data)
     except:
         return False
-
 
 def upgrade_legacy_scaler(
     legacy_scaler_path: Path, 
@@ -174,7 +170,6 @@ def upgrade_legacy_scaler(
     except Exception as e:
         raise ValueError(f"Failed to upgrade legacy scaler {legacy_scaler_path}: {e}")
 
-
 def get_scaler_info(load_path: Path) -> dict:
     """
     Get information about a scaler file without fully loading it.
@@ -212,4 +207,3 @@ def get_scaler_info(load_path: Path) -> dict:
         info['error'] = str(e)
     
     return info
-

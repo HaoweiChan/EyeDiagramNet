@@ -2,6 +2,9 @@ import pickle
 from pathlib import Path
 from typing import Dict, Any, List
 from dataclasses import dataclass
+from lightning.pytorch.utilities.rank_zero import rank_zero_info
+
+from common.parameters import convert_legacy_param_names, to_new_param_name
 
 
 @dataclass
@@ -99,8 +102,6 @@ def load_pickle_data(pfile: Path) -> List[SimulationResult]:
     Returns:
         List of SimulationResult dataclasses, empty list if file is malformed or missing
     """
-    from lightning.pytorch.utilities.rank_zero import rank_zero_info
-    
     try:
         with open(pfile, 'rb') as f:
             data = pickle.load(f)
@@ -128,7 +129,6 @@ def load_pickle_data(pfile: Path) -> List[SimulationResult]:
     param_types = meta.get('param_types', [])
     
     # Convert legacy parameter names to new format using centralized mapping
-    from common.parameters import convert_legacy_param_names
     config_keys = convert_legacy_param_names(config_keys, target_format='new')
 
     for i in range(n_samples):
@@ -174,9 +174,6 @@ def load_pickle_directory(label_dir: Path, dataset_name: str) -> dict:
         Dictionary mapping case_ids to processed data tuples containing:
         (configs, directions_list, line_ews_list, snp_vert, meta)
     """
-    from common.parameters import SampleResult, to_new_param_name
-    from lightning.pytorch.utilities.rank_zero import rank_zero_info
-    
     labels = {}
     processed_files = 0
     skipped_files = 0

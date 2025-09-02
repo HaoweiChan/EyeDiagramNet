@@ -33,7 +33,6 @@ from .conversion import (
 # Parameter validation utilities  
 from .validation import (
     validate_boundary_dimensions,
-    validate_boundary_compatibility
 )
 
 # Scaler metadata utilities
@@ -67,7 +66,6 @@ __all__ = [
     
     # Validation
     'validate_boundary_dimensions',
-    'validate_boundary_compatibility',
     
     # Scaler metadata
     'save_scaler_with_config_keys',

@@ -16,7 +16,6 @@ def _get_decimal_places(value):
         return len(value_str.split('.')[-1])  # Count decimal places after the dot
     return 0  # No decimal places for integers
 
-
 class Parameter:
     """Base class for all parameter types."""
     
@@ -32,7 +31,6 @@ class Parameter:
     def is_within_range(self, value):
         return self.low <= value <= self.high
 
-
 class DiscreteParameter(Parameter):
     """Parameter with discrete values to choose from."""
     
@@ -46,7 +44,6 @@ class DiscreteParameter(Parameter):
         
     def is_within_range(self, value):
         return value in self.values
-
 
 class LinearParameter(Parameter):
     """Parameter with linear sampling distribution."""
@@ -80,7 +77,6 @@ class LinearParameter(Parameter):
         
         return np.random.choice(values)
 
-
 class LogParameter(Parameter):
     """Parameter with logarithmic sampling distribution."""
     
@@ -108,7 +104,6 @@ class LogParameter(Parameter):
             values = values * self.scaler
         
         return np.random.choice(values)
-
 
 class SampleResult:
     """Container for parameter sampling results with dict-like interface."""
@@ -184,7 +179,6 @@ class SampleResult:
     def items(self):
         return self._data.items()
 
-
 class ParameterSet:
     """Collection of parameters that can be sampled together."""
     
@@ -207,7 +201,6 @@ class ParameterSet:
                     return False
         return True
 
-
 class RandomToggledParameterSet(ParameterSet):
     """Parameter set where each parameter is randomly included based on probability."""
     
@@ -222,7 +215,6 @@ class RandomToggledParameterSet(ParameterSet):
                 sample_data[param_name] = param.sample()
         return SampleResult(**sample_data)
 
-
 class CombinedParameterSet(ParameterSet):
     """Combines multiple parameter sets into one."""
     
@@ -236,7 +228,6 @@ class CombinedParameterSet(ParameterSet):
             combined_result = combined_result + result
         return combined_result
 
-
 class CombinedParameterSet(ParameterSet):
     """Combines multiple parameter sets into one."""
     
@@ -249,7 +240,6 @@ class CombinedParameterSet(ParameterSet):
             result = param_set.sample()
             combined_result = combined_result + result
         return combined_result
-
 
 class DiscreteParameterSet(ParameterSet):
     """Parameter set that samples from a discrete list of SampleResult objects."""
@@ -260,11 +250,9 @@ class DiscreteParameterSet(ParameterSet):
     def sample(self):
         return random.choice(self.samples)
 
-
 def constraint_fp2_ge_fp1(sample):
     """Constraint function to ensure fp2 >= fp1."""
     return getattr(sample, 'fp2', float('inf')) >= getattr(sample, 'fp1', -float('inf'))
-
 
 # Constraint ranges placeholder - can be populated if needed
 CONSTRAINT_RANGES = {}

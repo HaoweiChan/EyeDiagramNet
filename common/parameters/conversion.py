@@ -8,7 +8,6 @@ of the system.
 
 import json
 import numpy as np
-from pathlib import Path
 from typing import List, Tuple, Dict, Any
 
 from .types import SampleResult
@@ -21,7 +20,6 @@ LEGACY_TO_NEW_PARAM_MAP = {
 }
 
 NEW_TO_LEGACY_PARAM_MAP = {v: k for k, v in LEGACY_TO_NEW_PARAM_MAP.items()}
-
 
 def convert_legacy_param_names(param_names_or_dict, target_format='new'):
     """
@@ -92,7 +90,6 @@ def to_new_param_name(d: dict) -> dict:
     # Use the centralized conversion function
     return convert_legacy_param_names(d, target_format='new')
 
-
 def convert_configs_to_boundaries(configs_list: list, config_keys: list) -> np.ndarray:
     """
     Convert a list of config dictionaries directly to a pure numpy array of boundaries.
@@ -117,7 +114,6 @@ def convert_configs_to_boundaries(configs_list: list, config_keys: list) -> np.n
     
     # Convert to pure numpy array with proper shape
     return np.array(boundaries_list, dtype=np.float64)
-
 
 def process_boundary_for_inference(
     boundary_json_path: str, 
@@ -173,7 +169,6 @@ def process_boundary_for_inference(
     
     return boundary_result, boundary_values, training_config_keys
 
-
 def get_directions_from_boundary_json(boundary_json_path: str, default_ports: int = None) -> np.ndarray:
     """
     Extract direction information from boundary JSON.
@@ -200,7 +195,6 @@ def get_directions_from_boundary_json(boundary_json_path: str, default_ports: in
             "No 'directions' found in boundary JSON and no default_ports provided. "
             "Please specify directions in the JSON or provide default_ports."
         )
-
 
 def extract_boundary_parameters(
     boundary_dict: Dict[str, Any], 
@@ -238,7 +232,6 @@ def extract_boundary_parameters(
     
     return processed_boundary, ordered_values
 
-
 def validate_parameter_compatibility(
     boundary_params: Dict[str, Any], 
     training_config_keys: List[str]
@@ -262,4 +255,3 @@ def validate_parameter_compatibility(
     is_compatible = len(missing_keys) == 0
     
     return is_compatible, missing_keys, extra_keys
-
