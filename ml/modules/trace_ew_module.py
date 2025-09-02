@@ -484,11 +484,16 @@ class TraceEWModule(LightningModule):
     def get_output_steps(self, stage):
         if stage == "train_":
             max_batches = self.trainer.num_training_batches
-        elif stage == "test":
-            max_batches = getattr(self.trainer, 'num_test_batches')[0]
+            # For training, use cumulative batch indices across epochs
+            return (self.current_epoch * max_batches, max_batches - 1)
         else:
-            max_batches = getattr(self.trainer, f'num_{stage}_batches')[0]
-        return (self.current_epoch * max_batches, max_batches - 1)
+            # For validation/test, use batch indices within the current epoch
+            if stage == "test":
+                max_batches = getattr(self.trainer, 'num_test_batches')[0]
+            else:
+                max_batches = getattr(self.trainer, f'num_{stage}_batches')[0]
+            # Return first and last batch indices within the epoch
+            return (0, max_batches - 1)
 
     def augment_input_sequence(self, seq):
         # TorchScript-accelerated implementation (see _augment_sequence_jit above)
