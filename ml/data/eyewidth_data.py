@@ -352,22 +352,10 @@ class TraceSeqEWDataloader(LightningDataModule):
             
             # Handle SNP vertical data based on ignore_snp flag if needed
             if self.ignore_snp:
-                dummy_snp_obj = DummySNP()
-                dummy_snp_path = "dummy_snp.s4p" # Placeholder path
-                
-                # Create a temporary directory for dummy SNP file if it doesn't exist
-                dummy_dir = self.label_dir / "dummy_snps"
-                dummy_dir.mkdir(exist_ok=True)
-                
-                # Write dummy SNP to a file so that the rest of the logic can use paths
-                # (This is a bit of a workaround to avoid changing the data structure)
-                # We can improve this later if needed
-                with open(dummy_dir / dummy_snp_path, "w") as f:
-                    f.write("# Dummy SNP file\n") # Minimal content
-                
-                for key in labels:
+                for key in list(labels.keys()):
                     configs, directions_list, line_ews_list, _, meta = labels[key]
-                    dummy_snp_vert = ((str(dummy_dir / dummy_snp_path), str(dummy_dir / dummy_snp_path)),) * len(directions_list)
+                    # Create placeholder paths; they won't be read when ignore_snp=True
+                    dummy_snp_vert = (("dummy_drv.snp", "dummy_odt.snp"),) * len(directions_list)
                     labels[key] = (configs, directions_list, line_ews_list, dummy_snp_vert, meta)
 
             # keep only indices present in labels
