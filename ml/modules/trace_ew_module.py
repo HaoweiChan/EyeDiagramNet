@@ -11,7 +11,7 @@ from lightning.pytorch.utilities.rank_zero import rank_zero_info
 
 from ..models.layers import LearnableLossWeighting
 from ..utils import losses
-from ..utils.losses import focus_weighted_eye_width_loss, min_focused_loss
+from ..utils.losses import focus_weighted_eye_width_loss, min_focused_loss, smooth_gaussian_focus_loss
 from ..utils.init_weights import init_weights
 from ..utils.visualization import image_to_buffer, plot_ew_curve
 
@@ -301,6 +301,8 @@ class TraceEWModule(LightningModule):
         pred_prob = torch.sigmoid(pred_logits)
         
         pred_ew = pred_ew * self.ew_scaler
+        # Clip eyewidth output to 100 after inverse transform  
+        pred_ew = torch.clamp(pred_ew, max=100.0)
         pred_ew[pred_prob < self.hparams.ew_threshold] = -0.1
         return pred_ew
 
@@ -397,10 +399,12 @@ class TraceEWModule(LightningModule):
             })
             
         elif self.hparams.unified_ew_loss == 'focus_weighted':
-            # Focus-weighted unified loss
-            unified_ew_loss = focus_weighted_eye_width_loss(
+            # Smooth Gaussian focus loss to reduce gradient spikes
+            unified_ew_loss = smooth_gaussian_focus_loss(
                 pred_ew, item.true_ew, 
-                focus_weight=self.hparams.focus_weight
+                focus_weight=self.hparams.focus_weight,
+                sigma=0.3,  # Smooth Gaussian weighting
+                bottom_percentile=0.2  # Focus on bottom 20% instead of absolute minimum
             )
             loss = self.weighted_loss({
                 'bce': bce_loss,
@@ -426,6 +430,8 @@ class TraceEWModule(LightningModule):
 
         # Scale predictions for metrics (no effective eye width gating)
         pred_ew_scaled = pred_ew_eval * self.ew_scaler
+        # Clip eyewidth output to 100 after inverse transform
+        pred_ew_scaled = torch.clamp(pred_ew_scaled, max=100.0)
         true_ew_scaled = item.true_ew * self.ew_scaler
         
         extras = {

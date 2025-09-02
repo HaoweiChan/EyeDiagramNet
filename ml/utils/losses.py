@@ -138,6 +138,37 @@ def focus_weighted_eye_width_loss(pred_ew, true_ew, focus_weight=5.0, tau=0.1):
     weighted_mse = weights * (pred_ew - true_ew).pow(2)
     return weighted_mse.mean()
 
+def smooth_gaussian_focus_loss(pred_ew, true_ew, focus_weight=3.0, sigma=0.3, bottom_percentile=0.2):
+    """
+    Smooth Gaussian min-focus loss that avoids gradient spikes.
+    
+    Args:
+        pred_ew: Predicted eye widths (B, L)
+        true_ew: True eye widths (B, L) 
+        focus_weight: Maximum additional weight for minimum regions (reduced from 5.0 to 3.0)
+        sigma: Standard deviation for Gaussian weighting (broader than exponential tau)
+        bottom_percentile: Focus on bottom X% of values rather than just absolute minimum
+        
+    Returns:
+        Smoothly weighted loss that focuses on minimum regions without sharp gradients
+    """
+    B, L = true_ew.shape
+    
+    # Use percentile-based approach for smoother focus regions
+    true_percentile = torch.quantile(true_ew, bottom_percentile, dim=1, keepdim=True)  # (B, 1)
+    
+    # Smooth Gaussian weighting instead of sharp exponential
+    distance_to_focus = (true_ew - true_percentile).abs()  # (B, L)
+    gaussian_weights = torch.exp(-(distance_to_focus ** 2) / (2 * sigma ** 2))  # (B, L)
+    
+    # Gentler focus weighting
+    weights = 1.0 + (focus_weight - 1.0) * gaussian_weights  # (B, L)
+    weights = weights / weights.mean(dim=1, keepdim=True)  # Normalize
+    
+    # Weighted smooth L1 loss (less sensitive to outliers than MSE)
+    weighted_loss = weights * F.smooth_l1_loss(pred_ew, true_ew, reduction='none')
+    return weighted_loss.mean()
+
 def min_focused_loss(pred_ew, true_ew, alpha=0.7, tau_min=0.1):
     """
     Alternative unified loss: blend of softmin accuracy and overall correlation.
