@@ -62,43 +62,6 @@ class _ForwardWrapper(nn.Module):
         
         return values
 
-class PredictionHead(nn.Module):
-    def __init__(self, model_dim, output_dim, dropout=0.1, use_layer_norm=True):
-        super().__init__()
-        self.use_layer_norm = use_layer_norm
-        
-        # Enhanced prediction head with better regularization
-        self.head = nn.Sequential(
-            nn.Linear(model_dim, 2 * model_dim),
-            nn.LayerNorm(2 * model_dim) if use_layer_norm else nn.Identity(),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(2 * model_dim, 2 * model_dim),
-            nn.LayerNorm(2 * model_dim) if use_layer_norm else nn.Identity(), 
-            nn.GELU(),
-            nn.Dropout(dropout),
-            # Additional intermediate layer for better capacity
-            nn.Linear(2 * model_dim, model_dim),
-            nn.LayerNorm(model_dim) if use_layer_norm else nn.Identity(),
-            nn.GELU(),
-            nn.Dropout(dropout * 0.5),  # Lighter dropout in final layer
-            nn.Linear(model_dim, output_dim)
-        )
-        
-        # Residual projection with normalization
-        self.res_projection = nn.Sequential(
-            nn.Linear(model_dim, model_dim // 2),
-            nn.LayerNorm(model_dim // 2) if use_layer_norm else nn.Identity(),
-            nn.GELU(), 
-            nn.Dropout(dropout * 0.5),
-            nn.Linear(model_dim // 2, output_dim)
-        )
-
-    def forward(self, x):
-        main_out = self.head(x)
-        res_out = self.res_projection(x)
-        return main_out + res_out
-
 class EyeWidthRegressor(nn.Module):
     def __init__(
         self,
@@ -156,7 +119,7 @@ class EyeWidthRegressor(nn.Module):
             )
             self.signal_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
         
-        self.norm_trace_seq = RMSNorm(model_dim)
+        self.norm_concat = RMSNorm(model_dim)
 
         # Direction embedding (0 for Tx, 1 for Rx)
         self.dir_projection = nn.Embedding(2, model_dim)
@@ -200,7 +163,13 @@ class EyeWidthRegressor(nn.Module):
         self.register_buffer('signal_projection', signal_projection)
 
         # Build prediction head
-        self._build_prediction_head()
+        self.pred_head = nn.Sequential(
+            nn.Linear(self.model_dim, self.model_dim),
+            nn.LayerNorm(self.model_dim),
+            nn.GELU(),
+            nn.Dropout(self.dropout),
+            nn.Linear(self.model_dim, self.output_dim)
+        )
         
         # ----------  Laplace placeholders  ----------
         self._laplace_model = None        
@@ -212,15 +181,6 @@ class EyeWidthRegressor(nn.Module):
     @property
     def output_dim(self):
         return 2
-
-    def _build_prediction_head(self):
-        """Builds or rebuilds the prediction head based on the current output_dim."""
-        self.pred_head = PredictionHead(
-            model_dim=self.model_dim,
-            output_dim=self.output_dim,
-            dropout=self.dropout,
-            use_layer_norm=True
-        )
 
     def load_pretrained_snp(self, checkpoint_path, freeze=True):
         """Load pretrained SNP encoder weights"""
@@ -278,8 +238,7 @@ class EyeWidthRegressor(nn.Module):
         
         # Sum all hidden states and forward to the signal sequence decoder
         hidden_states_seq = hidden_states_seq + hidden_states_dir
-        hidden_states_seq = self.norm_trace_seq(hidden_states_seq) # (B, P, M)
-
+        
         num_signals = hidden_states_seq.size(1)
         
         # Add positional embeddings (always present, but may be zeroed if using RoPE)
@@ -293,11 +252,17 @@ class EyeWidthRegressor(nn.Module):
             hidden_states_vert = rearrange(hidden_states_vert, "b d p e -> b (d p) e") # concat drv and odt snp states
             hidden_states = torch.cat((
                 hidden_states_seq,
-                hidden_states_vert
+                hidden_states_vert,
+                hidden_states_fix
             ), dim=1)
         else:
             # Skip SNP states when ignoring SNPs
-            hidden_states = hidden_states_seq
+            hidden_states = torch.cat((
+                hidden_states_seq,
+                hidden_states_fix
+            ), dim=1)
+
+        hidden_states = self.norm_concat(hidden_states)
 
         # Run transformer for the signals
         if self.use_gradient_checkpointing and self.training:
@@ -307,9 +272,6 @@ class EyeWidthRegressor(nn.Module):
         else:
             hidden_states_sig = self.signal_encoder(hidden_states)
         hidden_states_sig = hidden_states_sig[:, :num_signals]
-
-        # Add hidden_states_fix to hidden_states_sig right before prediction head
-        hidden_states_sig = hidden_states_sig + hidden_states_fix.squeeze(1)
 
         # Predict eye width and open eye probabilities respectively
         output = self.pred_head(hidden_states_sig)
