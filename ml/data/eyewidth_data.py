@@ -617,9 +617,53 @@ class InferenceTraceSeqEWDataloader(LightningDataModule):
             ds = InferenceTraceEWDataset(input_arr, directions, boundary_array, drv.s, odt.s)
             self.predict_dataset[name] = ds.transform(*scalers)
 
+    def _calculate_inference_batch_size(self, datasets: dict) -> int:
+        """
+        Calculate appropriate batch size for inference datasets.
+        
+        Args:
+            datasets: Dictionary of datasets to calculate batch size for
+            
+        Returns:
+            Appropriate batch size ensuring all datasets can form batches
+        """
+        if not datasets:
+            return 1
+            
+        dataset_sizes = [len(ds) for ds in datasets.values()]
+        min_dataset_size = min(dataset_sizes)
+        
+        # For inference, we don't need to divide by number of datasets
+        # Just ensure batch size doesn't exceed smallest dataset
+        effective_batch_size = min(self.batch_size, min_dataset_size)
+        effective_batch_size = max(1, effective_batch_size)
+        
+        # Log if batch size was adjusted
+        if effective_batch_size != self.batch_size:
+            rank_zero_info(f"Inference batch size adjusted: {self.batch_size} → {effective_batch_size} "
+                          f"(limited by smallest dataset: {min_dataset_size} samples)")
+        
+        return effective_batch_size
+
     def predict_dataloader(self):
-        loaders = {
-            name: get_loader_from_dataset(dataset=ds, batch_size=self.batch_size)
-            for name, ds in self.predict_dataset.items()
-        }
+        batch_size = self._calculate_inference_batch_size(self.predict_dataset)
+        
+        rank_zero_info(f"Inference batch config: requested_bs={self.batch_size}, "
+                      f"effective_bs={batch_size}, num_datasets={len(self.predict_dataset)}")
+        
+        loaders = {}
+        for name, ds in self.predict_dataset.items():
+            loader = get_loader_from_dataset(dataset=ds, batch_size=batch_size, shuffle=False)
+            num_batches = len(loader)
+            rank_zero_info(f"Inference dataset '{name}': size={len(ds)}, batches={num_batches}")
+            
+            # Only include datasets that actually have batches
+            if num_batches > 0:
+                loaders[name] = loader
+            else:
+                rank_zero_info(f"WARNING: Skipping inference dataset '{name}' - no batches created")
+        
+        if not loaders:
+            raise RuntimeError("No inference datasets have any batches! Check dataset sizes and batch configuration.")
+        
         return CombinedLoader(loaders)
