@@ -229,11 +229,24 @@ class InferenceTraceEWDataset(Dataset):
         drv_snp = torch.from_numpy(drv_snp).to(torch.complex64)
         odt_snp = torch.from_numpy(odt_snp).to(torch.complex64)
         self.vert_snp = torch.stack((drv_snp, flip_snp(odt_snp)))
+        
+        # Handle config creation safely - torch tensors don't have .name attribute
+        # For ignore_snp=True case, use placeholder names
+        try:
+            snp_drv_name = drv_snp.name if hasattr(drv_snp, 'name') else 'dummy_drv'
+        except:
+            snp_drv_name = 'dummy_drv'
+            
+        try:
+            snp_odt_name = odt_snp.name if hasattr(odt_snp, 'name') else 'dummy_odt'  
+        except:
+            snp_odt_name = 'dummy_odt'
+            
         self.config = {
             'boundary': boundary,
             'directions': direction,
-            'snp_drv': drv_snp.name,
-            'snp_odt': odt_snp.name
+            'snp_drv': snp_drv_name,
+            'snp_odt': snp_odt_name
         }
 
     def __len__(self):
@@ -447,14 +460,15 @@ class TraceSeqEWDataloader(LightningDataModule):
 
     def _calculate_per_loader_batch_size(self, datasets: dict, batch_size_multiplier: float = 1.0) -> dict:
         """
-        Calculate appropriate batch sizes to limit total combined batches ≤ global_batch_size.
+        Calculate dynamic per-loader batch sizes with smart redistribution.
+        Small datasets don't waste their sample allocation - unused samples go to larger datasets.
         
         Args:
             datasets: Dictionary of datasets to calculate batch size for
-            batch_size_multiplier: Multiplier for target batches (e.g., 1.6 for val/test)
+            batch_size_multiplier: Multiplier for batch size (e.g., 1.6 for val/test)
             
         Returns:
-            Dictionary mapping dataset names to their appropriate batch sizes
+            Dictionary mapping dataset names to their optimal batch sizes
         """
         if not datasets:
             return {}
@@ -462,39 +476,61 @@ class TraceSeqEWDataloader(LightningDataModule):
         dataset_sizes = {name: len(ds) for name, ds in datasets.items()}
         num_datasets = len(datasets)
         
-        # Target total batches across all datasets
-        target_total_batches = int(self.batch_size * batch_size_multiplier)
+        # Target total batch size (samples processed simultaneously across all datasets)
+        target_total_batch_size = int(self.batch_size * batch_size_multiplier)
         
-        # Target batches per dataset (divide equally)
-        target_batches_per_dataset = max(1, target_total_batches // max(1, num_datasets))
+        # Base allocation per dataset
+        base_per_loader_bs = max(1, target_total_batch_size // max(1, num_datasets))
         
-        # Calculate batch size for each dataset to achieve target batch count
+        # First pass: allocate based on dataset size constraints
         batch_sizes = {}
+        used_samples = 0
+        
         for name, size in dataset_sizes.items():
-            # Calculate batch_size needed to get target_batches_per_dataset batches
-            calculated_batch_size = max(1, size // target_batches_per_dataset)
+            # Small datasets get their actual size, larger datasets get base allocation
+            allocated = min(size, base_per_loader_bs)
+            batch_sizes[name] = allocated
+            used_samples += allocated
+        
+        # Second pass: redistribute unused samples to larger datasets
+        remaining_samples = target_total_batch_size - used_samples
+        
+        if remaining_samples > 0:
+            # Find datasets that can accept more samples (size > current allocation)
+            expandable_datasets = [
+                (name, size - batch_sizes[name]) 
+                for name, size in dataset_sizes.items() 
+                if size > batch_sizes[name]
+            ]
             
-            # Ensure batch size doesn't exceed dataset size
-            batch_sizes[name] = min(calculated_batch_size, size)
+            # Sort by how much extra capacity they have (largest first)
+            expandable_datasets.sort(key=lambda x: x[1], reverse=True)
+            
+            # Distribute remaining samples
+            for name, extra_capacity in expandable_datasets:
+                if remaining_samples <= 0:
+                    break
+                    
+                # Give this dataset some extra samples (up to its capacity)
+                extra_samples = min(remaining_samples, extra_capacity)
+                batch_sizes[name] += extra_samples
+                remaining_samples -= extra_samples
         
         return batch_sizes
 
     def train_dataloader(self):
         batch_sizes = self._calculate_per_loader_batch_size(self.train_dataset, batch_size_multiplier=1.0)
         
-        target_total_batches = self.batch_size
-        target_per_dataset = target_total_batches // len(self.train_dataset) if self.train_dataset else 1
+        total_batch_size = sum(batch_sizes.values())
         
-        rank_zero_info(f"Training batch config: target_total_batches={target_total_batches}, "
-                      f"target_per_dataset={target_per_dataset}, num_datasets={len(self.train_dataset)}")
+        rank_zero_info(f"Training batch config: global_bs={self.batch_size}, num_datasets={len(self.train_dataset)}, "
+                      f"total_batch_size={total_batch_size}")
         
         loaders = {}
-        total_batches = 0
         for name, ds in self.train_dataset.items():
             batch_size = batch_sizes.get(name, 1)
             loader = get_loader_from_dataset(ds, batch_size=batch_size, shuffle=True)
             num_batches = len(loader)
-            total_batches += num_batches
             rank_zero_info(f"Dataset '{name}': size={len(ds)}, batch_size={batch_size}, batches={num_batches}")
             
             # Only include datasets that actually have batches
@@ -502,8 +538,6 @@ class TraceSeqEWDataloader(LightningDataModule):
                 loaders[name] = loader
             else:
                 rank_zero_info(f"WARNING: Skipping dataset '{name}' - no batches created")
-        
-        rank_zero_info(f"Total batches across all datasets: {total_batches}")
         
         if not loaders:
             raise RuntimeError("No datasets have any batches! Check dataset sizes and batch configuration.")
@@ -515,29 +549,19 @@ class TraceSeqEWDataloader(LightningDataModule):
     def val_dataloader(self):
         batch_sizes = self._calculate_per_loader_batch_size(self.val_dataset, batch_size_multiplier=1.6)
         
-        loaders = {}
-        total_batches = 0
-        for name, ds in self.val_dataset.items():
-            batch_size = batch_sizes.get(name, 1)
-            loader = get_loader_from_dataset(ds, batch_size=batch_size, shuffle=False)
-            total_batches += len(loader)
-            loaders[name] = loader
-        
-        rank_zero_info(f"Validation total batches: {total_batches}")
+        loaders = {
+            name: get_loader_from_dataset(ds, batch_size=batch_sizes.get(name, 1), shuffle=False)
+            for name, ds in self.val_dataset.items()
+        }
         return CombinedLoader(loaders, mode="min_size")
     
     def test_dataloader(self):
         batch_sizes = self._calculate_per_loader_batch_size(self.test_dataset, batch_size_multiplier=1.6)
         
-        loaders = {}
-        total_batches = 0
-        for name, ds in self.test_dataset.items():
-            batch_size = batch_sizes.get(name, 1)
-            loader = get_loader_from_dataset(ds, batch_size=batch_size, shuffle=False)
-            total_batches += len(loader)
-            loaders[name] = loader
-        
-        rank_zero_info(f"Test total batches: {total_batches}")
+        loaders = {
+            name: get_loader_from_dataset(ds, batch_size=batch_sizes.get(name, 1), shuffle=False)
+            for name, ds in self.test_dataset.items()
+        }
         return CombinedLoader(loaders, mode="min_size")
 
 class InferenceTraceSeqEWDataloader(LightningDataModule):
