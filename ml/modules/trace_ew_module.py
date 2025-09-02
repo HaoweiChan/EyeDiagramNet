@@ -139,8 +139,11 @@ class TraceEWModule(LightningModule):
         # Handle CombinedLoader 
         combined_batch = next(iter(loader))
         dummy_batch = combined_batch[0]
-        key = next(iter(dummy_batch.keys()))
-        inputs = dummy_batch[key]
+        if stage == 'predict':
+            inputs = dummy_batch[0]
+        else:
+            key = next(iter(dummy_batch.keys()))
+            inputs = dummy_batch[key]
         
         # Dataloader returns a tuple of tensors. The model's forward pass
         # expects (trace_seq, direction, boundary, snp_vert).
@@ -270,8 +273,15 @@ class TraceEWModule(LightningModule):
 
     def on_validation_epoch_end(self):
         log_metrics = self.compute_metrics("val")
-        for dataloader_idx, outputs in self.val_step_outputs.items():
-            self.plot_metrics_curve("val", log_metrics, outputs[0], dataloader_idx)
+        
+        # Check which datasets have validation data for plotting
+        if self.val_step_outputs:
+            rank_zero_info(f"Generating validation plots for datasets: {list(self.val_step_outputs.keys())}")
+            for dataloader_idx, outputs in self.val_step_outputs.items():
+                self.plot_metrics_curve("val", log_metrics, outputs[0], dataloader_idx)
+        else:
+            rank_zero_info("No validation samples collected for plotting - likely due to small datasets with insufficient validation data")
+        
         self.val_step_outputs.clear()
     
     def on_test_epoch_end(self):

@@ -571,10 +571,22 @@ class TraceSeqEWDataloader(LightningDataModule):
         world_size = self.trainer.world_size if self.trainer else 1
         batch_sizes = self._calculate_per_loader_batch_size(self.val_dataset, world_size, batch_size_multiplier=1.6)
         
-        loaders = {
-            name: get_loader_from_dataset(ds, batch_size=batch_sizes.get(name, 1), shuffle=False)
-            for name, ds in self.val_dataset.items() if name in batch_sizes
-        }
+        loaders = {}
+        for name, ds in self.val_dataset.items():
+            if name in batch_sizes:
+                batch_size = batch_sizes[name]
+                loader = get_loader_from_dataset(ds, batch_size=batch_size, shuffle=False)
+                num_batches = len(loader)
+                
+                # Only include datasets that have enough batches for validation
+                if num_batches > 0:
+                    loaders[name] = loader
+                    rank_zero_info(f"Validation dataset '{name}': size={len(ds)}, batch_size={batch_size}, batches={num_batches}")
+                else:
+                    rank_zero_info(f"Skipping validation dataset '{name}': insufficient data for batches (size={len(ds)})")
+            else:
+                rank_zero_info(f"Skipping validation dataset '{name}': filtered out by batch size calculation")
+                
         return CombinedLoader(loaders, mode="min_size")
     
     def test_dataloader(self):
@@ -727,4 +739,4 @@ class InferenceTraceSeqEWDataloader(LightningDataModule):
         if not loaders:
             raise RuntimeError("No inference datasets have any batches! Check dataset sizes and batch configuration.")
         
-        return CombinedLoader(loaders)
+        return CombinedLoader(loaders, mode="sequential")
