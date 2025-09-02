@@ -136,17 +136,27 @@ class TraceEWModule(LightningModule):
             # For prediction/inference, config_keys are auto-determined in setup()
             self.config_keys = self.trainer.datamodule.config_keys
         
-        # Handle CombinedLoader case for predict_dataloader
+        # Handle CombinedLoader case
         if isinstance(loader, CombinedLoader):
-            # For CombinedLoader, iterating returns a tuple of batches from each loader
-            combined_batch = next(iter(loader))
-            # Get the first batch from the tuple
-            dummy_batch = combined_batch[0]
+            # Find the first dataloader that is not empty
+            dummy_batch = None
+            if isinstance(loader.loaders, dict):
+                for key in loader.loaders:
+                    try:
+                        # Iterating over the combined loader gives a dict of batches
+                        combined_batch = next(iter(loader))
+                        dummy_batch = combined_batch[key]
+                        break
+                    except (StopIteration, KeyError):
+                        continue
+            if dummy_batch is None:
+                raise RuntimeError("Could not retrieve a dummy batch from any of the dataloaders. All might be empty.")
         else:
             dummy_batch, *_ = next(iter(loader))
         
-        key = next(iter(dummy_batch.keys()))
-        inputs = dummy_batch[key]
+        # This part seems incorrect as dummy_batch is now the batch, not a dict of batches
+        # Assuming the batch itself is the desired input structure for a single dataloader
+        inputs = dummy_batch
         
         # The last element of the tuple from the dataloader is not part of the model's forward pass inputs.
         # For training, it's the target `eye_width`.
@@ -555,25 +565,12 @@ class TraceEWModule(LightningModule):
             elif 'f1' in key or 'accuracy' in key or 'auroc' in key or 'auprc' in key:
                 metric.update(pred_prob.flatten(), true_prob.flatten().long())
             elif pred_ew_masked.numel() > 0:  # Only update if we have valid masked data
-                # Check minimum sample requirements for specific metrics
-                if key in ['r2', 'mape'] and pred_ew_masked.numel() < 2:
-                    # Skip metrics that require at least 2 samples
-                    continue
                 metric.update(pred_ew_masked, true_ew_masked)
 
     def compute_metrics(self, stage):
         log_metrics = {}
         for key, metric in self.metrics[stage].items():
-            try:
-                log_metrics[f'{stage}/{key}'] = metric.compute()
-            except ValueError as e:
-                if "at least two samples" in str(e) or "r2 score" in str(e).lower():
-                    # Handle metrics that require minimum samples - use NaN for missing values
-                    rank_zero_info(f"Skipping {key} metric computation for {stage}: {e}")
-                    log_metrics[f'{stage}/{key}'] = torch.tensor(float('nan'))
-                else:
-                    # Re-raise other ValueError exceptions
-                    raise
+            log_metrics[f'{stage}/{key}'] = metric.compute()
             metric.reset()
         if stage in ("train_", "val") and self.logger is not None:
             self.logger.log_metrics(log_metrics, self.current_epoch)

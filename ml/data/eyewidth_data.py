@@ -466,68 +466,64 @@ class TraceSeqEWDataloader(LightningDataModule):
             save_scaler_with_config_keys((self.seq_scaler, self.fix_scaler), config_keys, save_path)
             rank_zero_info(f"Saved scalers with config_keys metadata to {save_path}: {config_keys}")
 
-    def _calculate_per_loader_batch_size(self, datasets: dict, batch_size_multiplier: float = 1.0) -> dict:
+    def _calculate_per_loader_batch_size(self, datasets: dict, world_size: int, batch_size_multiplier: float = 1.0) -> dict:
         """
-        Calculate dynamic per-loader batch sizes with smart redistribution.
-        Small datasets don't waste their sample allocation - unused samples go to larger datasets.
-        
-        Args:
-            datasets: Dictionary of datasets to calculate batch size for
-            batch_size_multiplier: Multiplier for batch size (e.g., 1.6 for val/test)
-            
-        Returns:
-            Dictionary mapping dataset names to their optimal batch sizes
+        Calculate dynamic per-loader batch sizes that are GPU-aware.
+        Ensures each dataset's batch size is >= world_size and redistributes unused samples.
         """
         if not datasets:
             return {}
-            
+
+        # 1. Filter out datasets too small for distributed training
         dataset_sizes = {name: len(ds) for name, ds in datasets.items()}
-        num_datasets = len(datasets)
+        valid_datasets = {name: size for name, size in dataset_sizes.items() if size >= world_size}
         
-        # Target total batch size (samples processed simultaneously across all datasets)
-        target_total_batch_size = int(self.batch_size * batch_size_multiplier)
+        for name in dataset_sizes:
+            if name not in valid_datasets:
+                rank_zero_info(f"WARNING: Skipping dataset '{name}' (size {dataset_sizes[name]}) as it's smaller than world size ({world_size}).")
+
+        if not valid_datasets:
+            return {} # No datasets are large enough
+
+        # 2. Calculate base allocation
+        num_valid_datasets = len(valid_datasets)
+        target_total_bs = int(self.batch_size * batch_size_multiplier)
+        base_per_loader_bs = max(1, target_total_bs // num_valid_datasets)
         
-        # Base allocation per dataset
-        base_per_loader_bs = max(1, target_total_batch_size // max(1, num_datasets))
-        
-        # First pass: allocate based on dataset size constraints
+        # 3. First pass: Allocate base batch size, ensuring it's at least world_size
         batch_sizes = {}
         used_samples = 0
-        
-        for name, size in dataset_sizes.items():
-            # Small datasets get their actual size, larger datasets get base allocation
-            allocated = min(size, base_per_loader_bs)
+        for name, size in valid_datasets.items():
+            # Allocate base size, but ensure it's at least world_size and no more than the dataset size
+            allocated = max(world_size, base_per_loader_bs)
+            allocated = min(size, allocated)
             batch_sizes[name] = allocated
             used_samples += allocated
-        
-        # Second pass: redistribute unused samples to larger datasets
-        remaining_samples = target_total_batch_size - used_samples
-        
+            
+        # 4. Second pass: Redistribute remaining samples to datasets that can take more
+        remaining_samples = target_total_bs - used_samples
         if remaining_samples > 0:
-            # Find datasets that can accept more samples (size > current allocation)
-            expandable_datasets = [
-                (name, size - batch_sizes[name]) 
-                for name, size in dataset_sizes.items() 
-                if size > batch_sizes[name]
-            ]
+            expandable_datasets = sorted(
+                [(name, size - batch_sizes[name]) for name, size in valid_datasets.items() if size > batch_sizes[name]],
+                key=lambda x: x[1], reverse=True
+            )
             
-            # Sort by how much extra capacity they have (largest first)
-            expandable_datasets.sort(key=lambda x: x[1], reverse=True)
-            
-            # Distribute remaining samples
-            for name, extra_capacity in expandable_datasets:
-                if remaining_samples <= 0:
-                    break
-                    
-                # Give this dataset some extra samples (up to its capacity)
-                extra_samples = min(remaining_samples, extra_capacity)
-                batch_sizes[name] += extra_samples
-                remaining_samples -= extra_samples
+            # Distribute remaining samples proportionally to capacity
+            total_capacity = sum(capacity for _, capacity in expandable_datasets)
+            if total_capacity > 0:
+                for name, capacity in expandable_datasets:
+                    if remaining_samples <= 0: break
+                    share = int(remaining_samples * (capacity / total_capacity))
+                    give = min(share, capacity)
+                    batch_sizes[name] += give
+                    remaining_samples -= give
         
         return batch_sizes
 
     def train_dataloader(self):
-        batch_sizes = self._calculate_per_loader_batch_size(self.train_dataset, batch_size_multiplier=1.0)
+        # The trainer object is attached to the datamodule after `setup`
+        world_size = self.trainer.world_size if self.trainer else 1
+        batch_sizes = self._calculate_per_loader_batch_size(self.train_dataset, world_size, batch_size_multiplier=1.0)
         
         total_batch_size = sum(batch_sizes.values())
         
@@ -555,20 +551,22 @@ class TraceSeqEWDataloader(LightningDataModule):
         return combined_loader
 
     def val_dataloader(self):
-        batch_sizes = self._calculate_per_loader_batch_size(self.val_dataset, batch_size_multiplier=1.6)
+        world_size = self.trainer.world_size if self.trainer else 1
+        batch_sizes = self._calculate_per_loader_batch_size(self.val_dataset, world_size, batch_size_multiplier=1.6)
         
         loaders = {
             name: get_loader_from_dataset(ds, batch_size=batch_sizes.get(name, 1), shuffle=False)
-            for name, ds in self.val_dataset.items()
+            for name, ds in self.val_dataset.items() if name in batch_sizes
         }
         return CombinedLoader(loaders, mode="min_size")
     
     def test_dataloader(self):
-        batch_sizes = self._calculate_per_loader_batch_size(self.test_dataset, batch_size_multiplier=1.6)
+        world_size = self.trainer.world_size if self.trainer else 1
+        batch_sizes = self._calculate_per_loader_batch_size(self.test_dataset, world_size, batch_size_multiplier=1.6)
         
         loaders = {
             name: get_loader_from_dataset(ds, batch_size=batch_sizes.get(name, 1), shuffle=False)
-            for name, ds in self.test_dataset.items()
+            for name, ds in self.test_dataset.items() if name in batch_sizes
         }
         return CombinedLoader(loaders, mode="min_size")
 
