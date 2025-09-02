@@ -72,7 +72,6 @@ def convert_legacy_param_names(param_names_or_dict, target_format='new'):
 
     raise TypeError("Input must be a list or dict")
 
-
 def to_new_param_name(d: dict) -> dict:
     """
     Convert old parameter names to new ones for backward compatibility.
@@ -118,7 +117,7 @@ def convert_configs_to_boundaries(configs_list: list, config_keys: list) -> np.n
 def process_boundary_for_inference(
     boundary_json_path: str, 
     training_config_keys: List[str]
-) -> Tuple[SampleResult, List[float], List[str]]:
+) -> Tuple[SampleResult, np.ndarray, List[str]]:
     """
     Process boundary JSON for inference, ensuring compatibility with training config.
     
@@ -164,8 +163,8 @@ def process_boundary_for_inference(
             f"Ensure the boundary JSON contains all parameters used during training."
         )
     
-    # Extract values in training order
-    boundary_values = [boundary_result.get(key, np.nan) for key in training_config_keys]
+    # Extract values in training order and convert to numpy array
+    boundary_values = np.array([boundary_result.get(key, np.nan) for key in training_config_keys])
     
     return boundary_result, boundary_values, training_config_keys
 
