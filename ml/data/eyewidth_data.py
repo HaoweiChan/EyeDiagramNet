@@ -143,7 +143,7 @@ class TraceEWDataset(Dataset):
         boundary = self.boundaries[seq_index, bnd_index]
         eye_width = self.eye_widths[seq_index, bnd_index]
 
-        if self.train and random.random() > 0.5 and not self.ignore_snp:
+        if self.train and random.random() > 0.5:
             trace_seq, direction, eye_width, vert_snp = \
                 self.augment(trace_seq, direction, eye_width, vert_snp)
         return trace_seq, direction, boundary, vert_snp, eye_width, meta
@@ -205,7 +205,10 @@ class TraceEWDataset(Dataset):
         trace_seq = trace_seq[seq_order]
         eye_width = eye_width[signal_order]
         direction = direction[signal_order]
-        vert_snp = vert_snp[:, :, :, snp_order]
+        
+        # Only augment SNP data if not ignoring SNPs
+        if not self.ignore_snp:
+            vert_snp = vert_snp[:, :, :, snp_order]
 
         # Augment layer values
         max_layer = trace_seq[:, 0].max().int().item()
