@@ -58,6 +58,12 @@ trainer:
         warm_up_epochs: 3
         update_frequency: 1
         grid_size: 101
+    - class_path: ml.callbacks.ValidationBiasCorrector
+      init_args:
+        warm_up_epochs: 5
+        update_frequency: 1
+        ema_alpha: 0.1
+        enable_correction: true
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
         filename: 'ew-xfmr-epoch{epoch}-mae{hp_metric:.2f}'

@@ -12,10 +12,12 @@ from .dynamic_threshold import DynamicThresholdOptimizer
 from .prediction_writer import EWPredictionWriter
 from .gradient_tracker import GradientTracker  
 from .sparam_visualizer import SParameterVisualizer
+from .validation_bias_corrector import ValidationBiasCorrector
 
 __all__ = [
     'DynamicThresholdOptimizer',
     'EWPredictionWriter',
     'GradientTracker', 
-    'SParameterVisualizer'
+    'SParameterVisualizer',
+    'ValidationBiasCorrector'
 ]

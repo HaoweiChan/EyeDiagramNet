@@ -12,6 +12,7 @@ from lightning.pytorch.utilities.rank_zero import rank_zero_info
 from ..models.layers import LearnableLossWeighting
 from ..utils import losses
 from ..utils.losses import focus_weighted_eye_width_loss, min_focused_loss, smooth_gaussian_focus_loss
+from ..callbacks.validation_bias_corrector import apply_validation_bias_correction
 from ..utils.init_weights import init_weights
 from ..utils.visualization import image_to_buffer, plot_ew_curve
 
@@ -301,6 +302,10 @@ class TraceEWModule(LightningModule):
         pred_prob = torch.sigmoid(pred_logits)
         
         pred_ew = pred_ew * self.ew_scaler
+        
+        # Apply validation bias correction during inference
+        pred_ew = apply_validation_bias_correction(self, pred_ew, dataset_name=None)
+        
         # Clip eyewidth output to 100 after inverse transform  
         pred_ew = torch.clamp(pred_ew, max=100.0)
         pred_ew[pred_prob < self.hparams.ew_threshold] = -0.1
@@ -523,6 +528,13 @@ class TraceEWModule(LightningModule):
             # (4) Loss + metric-ready tensors
             loss, extras = self._compute_loss(item, fwd)
             losses.append(loss)
+
+            # (4.5) Apply validation bias correction for metrics (only during validation)
+            if stage == "val":
+                with torch.no_grad():
+                    extras["pred_ew"] = apply_validation_bias_correction(
+                        self, extras["pred_ew"], dataset_name=name
+                    )
 
             # (5) Update metrics & maybe collect samples
             with torch.no_grad():
