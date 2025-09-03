@@ -30,9 +30,21 @@ class EWPredictionWriter(BasePredictionWriter):
         # 1) dump metadata + DataFrame snapshot to .txt
         with txt_path.open("w") as f:
             f.write("boundary:\n")
-            pprint.pprint(trainer.datamodule.boundary, stream=f)
-            f.write(f"tx_snp: {trainer.datamodule.tx_snp}\n")
-            f.write(f"rx_snp: {trainer.datamodule.rx_snp}\n")
+            
+            # Handle boundary attribute safely
+            if hasattr(trainer.datamodule, 'boundary'):
+                pprint.pprint(trainer.datamodule.boundary, stream=f)
+            else:
+                f.write("Not available\n")
+            
+            # Handle SNP attributes - different datamodules use different naming
+            drv_snp_path = getattr(trainer.datamodule, 'drv_snp', 
+                                 getattr(trainer.datamodule, 'tx_snp', 'Not available'))
+            odt_snp_path = getattr(trainer.datamodule, 'odt_snp', 
+                                 getattr(trainer.datamodule, 'rx_snp', 'Not available'))
+            
+            f.write(f"drv_snp: {drv_snp_path}\n")
+            f.write(f"odt_snp: {odt_snp_path}\n")
             f.write(df.to_string())
 
         # 2) write full CSV

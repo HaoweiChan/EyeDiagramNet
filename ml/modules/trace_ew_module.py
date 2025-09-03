@@ -140,7 +140,7 @@ class TraceEWModule(LightningModule):
         combined_batch = next(iter(loader))
         dummy_batch = combined_batch[0]
         if stage == 'predict':
-            inputs = dummy_batch[0]
+            inputs = dummy_batch
         else:
             key = next(iter(dummy_batch.keys()))
             inputs = dummy_batch[key]
