@@ -408,20 +408,39 @@ class TraceSeqEWDataloader(LightningDataModule):
                     )
                 continue
             
-            # Standard train/val split for other stages
-            train_idx, val_idx = train_test_split(
-                indices, test_size=self.test_size, shuffle=True, random_state=42
-            )
+            # Check if dataset is too small for proper validation
+            total_dataset_size = len(input_arr)
+            estimated_batch_size = max(1, self.batch_size // max(1, len(csv_paths)))
+            estimated_val_size = int(total_dataset_size * self.test_size)
+            estimated_val_batches = max(1, estimated_val_size // estimated_batch_size)
+            
+            if estimated_val_batches < 10:
+                # Dataset too small - use all samples for training
+                rank_zero_info(f"Dataset '{name}' too small for validation (~{estimated_val_batches} batches < 10), using all {total_dataset_size} samples for training")
+                x_seq_tr, x_seq_val = input_arr, np.array([])
+                x_tok_tr, x_tok_val = directions, np.array([])
+                x_fix_tr, x_fix_val = boundaries, np.array([]).reshape(0, boundaries.shape[-1])
+                x_vert_tr, x_vert_val = snp_paths, np.array([])
+                y_tr, y_val = eye_widths, np.array([])
+                metas_tr, metas_val = metas, np.array([])
+                use_validation = False
+            else:
+                # Standard train/val split for datasets with sufficient samples
+                rank_zero_info(f"Dataset '{name}' sufficient for validation (~{estimated_val_batches} batches), performing train/val split")
+                train_idx, val_idx = train_test_split(
+                    indices, test_size=self.test_size, shuffle=True, random_state=42
+                )
 
-            def _split(arr):
-                return arr[train_idx], arr[val_idx]
+                def _split(arr):
+                    return arr[train_idx], arr[val_idx]
 
-            x_seq_tr, x_seq_val = _split(input_arr)
-            x_tok_tr, x_tok_val = _split(directions)
-            x_fix_tr, x_fix_val = _split(boundaries)
-            x_vert_tr, x_vert_val = _split(snp_paths)
-            y_tr, y_val = _split(eye_widths)
-            metas_tr, metas_val = _split(metas)
+                x_seq_tr, x_seq_val = _split(input_arr)
+                x_tok_tr, x_tok_val = _split(directions)
+                x_fix_tr, x_fix_val = _split(boundaries)
+                x_vert_tr, x_vert_val = _split(snp_paths)
+                y_tr, y_val = _split(eye_widths)
+                metas_tr, metas_val = _split(metas)
+                use_validation = True
             
             # fit scalers once on training data
             if fit_scaler:
@@ -437,9 +456,12 @@ class TraceSeqEWDataloader(LightningDataModule):
             self.train_dataset[name] = TraceEWDataset(
                 x_seq_tr, x_tok_tr, x_fix_tr, x_vert_tr, y_tr, metas_tr, train=True, ignore_snp=self.ignore_snp
             )
-            self.val_dataset[name] = TraceEWDataset(
-                x_seq_val, x_tok_val, x_fix_val, x_vert_val, y_val, metas_val, ignore_snp=self.ignore_snp
-            )
+            
+            # Only create validation dataset if we have sufficient samples
+            if use_validation and len(x_seq_val) > 0:
+                self.val_dataset[name] = TraceEWDataset(
+                    x_seq_val, x_tok_val, x_fix_val, x_vert_val, y_val, metas_val, ignore_snp=self.ignore_snp
+                )
         
         # final transform with fitted scalers
         if fit_scaler:
@@ -447,9 +469,11 @@ class TraceSeqEWDataloader(LightningDataModule):
                 self.train_dataset[name] = self.train_dataset[name].transform(
                     self.seq_scaler, self.fix_scaler
                 )
-                self.val_dataset[name] = self.val_dataset[name].transform(
-                    self.seq_scaler, self.fix_scaler
-                )
+                # Only transform validation dataset if it exists
+                if name in self.val_dataset:
+                    self.val_dataset[name] = self.val_dataset[name].transform(
+                        self.seq_scaler, self.fix_scaler
+                    )
 
         # persist scalers for future runs with config_keys metadata
         if fit_scaler and self.trainer and self.trainer.is_global_zero and self.trainer.logger:
