@@ -23,26 +23,33 @@ def create_temp_config_with_user_settings(base_config_path, user_settings, subco
     dataloader_class = config['data']['class_path']
     is_inference_dataloader = 'InferenceTraceSeqEWDataloader' in dataloader_class
     
-    # Inject user settings into the config
-    if user_settings.get('data_dirs'):
-        data_dirs = user_settings['data_dirs']
-        
+    # Inject user settings into the config  
+    data_dirs = user_settings.get('data_dirs')
+    if data_dirs:  # Handle truthy values (not None, not empty list/dict)
         if is_inference_dataloader:
             # InferenceTraceSeqEWDataloader expects data_dirs as a list
             if isinstance(data_dirs, dict):
                 data_dirs_list = list(data_dirs.values())
-            else:
+            elif isinstance(data_dirs, list):
                 data_dirs_list = data_dirs
+            else:
+                # Convert single path to list
+                data_dirs_list = [str(data_dirs)]
             config['data']['init_args']['data_dirs'] = data_dirs_list
         else:
             # TraceSeqEWDataloader expects data_dirs as a dictionary
             if isinstance(data_dirs, list):
                 data_dirs_dict = {}
                 for path in data_dirs:
-                    key = Path(path).name
-                    data_dirs_dict[key] = path
-            else:
+                    if path:  # Skip None/empty paths
+                        key = Path(str(path)).name
+                        data_dirs_dict[key] = str(path)
+            elif isinstance(data_dirs, dict):
                 data_dirs_dict = data_dirs
+            else:
+                # Convert single path to dict
+                path_str = str(data_dirs)
+                data_dirs_dict = {Path(path_str).name: path_str}
             config['data']['init_args']['data_dirs'] = data_dirs_dict
     
     # Handle different parameters based on dataloader type
@@ -123,6 +130,25 @@ def create_temp_config_with_user_settings(base_config_path, user_settings, subco
         else:
             print(f"Warning: No .pth scaler files found in {version_dir}")
     
+    # Validate final config before creating temp file
+    try:
+        # Ensure data section exists and has required structure
+        if 'data' not in config:
+            raise ValueError("Config missing 'data' section")
+        if 'init_args' not in config['data']:
+            config['data']['init_args'] = {}
+        
+        # For inference dataloader, ensure data_dirs is not None
+        if is_inference_dataloader:
+            if 'data_dirs' not in config['data']['init_args'] or config['data']['init_args']['data_dirs'] is None:
+                print("Warning: data_dirs not set for inference dataloader, using empty list")
+                config['data']['init_args']['data_dirs'] = []
+        
+        print(f"Final config validation passed for {subcommand}")
+    except Exception as e:
+        print(f"Config validation error: {e}")
+        raise
+    
     # Create temporary file
     temp_fd, temp_path = tempfile.mkstemp(suffix='.yaml', prefix=f'temp_{subcommand}_')
     try:
@@ -165,6 +191,11 @@ def preprocess_user_config():
             with open(user_config_path, 'r') as f:
                 user_settings = yaml.safe_load(f)
             
+            # Validate user_settings is not None
+            if user_settings is None:
+                print(f"Warning: User config {user_config_path} is empty or invalid")
+                return None
+            
             # For predict/test modes, find training config from ckpt_path and inject it
             if len(sys.argv) > 1 and sys.argv[1] in ["predict", "test"]:
                 if user_settings.get('ckpt_path'):
@@ -206,15 +237,14 @@ def preprocess_user_config():
             if len(sys.argv) > 1 and sys.argv[1] in ["predict", "test"]:
                 subcommand = sys.argv[1]
                 
-                # Find the main config file in sys.argv
+                # Find the last config file in sys.argv (inference config)
                 main_config_path = None
+                main_config_index = -1
                 for i, arg in enumerate(sys.argv):
                     if arg == "--config" and i + 1 < len(sys.argv):
-                        potential_config = sys.argv[i + 1]
-                        if (subcommand in potential_config or (subcommand == 'predict' and 'infer' in potential_config)) and "training" in potential_config:
-                            main_config_path = potential_config
-                            main_config_index = i + 1
-                            break
+                        # Take the last config file (inference config, not training config)
+                        main_config_path = sys.argv[i + 1]
+                        main_config_index = i + 1
                 
                 if main_config_path:
                     # Extract training_config_keys from the training config
@@ -248,6 +278,9 @@ def preprocess_user_config():
             return user_settings
         except Exception as e:
             print(f"Error loading user config {user_config_path}: {e}")
+            print(f"Error type: {type(e).__name__}")
+            import traceback
+            traceback.print_exc()
             return None
     
     return None
