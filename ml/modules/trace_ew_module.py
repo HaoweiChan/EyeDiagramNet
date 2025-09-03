@@ -109,6 +109,10 @@ class TraceEWModule(LightningModule):
         # Pre-compute inverse and log for efficiency - avoid repeated divisions
         self.ew_scaler_inv = torch.tensor(1.0 / self.hparams.ew_scaler)
         self.log_ew_scaler = torch.log(self.ew_scaler)
+        
+        # Initialize validation bias correction attributes
+        self.validation_bias = {}
+        self.bias_correction_enabled = False
         # Use learnable loss weighting based on unified loss choice
         if self.hparams.unified_ew_loss == 'separate':
             # Original separate losses
@@ -539,6 +543,8 @@ class TraceEWModule(LightningModule):
                     }
                     
                     # Apply bias correction for metrics
+                    print(f"DEBUG: TraceEWModule validation_bias = {getattr(self, 'validation_bias', 'NOT_FOUND')}")
+                    print(f"DEBUG: TraceEWModule bias_correction_enabled = {getattr(self, 'bias_correction_enabled', 'NOT_FOUND')}")
                     extras["pred_ew"] = apply_validation_bias_correction(
                         self, extras["pred_ew"], dataset_name=name
                     )
