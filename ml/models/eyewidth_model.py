@@ -11,14 +11,13 @@ from .layers import RMSNorm, positional_encoding_1d, RotaryTransformerEncoder, S
 # ---------------------------------------------------------------------------
 class TraceBoundaryCalibrator(nn.Module):
     """
-    Produces a multiplicative scale for eye-width values and an additive bias
-    for logits, conditioned on:
+    Produces additive biases for both eye-width values and logits, conditioned on:
       - a trace-level summary embedding ("CLS" estimated by mean pooling)
       - the processed boundary features
 
     Returns two tensors of shape (B,):
-      scale_value in ~1.0 +/- small range (starts at 1.0)
-      bias_logit in ~0.0 (starts at 0.0)
+      bias_value ~ 0.0 (starts at 0.0)
+      bias_logit ~ 0.0 (starts at 0.0)
     """
 
     def __init__(self, model_dim: int):
@@ -26,22 +25,22 @@ class TraceBoundaryCalibrator(nn.Module):
         self.trace_proj = nn.Linear(model_dim, model_dim)
         self.bound_proj = nn.Linear(model_dim, model_dim)
         self.act = nn.GELU()
-        self.out = nn.Linear(model_dim, 2)  # [scale_raw, bias_raw]
+        self.out = nn.Linear(model_dim, 2)  # [bias_value_raw, bias_logit_raw]
 
         # Identity/no-op start
         nn.init.zeros_(self.out.weight)
         nn.init.zeros_(self.out.bias)
-        self.g_scale = nn.Parameter(torch.tensor(0.0))
-        self.g_bias = nn.Parameter(torch.tensor(0.0))
+        self.g_value = nn.Parameter(torch.tensor(0.0))
+        self.g_logit = nn.Parameter(torch.tensor(0.0))
 
     def forward(self, trace_cls: torch.Tensor, boundary_feat: torch.Tensor):
         fused = self.act(self.trace_proj(trace_cls) + self.bound_proj(boundary_feat))
         raw = self.out(fused)  # (B, 2)
-        scale_raw, bias_raw = raw.unbind(dim=-1)
-        # Multiplicative scale around 1.0; Additive bias around 0.0
-        scale = 1.0 + torch.sigmoid(self.g_scale) * scale_raw
-        bias = torch.sigmoid(self.g_bias) * bias_raw
-        return scale, bias
+        bias_value_raw, bias_logit_raw = raw.unbind(dim=-1)
+        # Additive biases gated to start as no-op
+        bias_value = torch.sigmoid(self.g_value) * bias_value_raw
+        bias_logit = torch.sigmoid(self.g_logit) * bias_logit_raw
+        return bias_value, bias_logit
 
 # ---------------------------------------------------------------------------
 # Wrapper so that Laplace can treat a multi-argument forward() as a single x
@@ -320,14 +319,14 @@ class EyeWidthRegressor(nn.Module):
         output = self.pred_head(hidden_states_sig)
 
         # Sample-aware calibration using CLS (pre-pos-embed) and boundary features
-        scale_value, bias_logit = self.tb_calibrator(trace_cls, boundary_feat)
+        bias_value, bias_logit = self.tb_calibrator(trace_cls, boundary_feat)
 
-        # Apply multiplicative scale to EW and additive bias to logits
+        # Apply additive biases to both EW and logits
         values, logits = output.split([1, 1], dim=-1)
-        values = values.squeeze(-1) * scale_value.unsqueeze(-1)
+        values = values.squeeze(-1) + bias_value.unsqueeze(-1)
         logits = logits.squeeze(-1) + bias_logit.unsqueeze(-1)
         # Expose calibration for optional regularization at module level
-        self._last_calibration = {"scale": scale_value, "bias": bias_logit}
+        self._last_calibration = {"value_bias": bias_value, "logit_bias": bias_logit}
 
         return values, logits
 
