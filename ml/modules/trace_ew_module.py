@@ -431,15 +431,7 @@ class TraceEWModule(LightningModule):
         else:
             raise ValueError(f"Unknown unified_ew_loss: {self.hparams.unified_ew_loss}")
 
-        # Optional L2 regularization for calibration biases (value/logit ~ 0)
-        calib_reg_weight = float(getattr(self.hparams, 'calibrator_l2', 1e-4))
-        if calib_reg_weight > 0 and hasattr(self.model, '_last_calibration'):
-            v_bias = self.model._last_calibration.get('value_bias')
-            l_bias = self.model._last_calibration.get('logit_bias')
-            if v_bias is not None and l_bias is not None:
-                calib_reg = v_bias.pow(2).mean() + l_bias.pow(2).mean()
-                loss = loss + calib_reg_weight * calib_reg
-                self.log('calibrator/reg', calib_reg.detach(), prog_bar=False, on_step=True, on_epoch=False)
+
 
         # Use the eval tensors (may come from MC/Laplace inference) for metrics
         pred_ew_eval, pred_prob_eval = forward_out["eval"]
