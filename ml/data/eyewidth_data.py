@@ -411,12 +411,11 @@ class TraceSeqEWDataloader(LightningDataModule):
             # Check if dataset is too small for proper validation
             total_dataset_size = len(input_arr)
             estimated_batch_size = max(1, self.batch_size // max(1, len(csv_paths)))
-            estimated_val_size = int(total_dataset_size * self.test_size)
-            estimated_val_batches = max(1, estimated_val_size // estimated_batch_size)
+            estimated_batches = max(1, total_dataset_size // estimated_batch_size)
             
-            if estimated_val_batches < 10:
+            if estimated_batches < 10:
                 # Dataset too small - use all samples for training
-                rank_zero_info(f"Dataset '{name}' too small for validation (~{estimated_val_batches} batches < 10), using all {total_dataset_size} samples for training")
+                rank_zero_info(f"Dataset '{name}' too small for validation (~{estimated_batches} batches < 10), using all {total_dataset_size} samples for training")
                 x_seq_tr, x_seq_val = input_arr, np.array([])
                 x_tok_tr, x_tok_val = directions, np.array([])
                 x_fix_tr, x_fix_val = boundaries, np.array([]).reshape(0, boundaries.shape[-1])
@@ -426,7 +425,7 @@ class TraceSeqEWDataloader(LightningDataModule):
                 use_validation = False
             else:
                 # Standard train/val split for datasets with sufficient samples
-                rank_zero_info(f"Dataset '{name}' sufficient for validation (~{estimated_val_batches} batches), performing train/val split")
+                rank_zero_info(f"Dataset '{name}' sufficient for validation (~{estimated_batches} batches), performing train/val split")
                 train_idx, val_idx = train_test_split(
                     indices, test_size=self.test_size, shuffle=True, random_state=42
                 )
