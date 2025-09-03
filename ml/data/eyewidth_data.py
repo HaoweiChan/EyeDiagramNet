@@ -409,7 +409,7 @@ class TraceSeqEWDataloader(LightningDataModule):
                 continue
             
             # Check if dataset is too small for proper validation
-            total_dataset_size = input_arr.shape[0] * input_arr.shape[1]
+            total_dataset_size = eye_widths.shape[0] * eye_widths.shape[1]
             estimated_batch_size = max(1, self.batch_size // max(1, len(csv_paths)))
             estimated_batches = max(1, total_dataset_size // estimated_batch_size)
             
