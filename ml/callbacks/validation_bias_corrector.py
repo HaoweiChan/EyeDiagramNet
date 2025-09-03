@@ -1,7 +1,7 @@
 """
 Validation Bias Corrector Callback
 
-Automatically computes and applies validation bias correction per dataset to address
+Automatically computes and logs validation bias per dataset to diagnose
 systematic prediction bias between training and validation modes.
 
 Usage example:
@@ -18,14 +18,11 @@ Usage example:
         ]
     )
     
-    # Enable bias correction in your module's hyperparameters
-    module = TraceEWModule(model, enable_bias_correction=True)
-    
     # The callback will automatically:
     # - Collect validation predictions and targets per dataset
     # - Compute bias = mean(targets - predictions) per dataset
-    # - Store bias values in module state (saved in checkpoint)
-    # - Apply correction during validation/inference (not training)
+    # - Log bias values per dataset
+    # NOTE: No automatic per-dataset correction is applied (log-only).
 """
 
 import torch
@@ -47,7 +44,7 @@ class ValidationBiasCorrector(Callback):
         warm_up_epochs: Skip optimization for first N epochs (default: 5)
         update_frequency: Update bias every N epochs (default: 1) 
         ema_alpha: Exponential moving average factor for smoothing bias updates (default: 0.1)
-        enable_correction: Whether to apply bias correction during inference (default: True)
+        enable_correction: Whether to apply bias correction during inference (default: False; log-only)
     """
     
     def __init__(
@@ -55,7 +52,7 @@ class ValidationBiasCorrector(Callback):
         warm_up_epochs: int = 5,
         update_frequency: int = 1,
         ema_alpha: float = 0.1,
-        enable_correction: bool = True,
+        enable_correction: bool = False,
     ):
         super().__init__()
         self.warm_up_epochs = warm_up_epochs
@@ -74,7 +71,7 @@ class ValidationBiasCorrector(Callback):
         self.current_bias = {}
     
     def on_fit_start(self, trainer: Trainer, pl_module: LightningModule) -> None:
-        """Initialize bias correction state in the module."""
+        """Initialize bias correction state in the module (log-only by default)."""
         if not hasattr(pl_module, 'validation_bias'):
             pl_module.validation_bias = {}
             pl_module.bias_correction_enabled = self.enable_correction
@@ -125,7 +122,7 @@ class ValidationBiasCorrector(Callback):
             del pl_module._val_raw_preds
     
     def on_validation_epoch_end(self, trainer: Trainer, pl_module: LightningModule) -> None:
-        """Compute and update bias correction per dataset."""
+        """Compute and log bias per dataset (no correction applied)."""
         if not getattr(pl_module, 'bias_correction_enabled', True):
             return
             
@@ -154,8 +151,8 @@ class ValidationBiasCorrector(Callback):
                 current_bias = self.current_bias.get(dataset_name, 0.0)
                 smoothed_bias = (1.0 - self.ema_alpha) * current_bias + self.ema_alpha * new_bias
                 
-                # Update module bias state
-                pl_module.validation_bias[dataset_name] = smoothed_bias
+                # Log-only: keep current bias internally for summary, do not
+                # persist into the module to avoid per-dataset correction.
                 self.current_bias[dataset_name] = smoothed_bias
                 updated_datasets.append(dataset_name)
                 

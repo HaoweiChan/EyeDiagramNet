@@ -2,10 +2,46 @@ import torch
 import torch.nn as nn
 from einops import rearrange
 from torch.utils.data import DataLoader
-
-from .layers import RMSNorm, positional_encoding_1d, RotaryTransformerEncoder, StructuredGatedBoundaryProcessor
 from .snp_model import OptimizedSNPEmbedding
 from .trace_model import TraceSeqTransformer
+from .layers import RMSNorm, positional_encoding_1d, RotaryTransformerEncoder, StructuredGatedBoundaryProcessor
+
+# ---------------------------------------------------------------------------
+# Trace+Boundary calibrator (dataset-agnostic, sample-aware)
+# ---------------------------------------------------------------------------
+class TraceBoundaryCalibrator(nn.Module):
+    """
+    Produces a multiplicative scale for eye-width values and an additive bias
+    for logits, conditioned on:
+      - a trace-level summary embedding ("CLS" estimated by mean pooling)
+      - the processed boundary features
+
+    Returns two tensors of shape (B,):
+      scale_value in ~1.0 +/- small range (starts at 1.0)
+      bias_logit in ~0.0 (starts at 0.0)
+    """
+
+    def __init__(self, model_dim: int):
+        super().__init__()
+        self.trace_proj = nn.Linear(model_dim, model_dim)
+        self.bound_proj = nn.Linear(model_dim, model_dim)
+        self.act = nn.GELU()
+        self.out = nn.Linear(model_dim, 2)  # [scale_raw, bias_raw]
+
+        # Identity/no-op start
+        nn.init.zeros_(self.out.weight)
+        nn.init.zeros_(self.out.bias)
+        self.g_scale = nn.Parameter(torch.tensor(0.0))
+        self.g_bias = nn.Parameter(torch.tensor(0.0))
+
+    def forward(self, trace_cls: torch.Tensor, boundary_feat: torch.Tensor):
+        fused = self.act(self.trace_proj(trace_cls) + self.bound_proj(boundary_feat))
+        raw = self.out(fused)  # (B, 2)
+        scale_raw, bias_raw = raw.unbind(dim=-1)
+        # Multiplicative scale around 1.0; Additive bias around 0.0
+        scale = 1.0 + torch.sigmoid(self.g_scale) * scale_raw
+        bias = torch.sigmoid(self.g_bias) * bias_raw
+        return scale, bias
 
 # ---------------------------------------------------------------------------
 # Wrapper so that Laplace can treat a multi-argument forward() as a single x
@@ -171,6 +207,9 @@ class EyeWidthRegressor(nn.Module):
             nn.Linear(self.model_dim, self.output_dim)
         )
         
+        # Trace+Boundary calibrator (multiplicative on EW, additive on logits)
+        self.tb_calibrator = TraceBoundaryCalibrator(model_dim=self.model_dim)
+        
         # ----------  Laplace placeholders  ----------
         self._laplace_model = None        
         
@@ -220,8 +259,12 @@ class EyeWidthRegressor(nn.Module):
         else:
             hidden_states_seq = self.trace_encoder(trace_seq)  # (B, P, M)
 
+        # CLS-like summary BEFORE adding signal-position embeddings or direction
+        trace_cls = hidden_states_seq.mean(dim=1)  # (B, M)
+
         # Process boundary conditions with structured processor
-        hidden_states_fix = self.boundary_processor(boundary).unsqueeze(1) # (B, 1, M)
+        boundary_feat = self.boundary_processor(boundary)  # (B, M)
+        hidden_states_fix = boundary_feat.unsqueeze(1) # (B, 1, M)
         hidden_states_fix = hidden_states_fix + self.fix_token
 
         # Process snp into hidden states
@@ -275,8 +318,16 @@ class EyeWidthRegressor(nn.Module):
 
         # Predict eye width and open eye probabilities respectively
         output = self.pred_head(hidden_states_sig)
+
+        # Sample-aware calibration using CLS (pre-pos-embed) and boundary features
+        scale_value, bias_logit = self.tb_calibrator(trace_cls, boundary_feat)
+
+        # Apply multiplicative scale to EW and additive bias to logits
         values, logits = output.split([1, 1], dim=-1)
-        values, logits = values.squeeze(-1), logits.squeeze(-1)
+        values = values.squeeze(-1) * scale_value.unsqueeze(-1)
+        logits = logits.squeeze(-1) + bias_logit.unsqueeze(-1)
+        # Expose calibration for optional regularization at module level
+        self._last_calibration = {"scale": scale_value, "bias": bias_logit}
 
         return values, logits
 

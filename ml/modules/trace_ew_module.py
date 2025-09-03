@@ -110,7 +110,7 @@ class TraceEWModule(LightningModule):
         self.ew_scaler_inv = torch.tensor(1.0 / self.hparams.ew_scaler)
         self.log_ew_scaler = torch.log(self.ew_scaler)
         
-        # Initialize validation bias correction attributes
+        # Initialize bias correction attributes (log-only by default)
         self.validation_bias = {}
         self.bias_correction_enabled = False
         # Use learnable loss weighting based on unified loss choice
@@ -305,8 +305,7 @@ class TraceEWModule(LightningModule):
         
         pred_ew = pred_ew * self.ew_scaler
         
-        # Apply validation bias correction during inference
-        pred_ew = apply_validation_bias_correction(self, pred_ew, dataset_name=None)
+        # Log-only bias: do not apply per-dataset correction during inference
         
         # Clip eyewidth output to 100 after inverse transform  
         pred_ew = torch.clamp(pred_ew, max=100.0)
@@ -432,6 +431,17 @@ class TraceEWModule(LightningModule):
         else:
             raise ValueError(f"Unknown unified_ew_loss: {self.hparams.unified_ew_loss}")
 
+        # Optional L2 regularization for calibration (scale ~ 1, bias ~ 0)
+        calib_reg_weight = float(getattr(self.hparams, 'calibrator_l2', 1e-4))
+        if calib_reg_weight > 0 and hasattr(self.model, '_last_calibration'):
+            scale = self.model._last_calibration.get('scale')
+            bias = self.model._last_calibration.get('bias')
+            if scale is not None and bias is not None:
+                calib_reg = (scale - 1).pow(2).mean() + bias.pow(2).mean()
+                loss = loss + calib_reg_weight * calib_reg
+                # Log reg term for monitoring (on-step/off-epoch logging handled outside)
+                self.log('calibrator/reg', calib_reg.detach(), prog_bar=False, on_step=True, on_epoch=False)
+
         # Use the eval tensors (may come from MC/Laplace inference) for metrics
         pred_ew_eval, pred_prob_eval = forward_out["eval"]
 
@@ -531,7 +541,7 @@ class TraceEWModule(LightningModule):
             loss, extras = self._compute_loss(item, fwd)
             losses.append(loss)
 
-            # (4.5) Store raw predictions for bias callback, then apply bias correction 
+            # (4.5) Store raw predictions for bias callback (log-only)
             if stage == "val":
                 with torch.no_grad():
                     # Store raw predictions for ValidationBiasCorrector callback
@@ -541,13 +551,7 @@ class TraceEWModule(LightningModule):
                         'pred_ew': extras["pred_ew"].clone(),
                         'true_ew': extras["true_ew"].clone()
                     }
-                    
-                    # Apply bias correction for metrics
-                    print(f"DEBUG: TraceEWModule validation_bias = {getattr(self, 'validation_bias', 'NOT_FOUND')}")
-                    print(f"DEBUG: TraceEWModule bias_correction_enabled = {getattr(self, 'bias_correction_enabled', 'NOT_FOUND')}")
-                    extras["pred_ew"] = apply_validation_bias_correction(
-                        self, extras["pred_ew"], dataset_name=name
-                    )
+
 
             # (5) Update metrics & maybe collect samples
             with torch.no_grad():
