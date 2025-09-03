@@ -6,12 +6,11 @@ import torch.nn.functional as F
 import torchmetrics as tm
 from dataclasses import dataclass
 from lightning import LightningModule
-from lightning.pytorch.utilities import CombinedLoader
 from lightning.pytorch.utilities.rank_zero import rank_zero_info
 
 from ..models.layers import LearnableLossWeighting
 from ..utils import losses
-from ..utils.losses import focus_weighted_eye_width_loss, min_focused_loss, smooth_gaussian_focus_loss
+from ..utils.losses import min_focused_loss, smooth_gaussian_focus_loss
 from ..callbacks.validation_bias_corrector import apply_validation_bias_correction
 from ..utils.init_weights import init_weights
 from ..utils.visualization import image_to_buffer, plot_ew_curve
@@ -277,7 +276,6 @@ class TraceEWModule(LightningModule):
         
         # Check which datasets have validation data for plotting
         if self.val_step_outputs:
-            rank_zero_info(f"Generating validation plots for datasets: {list(self.val_step_outputs.keys())}")
             for dataloader_idx, outputs in self.val_step_outputs.items():
                 self.plot_metrics_curve("val", log_metrics, outputs[0], dataloader_idx)
         else:
@@ -529,9 +527,18 @@ class TraceEWModule(LightningModule):
             loss, extras = self._compute_loss(item, fwd)
             losses.append(loss)
 
-            # (4.5) Apply validation bias correction for metrics (only during validation)
+            # (4.5) Store raw predictions for bias callback, then apply bias correction 
             if stage == "val":
                 with torch.no_grad():
+                    # Store raw predictions for ValidationBiasCorrector callback
+                    if not hasattr(self, '_val_raw_preds'):
+                        self._val_raw_preds = {}
+                    self._val_raw_preds[name] = {
+                        'pred_ew': extras["pred_ew"].clone(),
+                        'true_ew': extras["true_ew"].clone()
+                    }
+                    
+                    # Apply bias correction for metrics
                     extras["pred_ew"] = apply_validation_bias_correction(
                         self, extras["pred_ew"], dataset_name=name
                     )

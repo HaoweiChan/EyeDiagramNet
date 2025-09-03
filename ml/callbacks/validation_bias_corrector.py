@@ -91,42 +91,38 @@ class ValidationBiasCorrector(Callback):
         batch_idx: int, 
         dataloader_idx: int = 0
     ) -> None:
-        """Collect validation data per dataset for bias computation."""
+        """
+        Collect validation data per dataset for bias computation.
+        
+        CRITICAL: Uses the same predictions from the main validation step to avoid
+        the dual-forward-pass bug that caused exponentially growing validation MAE.
+        """
         if not getattr(pl_module, 'bias_correction_enabled', True):
             return
             
-        # Extract data from batch (assuming TraceEWModule structure)
-        for dataset_name, raw in batch.items():
-            trace_seq, direction, boundary, snp_vert, true_ew, meta = raw
+        # Use raw predictions stored by the main validation step (same forward pass!)
+        if not hasattr(pl_module, '_val_raw_preds'):
+            return
             
-            # Get predictions without any bias correction applied
-            with torch.no_grad():
-                # Temporarily disable bias correction to get raw predictions
-                original_enabled = getattr(pl_module, 'bias_correction_enabled', True)
-                pl_module.bias_correction_enabled = False
+        for dataset_name, stored_data in pl_module._val_raw_preds.items():
+            pred_ew_scaled = stored_data['pred_ew']  # Already scaled
+            true_ew_scaled = stored_data['true_ew']  # Already scaled
+            
+            # Only use samples where eye is open for bias computation  
+            true_prob = (true_ew_scaled > 0).float()
+            open_eye_mask = true_prob.bool()
+            
+            if open_eye_mask.any():
+                pred_masked = pred_ew_scaled[open_eye_mask]
+                true_masked = true_ew_scaled[open_eye_mask]
                 
-                pred_ew, pred_logits = pl_module(
-                    trace_seq, direction, boundary, snp_vert
-                )
-                
-                # Scale predictions for comparison with targets
-                pred_ew_scaled = pred_ew * pl_module.ew_scaler
-                true_ew_scaled = true_ew * pl_module.ew_scaler
-                
-                # Only use samples where eye is open for bias computation
-                true_prob = (true_ew > 0).float()
-                open_eye_mask = true_prob.bool()
-                
-                if open_eye_mask.any():
-                    pred_masked = pred_ew_scaled[open_eye_mask]
-                    true_masked = true_ew_scaled[open_eye_mask]
-                    
-                    # Cache for bias computation (detach and move to CPU)
-                    self.val_cache[dataset_name]["predictions"].append(pred_masked.flatten().detach().cpu())
-                    self.val_cache[dataset_name]["targets"].append(true_masked.flatten().detach().cpu())
-                
-                # Restore original bias correction setting
-                pl_module.bias_correction_enabled = original_enabled
+                # Cache for bias computation (detach and move to CPU)
+                self.val_cache[dataset_name]["predictions"].append(pred_masked.flatten().detach().cpu())
+                self.val_cache[dataset_name]["targets"].append(true_masked.flatten().detach().cpu())
+        
+        # Clear stored predictions after use to free memory
+        if hasattr(pl_module, '_val_raw_preds'):
+            del pl_module._val_raw_preds
     
     def on_validation_epoch_end(self, trainer: Trainer, pl_module: LightningModule) -> None:
         """Compute and update bias correction per dataset."""
