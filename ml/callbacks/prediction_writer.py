@@ -10,15 +10,26 @@ from lightning.pytorch.callbacks import BasePredictionWriter
 class EWPredictionWriter(BasePredictionWriter):
     """Writes EW predictions and metadata once per epoch."""
 
-    def __init__(self, output_dir: str, file_prefix: str, write_interval: str = "epoch"):
+    def __init__(self, file_prefix: str, write_interval: str = "epoch", output_dir: str = None):
         super().__init__(write_interval=write_interval)
         self.file_prefix = file_prefix
+        self.file_dir = Path(output_dir) if output_dir else None
+
+    def set_output_dir(self, output_dir: str):
+        """Set the output directory for predictions (typically from logger directory)."""
         self.file_dir = Path(output_dir)
 
     def write_on_batch_end(self, trainer, pl_module, predictions, batch_indices, batch, batch_idx, dataloader_idx):
         pass
 
     def write_on_epoch_end(self, trainer, pl_module, predictions, batch_indices):
+        # Ensure output directory is set (from logger directory)
+        if self.file_dir is None:
+            if trainer.logger and hasattr(trainer.logger, 'log_dir'):
+                self.set_output_dir(trainer.logger.log_dir)
+            else:
+                raise RuntimeError("Output directory not set and no logger directory available")
+        
         # ensure output dir exists
         self.file_dir.mkdir(parents=True, exist_ok=True)
         txt_path = self.file_dir / f"{self.file_prefix}.txt"

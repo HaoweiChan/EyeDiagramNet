@@ -61,6 +61,29 @@ def create_temp_config_with_user_settings(base_config_path, user_settings, subco
         if user_settings.get('label_dir'):
             config['data']['init_args']['label_dir'] = user_settings['label_dir']
     
+    # Handle logger save_dir override from user settings
+    if user_settings.get('save_dir'):
+        if 'trainer' not in config:
+            config['trainer'] = {}
+        if 'logger' not in config['trainer']:
+            config['trainer']['logger'] = {}
+        if 'init_args' not in config['trainer']['logger']:
+            config['trainer']['logger']['init_args'] = {}
+        
+        config['trainer']['logger']['init_args']['save_dir'] = user_settings['save_dir']
+        print(f"Using user-specified logger save_dir: {user_settings['save_dir']}")
+    
+    # Handle prediction writer file_prefix override from user settings
+    if user_settings.get('file_prefix'):
+        if 'trainer' in config and 'callbacks' in config['trainer']:
+            for callback in config['trainer']['callbacks']:
+                if 'EWPredictionWriter' in callback.get('class_path', ''):
+                    if 'init_args' not in callback:
+                        callback['init_args'] = {}
+                    callback['init_args']['file_prefix'] = user_settings['file_prefix']
+                    print(f"Using user-specified file_prefix: {user_settings['file_prefix']}")
+                    break
+    
     # Handle scaler path from checkpoint directory
     if user_settings.get('ckpt_path'):
         ckpt_path_str = user_settings['ckpt_path']
@@ -260,6 +283,18 @@ class CustomLightningCLI(LightningCLI):
                 # Pass to datamodule
                 if hasattr(subcommand_config, 'data') and hasattr(subcommand_config.data, 'init_args'):
                     subcommand_config.data.init_args.ignore_snp = ignore_snp
+
+    def after_instantiate_classes(self):
+        """Set output directory for EWPredictionWriter callbacks from logger directory."""
+        if self.trainer and self.trainer.logger and hasattr(self.trainer.logger, 'log_dir'):
+            logger_dir = self.trainer.logger.log_dir
+            
+            # Find EWPredictionWriter callbacks and set their output directory
+            for callback in self.trainer.callbacks:
+                if hasattr(callback, '__class__') and 'EWPredictionWriter' in callback.__class__.__name__:
+                    if hasattr(callback, 'set_output_dir'):
+                        callback.set_output_dir(logger_dir)
+                        print(f"Set EWPredictionWriter output directory to: {logger_dir}")
 
 
 def setup_torch_compile_fallback():
