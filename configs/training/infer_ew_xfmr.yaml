@@ -7,15 +7,12 @@ trainer:
   devices: 1
   num_nodes: 1
   precision: 16-mixed
-  logger:
-    - class_path: lightning.pytorch.loggers.TensorBoardLogger
-      init_args:
-        save_dir: ./saved/
-        name: infer_ew_xfmr
+  logger: false  # Disable logging for inference
   callbacks:
-    - class_path: ml.callbacks.ew_prediction_writer.EWPredictionWriter
+    - class_path: ml.callbacks.prediction_writer.EWPredictionWriter
       init_args:
-        file_prefix: ew_predictions
+        output_dir: saved/infer_ew_xfmr  # Override with --trainer.callbacks.init_args.output_dir="your_path"
+        file_prefix: ew_predictions  # Override with --trainer.callbacks.init_args.file_prefix="your_prefix"
         write_interval: epoch
 
 # Inference-specific overrides - these will override training config

@@ -9,7 +9,7 @@ This module contains PyTorch Lightning callbacks for training enhancements:
 """
 
 from .dynamic_threshold import DynamicThresholdOptimizer
-from .ew_prediction_writer import EWPredictionWriter
+from .prediction_writer import EWPredictionWriter
 from .gradient_tracker import GradientTracker  
 from .sparam_visualizer import SParameterVisualizer
 

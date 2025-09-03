@@ -10,20 +10,15 @@ from lightning.pytorch.callbacks import BasePredictionWriter
 class EWPredictionWriter(BasePredictionWriter):
     """Writes EW predictions and metadata once per epoch."""
 
-    def __init__(self, file_prefix: str, write_interval: str = "epoch"):
+    def __init__(self, output_dir: str, file_prefix: str, write_interval: str = "epoch"):
         super().__init__(write_interval=write_interval)
         self.file_prefix = file_prefix
-        self.file_dir: Path | None = None
-
-    def set_output_paths(self, file_dir: Path):
-        self.file_dir = file_dir
+        self.file_dir = Path(output_dir)
 
     def write_on_batch_end(self, trainer, pl_module, predictions, batch_indices, batch, batch_idx, dataloader_idx):
         pass
 
     def write_on_epoch_end(self, trainer, pl_module, predictions, batch_indices):
-        assert self.file_dir is not None, "file_dir not set — did you call set_output_paths?"
-
         # ensure output dir exists
         self.file_dir.mkdir(parents=True, exist_ok=True)
         txt_path = self.file_dir / f"{self.file_prefix}.txt"

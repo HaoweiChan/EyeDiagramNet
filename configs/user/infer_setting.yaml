@@ -6,7 +6,7 @@
 ckpt_path: saved/ew_xfmr/version_58/checkpoints/best_model.ckpt
 
 # Logging configuration
-save_dir: ./results
+save_dir: saved/infer_ew_xfmr
 file_prefix: prediction_results
 
 # Data configuration for inference
