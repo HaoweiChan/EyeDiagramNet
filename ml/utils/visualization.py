@@ -68,7 +68,7 @@ def plot_ew_curve(outputs, metrics, ew_threshold, sigma=2):
 
     # First subplot for eye width (top, spans all 3 columns)
     ax1 = fig.add_subplot(gs[0, :])
-    ax1.set_title('Eye width', fontsize=12, fontweight='bold', pad=15)  # Increased pad
+    ax1.set_title('Eye Width', fontsize=12, fontweight='bold', pad=6)  # Increased pad
     ax1.plot(pred_ew * pred_mask, color='#1777b4', alpha=0.8, label='Pred', linewidth=1.5)
     ax1.plot(true_ew * true_prob, color='#111111', alpha=0.8, label='True', linewidth=1.5)
     ax1.legend(loc='lower right', fontsize=9)
@@ -76,7 +76,7 @@ def plot_ew_curve(outputs, metrics, ew_threshold, sigma=2):
 
     # Second subplot for prediction probability (middle, spans all 3 columns)
     ax2 = fig.add_subplot(gs[1, :], sharex=ax1)
-    ax2.set_title('Prediction Probability', fontsize=12, fontweight='bold', pad=15)  # Increased pad
+    ax2.set_title('Prediction Probability', fontsize=12, fontweight='bold', pad=6)  # Increased pad
     ax2.plot(pred_prob, color='#1777b4', alpha=0.8, linewidth=1.5)
     ax2.axhline(ew_threshold, color='black', linestyle='--', linewidth=1, alpha=0.7)
     ax2.set_ylim(-0.05, 1.05)  # Tighter y-axis limits

@@ -11,9 +11,9 @@ from lightning.pytorch.utilities.rank_zero import rank_zero_info
 from ..models.layers import LearnableLossWeighting
 from ..utils import losses
 from ..utils.losses import min_focused_loss, smooth_gaussian_focus_loss
-from ..callbacks.validation_bias_corrector import apply_validation_bias_correction
 from ..utils.init_weights import init_weights
 from ..utils.visualization import image_to_buffer, plot_ew_curve
+
 
 @torch.jit.script
 def _augment_sequence_jit(seq: torch.Tensor, insert_frac: int = 10) -> torch.Tensor:
@@ -301,11 +301,8 @@ class TraceEWModule(LightningModule):
         pred_ew, _, _, _, pred_logits = self.model.predict_with_uncertainty(
             trace_seq, direction, boundary, snp_vert
         )
-        pred_prob = torch.sigmoid(pred_logits)
-        
         pred_ew = pred_ew * self.ew_scaler
-        
-        # Log-only bias: do not apply per-dataset correction during inference
+        pred_prob = torch.sigmoid(pred_logits)
         
         # Clip eyewidth output to 100 after inverse transform  
         pred_ew = torch.clamp(pred_ew, max=100.0)
@@ -431,8 +428,6 @@ class TraceEWModule(LightningModule):
         else:
             raise ValueError(f"Unknown unified_ew_loss: {self.hparams.unified_ew_loss}")
 
-
-
         # Use the eval tensors (may come from MC/Laplace inference) for metrics
         pred_ew_eval, pred_prob_eval = forward_out["eval"]
 
@@ -522,8 +517,8 @@ class TraceEWModule(LightningModule):
             item = self._to_batch_item(raw)
 
             # (2) Optional augmentation
-            if stage == "train_":
-                item.trace_seq = self._augment(item.trace_seq)
+            # if stage == "train_":
+            #     item.trace_seq = self._augment(item.trace_seq)
 
             # (3) Forward pass(es)
             fwd = self._run_model(item, stage)
@@ -619,5 +614,5 @@ class TraceEWModule(LightningModule):
     def plot_metrics_curve(self, stage, log_metrics, outputs, dataloader_idx):
         fig = plot_ew_curve(outputs, log_metrics, self.hparams.ew_threshold)
         if self.logger:
-            tag = "_".join(['sparam', str(dataloader_idx)])
+            tag = "_".join(['eyewidth', str(dataloader_idx)])
             self.logger.experiment.add_image(f'{stage}/{tag}', image_to_buffer(fig), self.current_epoch)

@@ -71,15 +71,35 @@ class EWPredictionWriter(BasePredictionWriter):
         # flatten first dataloader's indices
         flat_idxs = [i for sub in gathered_idxs[0] for i in sub]
 
-        # sorted pairs: (idx, ew, prob, mask)
-        sorted_pairs = sorted(zip(flat_idxs, gathered_preds), key=lambda x: x[0])
+        # Handle case where gathered_preds contains a single 2D tensor
+        # Extract individual prediction tensors (rows) from the 2D tensor
+        if len(gathered_preds) == 1 and isinstance(gathered_preds[0], torch.Tensor) and gathered_preds[0].dim() >= 2:
+            # gathered_preds contains a single 2D tensor with shape (num_samples, num_features)
+            pred_tensor = gathered_preds[0]
+            # Extract individual rows (predictions) for each sample
+            individual_preds = [pred_tensor[i] for i in range(pred_tensor.shape[0])]
+        else:
+            # Handle case where predictions might be structured differently
+            individual_preds = []
+            for pred in gathered_preds:
+                if isinstance(pred, (tuple, list)):
+                    # Extract EW tensor from tuple (ew, prob, mask, etc.)
+                    individual_preds.append(pred[0])  
+                else:
+                    individual_preds.append(pred)
 
-        # extract just the EW tensors
-        ew_tensors = [ew for _, (ew, *_rest) in sorted_pairs]
+        # sorted pairs: (idx, prediction)
+        sorted_pairs = sorted(zip(flat_idxs, individual_preds), key=lambda x: x[0])
+
+        # extract just the prediction tensors
+        pred_tensors = [pred for _, pred in sorted_pairs]
 
         # concatenate and wrap in DataFrame
-        ew_cat = torch.cat(ew_tensors, dim=0)
-        return pd.DataFrame(ew_cat.float())
+        if pred_tensors:
+            pred_cat = torch.stack(pred_tensors, dim=0)  # Use stack for 2D result
+            return pd.DataFrame(pred_cat.float().cpu().numpy())
+        else:
+            return pd.DataFrame()
 
     def _safe_gather(self, predictions, batch_indices):
         """
