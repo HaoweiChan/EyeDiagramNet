@@ -70,11 +70,12 @@ def create_temp_config_with_user_settings(base_config_path, user_settings, subco
     
     # Handle logger save_dir override from user settings
     if user_settings.get('save_dir'):
-        if 'trainer' not in config:
+        # Ensure config structure exists and is properly typed
+        if 'trainer' not in config or not isinstance(config['trainer'], dict):
             config['trainer'] = {}
-        if 'logger' not in config['trainer']:
+        if 'logger' not in config['trainer'] or not isinstance(config['trainer']['logger'], dict):
             config['trainer']['logger'] = {}
-        if 'init_args' not in config['trainer']['logger']:
+        if 'init_args' not in config['trainer']['logger'] or not isinstance(config['trainer']['logger']['init_args'], dict):
             config['trainer']['logger']['init_args'] = {}
         
         config['trainer']['logger']['init_args']['save_dir'] = user_settings['save_dir']
@@ -82,10 +83,11 @@ def create_temp_config_with_user_settings(base_config_path, user_settings, subco
     
     # Handle prediction writer file_prefix override from user settings
     if user_settings.get('file_prefix'):
-        if 'trainer' in config and 'callbacks' in config['trainer']:
+        if ('trainer' in config and isinstance(config['trainer'], dict) and 
+            'callbacks' in config['trainer'] and isinstance(config['trainer']['callbacks'], list)):
             for callback in config['trainer']['callbacks']:
-                if 'EWPredictionWriter' in callback.get('class_path', ''):
-                    if 'init_args' not in callback:
+                if isinstance(callback, dict) and 'EWPredictionWriter' in callback.get('class_path', ''):
+                    if 'init_args' not in callback or not isinstance(callback['init_args'], dict):
                         callback['init_args'] = {}
                     callback['init_args']['file_prefix'] = user_settings['file_prefix']
                     print(f"Using user-specified file_prefix: {user_settings['file_prefix']}")
@@ -133,9 +135,9 @@ def create_temp_config_with_user_settings(base_config_path, user_settings, subco
     # Validate final config before creating temp file
     try:
         # Ensure data section exists and has required structure
-        if 'data' not in config:
-            raise ValueError("Config missing 'data' section")
-        if 'init_args' not in config['data']:
+        if 'data' not in config or not isinstance(config['data'], dict):
+            raise ValueError("Config missing 'data' section or data is not a dict")
+        if 'init_args' not in config['data'] or not isinstance(config['data']['init_args'], dict):
             config['data']['init_args'] = {}
         
         # For inference dataloader, ensure data_dirs is not None
