@@ -297,13 +297,15 @@ def min_focused_loss(inputs, targets, mask=None, alpha=0.5, tau_min=0.1):
         Blended loss focusing on minimum accuracy with overall shape preservation
     """
     # Minimum accuracy component
-    pred_min = _softmin(inputs, tau=tau_min, dim=1)  # (B,)
-    true_min = torch.min(targets, dim=1).values      # (B,)
-    min_loss_values = F.smooth_l1_loss(pred_min, true_min, reduction='none')
+    # pred_min = _softmin(inputs, tau=tau_min, dim=1)  # (B,)
+    # true_min = torch.min(targets, dim=1).values      # (B,)
+    # min_loss_values = F.smooth_l1_loss(pred_min, true_min, reduction='none')
+    mse_loss_values = F.mse_loss(inputs, targets, reduction='none').mean(dim=1)
     
     # Overall correlation component  
     correlation_values = 1.0 - F.cosine_similarity(inputs, targets, dim=1)
     
     # Blend the two
-    combined_loss = alpha * min_loss_values + (1 - alpha) * correlation_values
+    # combined_loss = alpha * min_loss_values + (1 - alpha) * correlation_values
+    combined_loss = alpha * mse_loss_values + (1 - alpha) * correlation_values
     return _reduce_loss(combined_loss, mask)

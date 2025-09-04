@@ -119,7 +119,7 @@ class EyeWidthRegressor(nn.Module):
             )
             self.signal_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
         
-        self.norm_concat = RMSNorm(model_dim)
+        # self.norm_concat = RMSNorm(model_dim)
 
         # Direction embedding (0 for Tx, 1 for Rx)
         self.dir_projection = nn.Embedding(2, model_dim)
@@ -165,13 +165,11 @@ class EyeWidthRegressor(nn.Module):
         # Build prediction head
         self.pred_head = nn.Sequential(
             nn.Linear(self.model_dim, self.model_dim),
-            nn.LayerNorm(self.model_dim),
+            # nn.LayerNorm(self.model_dim),
             nn.GELU(),
-            nn.Dropout(self.dropout),
+            # nn.Dropout(self.dropout),
             nn.Linear(self.model_dim, self.output_dim)
         )
-        
-
         
         # ----------  Laplace placeholders  ----------
         self._laplace_model = None        
@@ -223,7 +221,7 @@ class EyeWidthRegressor(nn.Module):
             hidden_states_seq = self.trace_encoder(trace_seq)  # (B, P, M)
 
         # CLS-like summary BEFORE adding signal-position embeddings or direction
-        trace_cls = hidden_states_seq.mean(dim=1)  # (B, M)
+        # trace_cls = hidden_states_seq.mean(dim=1)  # (B, M)
 
         # Process boundary conditions with structured processor
         boundary_feat = self.boundary_processor(boundary)  # (B, M)
@@ -268,7 +266,7 @@ class EyeWidthRegressor(nn.Module):
                 hidden_states_fix
             ), dim=1)
 
-        hidden_states = self.norm_concat(hidden_states)
+        # hidden_states = self.norm_concat(hidden_states)
 
         # Run transformer for the signals
         if self.use_gradient_checkpointing and self.training:

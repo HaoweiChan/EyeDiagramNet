@@ -453,7 +453,7 @@ class TraceSeqEWDataloader(LightningDataModule):
 
             # build datasets
             self.train_dataset[name] = TraceEWDataset(
-                x_seq_tr, x_tok_tr, x_fix_tr, x_vert_tr, y_tr, metas_tr, train=True, ignore_snp=self.ignore_snp
+                x_seq_tr, x_tok_tr, x_fix_tr, x_vert_tr, y_tr, metas_tr, train=False, ignore_snp=self.ignore_snp
             )
             
             # Only create validation dataset if we have sufficient samples
