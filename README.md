@@ -308,6 +308,44 @@ For detailed component descriptions, see [Repository Structure Guide](.cursor/ru
 
 ## Changelog
 
+### Version 0.3.1 (2025-01-20)
+
+#### Added
+* User configuration support for inference and testing modes with dedicated YAML settings
+* ValidationBiasCorrector callback for improved prediction accuracy during inference
+* EWPredictionWriter callback for structured output management and result saving
+* Advanced loss functions including smooth Gaussian focus loss, softmin, and ALE implementations
+* GradientTracker callback for enhanced gradient monitoring during training
+* ConfigProcessor class for automatic parameter loading and configuration merging
+* Boundary processing utilities with enhanced validation and scaler compatibility
+* Test dataset support in TraceSeqEWDataloader and TraceEWModule for comprehensive evaluation
+* Legacy SNP file format detection and conversion capabilities
+* Enhanced data validation with comprehensive error handling for inference pipelines
+
+#### Enhanced
+* EyeWidthRegressor architecture with streamlined prediction head and improved layer organization
+* Dynamic threshold optimization with better error handling and caching mechanisms
+* Configuration management with flexible path handling and user settings integration
+* Data loading system with improved batch size calculation and distribution across datasets
+* Checkpoint handling with detailed logging and robust error management
+* Parameter utilities consolidation into unified common.parameters module
+* Laplace integration with simplified utility functions and improved compatibility
+* Inference data loaders with robust boundary processing and optional SNP handling
+* Training pipeline with enhanced CLI integration and command-line argument management
+* Error logging throughout the system with better debugging capabilities and user feedback
+
+#### Fixed
+* Simplified model output by removing predict_logvar functionality from EyeWidthRegressor
+* Boundary array handling format updates in inference data loaders for improved compatibility  
+* Scaler loading logic enhanced to support metadata and differentiate between enhanced and legacy formats
+* CombinedLoader batch retrieval logic for accurate dummy batch handling during model inference
+* User settings injection and preprocessing for predict and test modes with proper validation
+* Probability and label caching optimization in DynamicThresholdOptimizer using flatten operations
+* Parameter name conversion logic for handling mixed-format keys and ensuring idempotency
+* Hidden states concatenation in model architecture for improved accuracy and consistency
+* Batch size calculations ensuring minimum values and proper handling across different dataset sizes
+* Memory optimization in validation workflows with efficient raw prediction collection
+
 ### Version 0.3.0 (2025-08-04)
 
 #### Added
