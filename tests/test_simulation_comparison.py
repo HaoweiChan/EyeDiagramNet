@@ -36,7 +36,7 @@ def main():
 
     # Define test configuration, using paths relative to the project root.
     # Assumes the script is run from the project's root directory.
-    data_dir = "test_data"
+    data_dir = "tests/data_generation"
     if not os.path.isdir(data_dir):
         print(f"Error: Test data directory '{data_dir}' not found. Please run from the project root.")
         return

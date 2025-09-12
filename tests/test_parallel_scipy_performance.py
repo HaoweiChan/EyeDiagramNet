@@ -420,10 +420,10 @@ class SimulationPerformanceTester:
         # Find test data files
         project_root = Path(__file__).parent.parent
         possible_dirs = [
-            project_root / "test_data",
-            project_root / "test_data_5files",
-            Path("test_data"),
-            Path("../test_data"),
+            project_root / "tests" / "data_generation",
+            project_root / "tests" / "data_generation_5files", # Assuming this might exist
+            Path("tests") / "data_generation",
+            Path("../tests") / "data_generation",
         ]
         
         test_dir = None

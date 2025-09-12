@@ -185,9 +185,8 @@ notebooks/*
 !notebooks/analyze_clean_directions.py
 spara2pda/
 ew-predictor*
-test_data/*
-!test_data/make_snp_index_csv.py
-!test_data/random_tline_network.py
+tests/data_generation/*
+!tests/data_generation/*.py
 simulation/engine/der/
 
 # Data

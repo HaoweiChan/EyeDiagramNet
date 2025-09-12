@@ -7,8 +7,10 @@ import skrf as rf
 import numpy as np
 from typing import Optional, Dict, Any
 from dataclasses import dataclass, field, fields
+from pathlib import Path
 
 from .network_utils import s2y, y2s, s2z, z2s, generate_test_pattern
+from skrf.io.network import read_snp
 
 # ===============================================
 # PERFORMANCE OPTIMIZATION FUNCTIONS (PHASE 1)
@@ -1294,7 +1296,7 @@ def main():
     script_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.abspath(os.path.join(script_dir, "../.."))
     possible_data_dirs = [
-        os.path.join(project_root, "test_data"), "test_data", "../../test_data", "../test_data"
+        os.path.join(project_root, "tests", "data_generation"), "tests/data_generation", "../../tests/data_generation", "../tests/data_generation"
     ]
     data_dir = None
     for test_dir in possible_data_dirs:
@@ -1302,7 +1304,7 @@ def main():
             data_dir = test_dir
             break
     if data_dir is None:
-        data_dir = "../../test_data"
+        data_dir = "../../tests/data_generation"
     
     snp_horiz = os.path.join(data_dir, "tlines4_seed0.s8p")
     snp_drv = os.path.join(data_dir, "tlines4_seed1.s8p")

@@ -1,20 +1,3 @@
-#!/usr/bin/env python
-r"""Generate synthetic Touchstone files for a bundle of transmission lines.
-
-For a 2\*N port network we model ``N`` parallel traces where port ``i`` and
-port ``i+N`` represent the two ends of the same physical trace.  The traces are
-assumed to be laid out sequentially so that line ``0`` is adjacent to line ``1``
-and so on.  Crosstalk therefore decreases as the spacing (``|i-j|``) between
-two lines increases.
-
-Insertion loss and phase delay are determined by the length of each trace.
-Trace lengths are randomly chosen based on the supplied seed so different
-seeds produce different S\ :sub:`21` magnitudes and phases.  The generated
-crosstalk levels follow a simple physical model where near-end coupling is
-stronger than far-end coupling and both fall off with frequency and with the
-distance between traces.
-"""
-
 import numpy as np
 import skrf as rf
 from pathlib import Path
@@ -144,31 +127,3 @@ def generate_multiple_snps(n_lines: int,
             kwargs = build_kwargs
         paths.append(build_snp(n_lines=n_lines, seed=seed, **kwargs))
     return paths
-
-
-# ------------------- CLI --------------------------------------------
-if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(
-        description=(
-            "Generate one or many 2N-port Touchstone files with randomised "
-            "trace lengths and physically meaningful crosstalk"))
-    parser.add_argument("-n", "--n_lines", type=int, default=4,
-                        help="number of transmission lines (default: 4)")
-    parser.add_argument("-s", "--seed", type=int, default=0,
-                        help="base random seed (default: 0)")
-    parser.add_argument("-k", "--count", type=int, default=1,
-                        help="how many files to generate with consecutive seeds")
-    parser.add_argument("-o", "--output", type=str, default=None,
-                        help="output file name or stem (optional)")
-    args = parser.parse_args()
-
-    if args.count == 1:
-        build_snp(n_lines=args.n_lines,
-                  seed=args.seed,
-                  file_name=args.output)
-    else:
-        generate_multiple_snps(n_lines=args.n_lines,
-                               base_seed=args.seed,
-                               count=args.count,                               file_name=args.output)
