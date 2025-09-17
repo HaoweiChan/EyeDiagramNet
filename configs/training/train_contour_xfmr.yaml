@@ -1,0 +1,143 @@
+# lightning.pytorch==2.5.1.post0
+# Contour prediction transformer training configuration
+seed_everything: true
+trainer:
+  accelerator: gpu
+  strategy:
+    class_path: lightning.pytorch.strategies.DDPStrategy
+    init_args:
+      find_unused_parameters: false
+      static_graph: true
+  devices: -1
+  num_nodes: 1  # Start with single node for contour training
+  precision: 16-mixed
+  fast_dev_run: false
+  max_epochs: 1000
+  min_epochs: null
+  max_steps: -1
+  min_steps: null
+  max_time: null
+  limit_train_batches: null
+  limit_val_batches: null
+  limit_test_batches: null
+  limit_predict_batches: null
+  overfit_batches: 0.
+  val_check_interval: null
+  check_val_every_n_epoch: 2  # More frequent validation for contour training
+  num_sanity_val_steps: 0
+  log_every_n_steps: 1
+  enable_checkpointing: null
+  enable_progress_bar: null
+  enable_model_summary: null
+  accumulate_grad_batches: 1
+  gradient_clip_val: 1.
+  gradient_clip_algorithm: norm
+  deterministic: null
+  benchmark: null
+  inference_mode: true
+  use_distributed_sampler: true
+  detect_anomaly: false
+  barebones: false
+  plugins: null
+  sync_batchnorm: true
+  reload_dataloaders_every_n_epochs: 0
+  default_root_dir: null
+  logger:
+    - class_path: lightning.pytorch.loggers.TensorBoardLogger
+      init_args:
+        save_dir: ./saved
+        name: contour_xfmr
+  callbacks:
+    - class_path: lightning.pytorch.callbacks.ModelSummary
+      init_args:
+        max_depth: 3
+    - class_path: lightning.pytorch.callbacks.LearningRateMonitor
+      init_args:
+        logging_interval: epoch
+    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+      init_args:
+        filename: 'contour-xfmr-epoch{epoch}-loss{train_loss:.4f}'
+        auto_insert_metric_name: false
+        monitor: val_loss
+        mode: min
+        save_last: true
+        save_top_k: 3
+        enable_version_counter: true
+    - class_path: lightning.pytorch.callbacks.EarlyStopping
+      init_args:
+        monitor: val_loss
+        mode: min
+        patience: 20
+        min_delta: 1e-4
+
+model:
+  class_path: ml.modules.contour_module.ContourModule
+  init_args:
+    # Model architecture configuration (passed to ContourPredictor)
+    model_config:
+      # Variable encoder parameters
+      token_dim: 64
+      variable_encoder_type: "set_transformer"  # "deepsets" or "set_transformer"
+      variable_output_dim: 256
+      # Sequence encoder parameters  
+      sequence_vocab_size: 64
+      sequence_embed_dim: 64
+      sequence_hidden_dim: 128
+      sequence_num_layers: 6
+      max_sequence_length: 256
+      # Predictor parameters
+      predictor_hidden_dim: 256
+      predictor_num_layers: 3
+      predict_uncertainty: false
+      dropout: 0.1
+    
+    # Loss function weights
+    lambda_consistency: 0.1
+    lambda_gradient: 0.01
+    lambda_spec_band: 0.05
+    lambda_adversarial: 0.0  # Start with 0, can increase later
+    lambda_monotonicity: 0.0  # Start with 0, can increase later
+    
+    # Training parameters
+    learning_rate: 0.001
+    weight_decay: 0.01
+    scheduler: "cosine"
+    
+    # Random subspace training
+    min_active_variables: 2
+    max_active_variables: 6
+    coordinate_dropout_rate: 0.1
+    
+    # Contour plotting and evaluation
+    save_contour_plots: true
+    eval_resolution: 25
+
+data:
+  class_path: ml.data.contour_data.ContourDataModule
+  init_args:
+    # Data directories - expects dict mapping names to directories
+    data_dirs:
+      test_contour: tests/data_generation/contour
+    label_dir: tests/data_generation/contour  # Use same dir for now, will need actual labels later
+    
+    # Data processing
+    batch_size: 32
+    test_size: 0.2  # Use test_size instead of val_fraction
+    scaler_path: null
+
+optimizer:
+  class_path: torch.optim.AdamW
+  init_args:
+    lr: 0.001  # Start higher for contour training
+    weight_decay: 0.01
+    betas: [0.9, 0.999]
+    eps: 1e-8
+
+lr_scheduler:
+  class_path: ml.utils.lr_schedulers.CosineAnnealingWarmRestartsWithWarmupDecay
+  init_args:
+    T_0: 10  # Shorter cycles for faster adaptation
+    T_mult: 2
+    eta_min: 1e-6
+    warmup_epochs: 5
+    decay_factor: 0.8
