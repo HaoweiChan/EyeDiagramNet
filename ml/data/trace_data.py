@@ -13,32 +13,10 @@ from lightning.pytorch.utilities import CombinedLoader
 from lightning.pytorch.utilities.rank_zero import rank_zero_info
 
 from ..utils.scaler import MinMaxScaler
+from ..utils.dataloader import get_loader_from_dataset
 from .processors import CSVProcessor
 from common.signal_utils import read_snp, parse_snps, greedy_covering_design
 
-def get_loader_from_dataset(
-    dataset: Dataset,
-    batch_size: int,
-    shuffle: bool = False
-):
-    drop_last = shuffle
-
-    # Optimize num_workers based on system capabilities
-    import os
-    cpu_count = os.cpu_count()
-    # Use fewer workers to avoid overwhelming the system
-    num_workers = min(4, cpu_count // 2) if cpu_count else 2
-
-    loader = DataLoader(
-        dataset=dataset,
-        batch_size=batch_size,
-        shuffle=shuffle,
-        pin_memory=True,
-        num_workers=num_workers,
-        persistent_workers=True if num_workers > 0 else False,
-        drop_last=drop_last,
-    )
-    return loader
 
 class SharedMemoryCache:
     def __init__(self):

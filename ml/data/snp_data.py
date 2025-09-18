@@ -242,6 +242,8 @@ class SNPDataModule(LightningDataModule):
             )
     
     def train_dataloader(self):
+        # SNP data has special requirements (custom collate_fn, cache-mode-specific num_workers)
+        # so we create DataLoader directly rather than using the shared function
         # Use num_workers based on cache mode
         if self.hparams.cache_mode == 'all':
             num_workers = 0  # Shared memory, no workers needed

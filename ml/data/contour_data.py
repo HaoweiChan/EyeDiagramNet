@@ -1,89 +1,21 @@
+import random
 import numpy as np
 import pandas as pd
-import torch
 from pathlib import Path
 from typing import Dict, List, Tuple, Union, Optional
+from sklearn.model_selection import train_test_split
+
+import torch
+from torch.utils.data import Dataset, DataLoader
 from lightning import LightningDataModule
 from lightning.pytorch.utilities.rank_zero import rank_zero_info
-from torch.utils.data import Dataset, DataLoader
-import random
 
 from ..utils.scaler import MinMaxScaler
+from ..utils.dataloader import get_loader_from_dataset
 from .processors import CSVProcessor
 from .variable_registry import VariableRegistry
 from common.parameters import convert_configs_to_boundaries
 from common.pickle_utils import load_pickle_directory
-
-# Optional sklearn import with fallback
-try:
-    from sklearn.model_selection import train_test_split
-    HAS_SKLEARN = True
-except ImportError:
-    HAS_SKLEARN = False
-    
-    def train_test_split(X, test_size=0.2, shuffle=True, random_state=None):
-        """Simple fallback implementation of train_test_split."""
-        if random_state is not None:
-            np.random.seed(random_state)
-        
-        n_samples = len(X)
-        if shuffle:
-            indices = np.random.permutation(n_samples)
-        else:
-            indices = np.arange(n_samples)
-        
-        n_test = int(n_samples * test_size)
-        test_indices = indices[:n_test]
-        train_indices = indices[n_test:]
-        
-        return train_indices, test_indices
-
-
-def get_loader_from_dataset(
-    dataset: Dataset,
-    batch_size: int,
-    shuffle: bool = False
-):
-    """Create DataLoader from dataset with optimized settings."""
-    import os
-    
-    dataset_size = len(dataset)
-    
-    # Adjust batch_size if it's larger than dataset to avoid issues
-    effective_batch_size = min(batch_size, dataset_size)
-    
-    # Smart drop_last logic: ensure we never get 0 batches when we could get at least 1
-    if dataset_size >= effective_batch_size:
-        # Can form at least one batch
-        if shuffle and dataset_size > effective_batch_size * 2:
-            # Only drop last batch for datasets significantly larger than batch size
-            drop_last = True
-        else:
-            # Keep all samples, especially for smaller datasets
-            drop_last = False
-    else:
-        # Dataset smaller than batch size - definitely don't drop
-        drop_last = False
-    
-    # Final safety check: if drop_last would result in 0 batches, force it to False
-    potential_batches = dataset_size // effective_batch_size
-    if drop_last and potential_batches == 1:
-        drop_last = False  # Don't drop the only batch we have
-
-    # Optimize num_workers based on system capabilities
-    cpu_count = os.cpu_count()
-    num_workers = min(4, cpu_count // 2) if cpu_count else 2
-
-    loader = DataLoader(
-        dataset=dataset,
-        batch_size=effective_batch_size,
-        shuffle=shuffle,
-        pin_memory=True,
-        num_workers=num_workers,
-        persistent_workers=True if num_workers > 0 else False,
-        drop_last=drop_last,
-    )
-    return loader
 
 
 class ContourProcessor:
@@ -674,18 +606,204 @@ class ContourVariableDataModule(LightningDataModule):
         self.test_dataset: Dict[str, ContourVariableDataset] = {}
 
     def setup(self, stage: Optional[str] = None, nan: int = -1):
-        """Setup datasets by converting traditional data to variable-token format."""
-        # TODO: Implement setup that processes contour/pickle data and converts to variable format
-        # This would involve:
-        # 1. Processing sequence.csv and variation.csv files
-        # 2. Loading eye width labels from pickle files
-        # 3. Converting to variable-token format compatible with ContourVariableDataset
-        # 4. Creating train/val/test splits
+        """Setup datasets by converting contour data to variable-token format."""
+        # Initialize scalers
+        fit_scaler = True
+        try:
+            if self.scaler_path is None:
+                raise FileNotFoundError("No scaler path provided")
+            self.seq_scaler, self.fix_scaler = torch.load(self.scaler_path, weights_only=False)
+            rank_zero_info(f"Loaded scalers from {self.scaler_path}")
+            fit_scaler = False
+        except (FileNotFoundError, AttributeError, EOFError) as e:
+            if stage in ["test", "predict"] or stage is None:
+                error_msg = f"Cannot find or load scaler file for {stage or 'test/predict'} mode"
+                if self.scaler_path:
+                    error_msg += f" at path: {self.scaler_path}"
+                else:
+                    error_msg += " (no scaler_path provided)"
+                error_msg += f". Original error: {e}"
+                rank_zero_info(f"ERROR: {error_msg}")
+                raise FileNotFoundError(error_msg)
+            
+            self.seq_scaler = MinMaxScaler(nan=nan)
+            self.fix_scaler = MinMaxScaler(nan=nan)
+            rank_zero_info("Could not find scalers on disk, creating new ones for training.")
+
+        # Process contour data from sequence.csv and variation.csv files
+        if isinstance(self.data_dirs, list):
+            data_dirs_dict = {f"contour_{i}": dir_path for i, dir_path in enumerate(self.data_dirs)}
+        else:
+            data_dirs_dict = self.data_dirs
+
+        for name, data_dir in data_dirs_dict.items():
+            try:
+                # Process contour data
+                processor = ContourProcessor()
+                contour_data, case_ids = processor.process(data_dir)
+                
+                # Load eye width labels
+                labels = load_pickle_directory(self.label_dir, name)
+                
+                # Filter data to only include cases with labels
+                label_keys = set(labels.keys())
+                keep_idx = [i for i, cid in enumerate(case_ids) if cid in label_keys]
+                
+                if not keep_idx:
+                    rank_zero_info(f"No matching labels for {name}; skipping.")
+                    continue
+                
+                contour_data_filtered = contour_data[keep_idx]
+                case_ids_filtered = [case_ids[i] for i in keep_idx]
+                sorted_keys = case_ids_filtered
+                sorted_vals = [labels[k] for k in sorted_keys]
+                
+                # Align data by selecting entries with consistent length
+                lengths = [len(v[0]) for v in sorted_vals if v and v[0] is not None]
+                if not lengths:
+                    rank_zero_info(f"No valid label entries for {name}; skipping.")
+                    continue
+                max_len = max(lengths)
+                
+                keep_indices = [i for i, s in enumerate(sorted_vals) if len(s[0]) == max_len]
+                sorted_vals = [sorted_vals[i] for i in keep_indices]
+                contour_data_filtered = contour_data_filtered[keep_indices]
+                
+                configs_list, directions_list, eye_widths_list, _, metas_list = zip(*sorted_vals)
+                config_keys = metas_list[0]['config_keys']
+                boundaries = convert_configs_to_boundaries(configs_list, config_keys)
+                
+                directions, eye_widths = map(np.array, (directions_list, eye_widths_list))
+                eye_widths[eye_widths < 0] = 0
+                
+                # Convert contour data to variable-token format
+                variable_data, sequence_data = self._convert_to_variable_format(
+                    contour_data_filtered, boundaries, processor
+                )
+                
+                rank_zero_info(f"{name}| sequences {sequence_data.shape} | variables {len(variable_data)} | eye_width {eye_widths.shape}")
+                
+                # Create train/val/test splits
+                indices = np.arange(len(sequence_data))
+                
+                if stage == "test":
+                    test_idx = indices
+                    seq_test = sequence_data[test_idx]
+                    var_test = {k: v[test_idx] for k, v in variable_data.items()}
+                    y_test = eye_widths[test_idx]
+                    case_ids_test = [case_ids_filtered[i] for i in test_idx]
+                    
+                    self.test_dataset[name] = ContourVariableDataset(
+                        sequence_data=seq_test,
+                        variable_data=var_test,
+                        eye_widths=y_test,
+                        case_ids=case_ids_test,
+                        variable_registry=self.registry,
+                        train=False,
+                        enable_random_subspace=False
+                    )
+                    continue
+                
+                # Check dataset size for validation split
+                total_size = eye_widths.shape[0] * eye_widths.shape[1]
+                estimated_batch_size = max(1, self.batch_size // max(1, len(data_dirs_dict)))
+                estimated_batches = max(1, total_size // estimated_batch_size)
+                
+                if estimated_batches < 10:
+                    # Small dataset - use all for training
+                    rank_zero_info(f"Dataset '{name}' too small for validation, using all {total_size} samples for training")
+                    seq_tr, seq_val = sequence_data, np.array([])
+                    var_tr = variable_data
+                    var_val = {k: np.array([]) for k in variable_data.keys()}
+                    y_tr, y_val = eye_widths, np.array([])
+                    case_ids_tr = case_ids_filtered
+                    case_ids_val = []
+                else:
+                    # Normal train/val split
+                    train_idx, val_idx = train_test_split(
+                        indices, test_size=self.test_size, shuffle=True, random_state=42
+                    )
+                    
+                    seq_tr, seq_val = sequence_data[train_idx], sequence_data[val_idx]
+                    var_tr = {k: v[train_idx] for k, v in variable_data.items()}
+                    var_val = {k: v[val_idx] for k, v in variable_data.items()}
+                    y_tr, y_val = eye_widths[train_idx], eye_widths[val_idx]
+                    case_ids_tr = [case_ids_filtered[i] for i in train_idx]
+                    case_ids_val = [case_ids_filtered[i] for i in val_idx]
+                
+                # Create training dataset
+                self.train_dataset[name] = ContourVariableDataset(
+                    sequence_data=seq_tr,
+                    variable_data=var_tr,
+                    eye_widths=y_tr,
+                    case_ids=case_ids_tr,
+                    variable_registry=self.registry,
+                    train=True,
+                    enable_random_subspace=self.enable_random_subspace,
+                    min_active_variables=self.min_active_variables,
+                    max_active_variables=self.max_active_variables,
+                    perturbation_scale=self.perturbation_scale
+                )
+                
+                # Create validation dataset if we have data
+                if len(seq_val) > 0:
+                    self.val_dataset[name] = ContourVariableDataset(
+                        sequence_data=seq_val,
+                        variable_data=var_val,
+                        eye_widths=y_val,
+                        case_ids=case_ids_val,
+                        variable_registry=self.registry,
+                        train=False,
+                        enable_random_subspace=False
+                    )
+                
+                rank_zero_info(f"Successfully created datasets for {name}: "
+                              f"train={len(self.train_dataset[name])}, "
+                              f"val={len(self.val_dataset.get(name, []))}")
+                
+            except Exception as e:
+                rank_zero_info(f"Failed to process {name}: {e}")
+                continue
+    
+    def _convert_to_variable_format(
+        self, 
+        contour_data: np.ndarray, 
+        boundaries: np.ndarray,
+        processor: ContourProcessor
+    ) -> Tuple[Dict[str, np.ndarray], np.ndarray]:
+        """Convert contour data to variable-token format."""
         
-        # For now, this is a placeholder - full implementation would depend on
-        # the specific data format and processing pipeline
-        rank_zero_info("ContourVariableDataModule.setup() - Implementation needed")
-        pass
+        # Extract sequence structure tokens (simplified - just use segment type info)
+        # In practice, this would be more sophisticated based on sequence.csv structure
+        n_cases, n_segments, n_features = contour_data.shape
+        sequence_data = contour_data[:, :, 2].astype(int)  # Type column as sequence tokens
+        
+        # Extract variable data from boundaries (these are the parameters we want to vary)
+        # This assumes boundaries contain the variable values we want to treat as tokens
+        variable_data = {}
+        
+        # Create variable names based on boundary structure
+        # This is simplified - in practice would map to actual parameter names
+        for i in range(boundaries.shape[-1]):
+            var_name = f"param_{i}"
+            if boundaries.ndim == 3:  # [cases, repetitions, params]
+                variable_data[var_name] = boundaries[:, :, i]
+            else:  # [cases, params]
+                variable_data[var_name] = boundaries[:, i]
+        
+        # Register variables in the registry if not already present
+        for var_name in variable_data.keys():
+            if var_name not in self.registry:
+                values = variable_data[var_name].flatten()
+                bounds = (float(values.min()), float(values.max()))
+                self.registry.register_variable(
+                    name=var_name,
+                    bounds=bounds,
+                    role="geometry",  # Default role
+                    description=f"Auto-generated variable {var_name}"
+                )
+        
+        return variable_data, sequence_data
 
     def collate_fn(self, batch: List[Dict]) -> Dict[str, torch.Tensor]:
         """Custom collate function for variable batches."""
