@@ -143,12 +143,18 @@ class SequentialCollector:
             "total_simulations": 0,
             "completed_simulations": 0,
             "failed_simulations": 0,
+            "duplicate_configs_skipped": 0,
+            "files_skipped_exhausted": 0,
             "start_time": None,
             "end_time": None
         }
         
         # Performance optimization settings - use larger batches for all-core processing
         self.batch_size = config.get('runner', {}).get('batch_size', 50)  # Larger batches for all-core processing
+        
+        # Configuration for duplicate checking
+        self.check_duplicates = config.get('boundary', {}).get('check_duplicates', True)
+        self.max_duplicate_attempts = config.get('boundary', {}).get('max_duplicate_attempts', 100)
         
         # Register signal handler for graceful shutdown
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -157,6 +163,69 @@ class SequentialCollector:
         """Handle interruption signals"""
         print(f"\n[INTERRUPT] Received signal {signum}, shutting down gracefully...")
         _shutdown_event.set()
+
+    def _load_existing_configs(self, pickle_file: Path) -> set:
+        """Load existing configuration tuples from a pickle file for duplication checking."""
+        existing_configs = set()
+        
+        if not pickle_file.exists():
+            return existing_configs
+        
+        try:
+            # Use the standardized loader to get SimulationResult objects
+            from common.pickle_utils import load_pickle_data
+            results = load_pickle_data(pickle_file)
+            
+            for result in results:
+                # Create a tuple of config values for hashing/comparison
+                config_tuple = tuple(result.config_values)
+                existing_configs.add(config_tuple)
+                
+        except Exception as e:
+            if self.debug:
+                print(f"Warning: Could not load existing configs from {pickle_file.name}: {e}")
+        
+        return existing_configs
+
+    def _is_config_duplicate(self, config, existing_configs: set) -> bool:
+        """Check if a configuration is a duplicate of existing ones."""
+        if not existing_configs:
+            return False
+        
+        # Convert config to tuple for comparison
+        config_values, _ = config.to_list(return_keys=True)
+        config_tuple = tuple(config_values)
+        
+        return config_tuple in existing_configs
+
+    def _sample_unique_config(self, combined_params, existing_configs: set):
+        """
+        Sample a configuration that doesn't already exist in the data.
+        
+        Returns:
+            config: A unique configuration object
+            None: If parameter space is exhausted (should skip collection)
+        """
+        if not self.check_duplicates:
+            return combined_params.sample()
+        
+        max_attempts = self.max_duplicate_attempts
+        
+        for attempt in range(max_attempts):
+            config = combined_params.sample()
+            
+            if not self._is_config_duplicate(config, existing_configs):
+                return config
+            else:
+                self.stats["duplicate_configs_skipped"] += 1
+                if self.debug and attempt % 20 == 0:  # Log every 20 attempts to avoid spam
+                    print(f"[DUPLICATE] Attempt {attempt+1}: Skipping duplicate configuration")
+        
+        # If we can't find a unique config after max_attempts, signal to skip this file
+        print(f"[PARAMETER SPACE EXHAUSTED] Could not find unique configuration after {max_attempts} attempts")
+        print(f"[SKIP FILE] Parameter space appears to be exhausted - stopping collection for this file")
+        
+        return None
     
     def _format_error_metadata(self, trace_snp, snp_drv_path, snp_odt_path, combined_config, 
                               sim_directions, sample_idx, samples_needed, error_msg):
@@ -240,8 +309,6 @@ Metadata Error: {meta_error}
 ================================================================
 """
     
-
-    
     def collect_data(self, trace_pattern_key: str, trace_pattern: str, vertical_dirs: List[str], 
                     output_dir: Path, param_types: List[str], max_samples: int, 
                     enable_direction: bool = False, enable_inductance: bool = False, shuffle: bool = False,
@@ -278,6 +345,9 @@ Metadata Error: {meta_error}
         print(f"  Shuffle work items: {shuffle}")
         print(f"  Simulator type: {simulator_type}")
         print(f"  Use optimized: {use_optimized}")
+        print(f"  Check duplicates: {self.check_duplicates}")
+        if self.check_duplicates:
+            print(f"  Max duplicate attempts: {self.max_duplicate_attempts}")
         if block_size is not None:
             print(f"  Fixed block size: {block_size}")
         
@@ -395,6 +465,8 @@ Metadata Error: {meta_error}
             "total_simulations": total_simulations,
             "completed_simulations": self.stats["completed_simulations"],
             "failed_simulations": self.stats["failed_simulations"],
+            "duplicate_configs_skipped": self.stats["duplicate_configs_skipped"],
+            "files_skipped_exhausted": self.stats["files_skipped_exhausted"],
             "total_time_seconds": total_time,
             "average_time_per_simulation": total_time / max(1, self.stats["completed_simulations"]),
             "cache_stats": final_cache_stats,
@@ -405,6 +477,10 @@ Metadata Error: {meta_error}
         print(f"Total time: {total_time:.2f}s ({total_time/60:.1f}min)")
         print(f"Completed: {self.stats['completed_simulations']}/{total_simulations} simulations")
         print(f"Failed: {self.stats['failed_simulations']} simulations")
+        if self.check_duplicates:
+            print(f"Duplicate configs skipped: {self.stats['duplicate_configs_skipped']}")
+            if self.stats["files_skipped_exhausted"] > 0:
+                print(f"Files skipped (parameter space exhausted): {self.stats['files_skipped_exhausted']}")
         print(f"Average time per simulation: {results['average_time_per_simulation']:.2f}s")
         print(f"Cache efficiency: {final_cache_stats['hit_rate_percent']:.1f}% hit rate")
         
@@ -468,6 +544,11 @@ Metadata Error: {meta_error}
             except:
                 pass
         
+        # Load existing configurations for duplication checking
+        existing_configs = self._load_existing_configs(pickle_file)
+        if self.debug and existing_configs:
+            print(f"[DUPLICATE CHECK] {trace_snp.name}: Loaded {len(existing_configs)} existing configurations")
+        
         # Collect new samples
         new_results = []
         for sample_idx in range(samples_needed):
@@ -514,8 +595,14 @@ Metadata Error: {meta_error}
                 sim_directions = None
                 
                 try:
-                    # Sample parameters (get new config for retries)
-                    combined_config = combined_params.sample()
+                    # Sample parameters (get new unique config for retries)
+                    combined_config = self._sample_unique_config(combined_params, existing_configs)
+                    
+                    # Check if parameter space is exhausted
+                    if combined_config is None:
+                        print(f"[SKIP FILE] {trace_snp.name}: Parameter space exhausted, skipping remaining samples")
+                        self.stats["files_skipped_exhausted"] += 1
+                        return  # Exit the entire trace file processing
                     
                     # Generate directions
                     sim_directions = generate_directions(n_lines, enable_direction, block_size=block_size)
@@ -618,6 +705,10 @@ Metadata Error: {meta_error}
                 n_ports=n_ports,
                 param_types=param_types
             )
+            
+            # Add this configuration to our existing set to avoid duplicates within this collection run
+            config_tuple = tuple(config_values)
+            existing_configs.add(config_tuple)
             
             new_results.append(result)
             self.stats["completed_simulations"] += 1
