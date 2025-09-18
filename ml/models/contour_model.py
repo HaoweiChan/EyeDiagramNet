@@ -8,9 +8,9 @@ for learning continuous eye width contours over arbitrary variable pairs.
 import torch
 import torch.nn as nn
 from typing import Dict, Optional, Tuple, Union
-import math
 
 from .contour_encoder import VariableTokenEncoder, DeepSetsEncoder, SetTransformerEncoder
+from .layers import positional_encoding_1d
 from ..data.variable_registry import VariableRegistry
 
 
@@ -394,26 +394,15 @@ class ContourPredictor(nn.Module):
 
 
 class PositionalEncoding(nn.Module):
-    """Sinusoidal positional encoding for sequence tokens."""
+    """Sinusoidal positional encoding for sequence tokens using layers.py utilities."""
     
     def __init__(self, embed_dim: int, max_len: int = 256, dropout: float = 0.1):
         super().__init__()
         
         self.dropout = nn.Dropout(dropout)
         
-        # Create positional encoding matrix
-        pe = torch.zeros(max_len, embed_dim)
-        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
-        
-        div_term = torch.exp(
-            torch.arange(0, embed_dim, 2).float() * 
-            (-math.log(10000.0) / embed_dim)
-        )
-        
-        pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
-        pe = pe.unsqueeze(0).transpose(0, 1)
-        
+        # Use common positional encoding from layers.py
+        pe = positional_encoding_1d(embed_dim, max_len)
         self.register_buffer('pe', pe)
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -422,8 +411,12 @@ class PositionalEncoding(nn.Module):
             x: [batch_size, seq_len, embed_dim] or [seq_len, embed_dim]
         """
         if x.dim() == 3:
-            x = x + self.pe[:x.size(1), :].transpose(0, 1)
+            # x: [batch_size, seq_len, embed_dim]
+            seq_len = x.size(1)
+            x = x + self.pe[:seq_len, :].unsqueeze(0)
         else:
-            x = x + self.pe[:x.size(0), :].squeeze(1)
+            # x: [seq_len, embed_dim]
+            seq_len = x.size(0)
+            x = x + self.pe[:seq_len, :]
             
         return self.dropout(x)

@@ -1,8 +1,26 @@
 """
-Variable Token Encoder for Permutation-Invariant Variable Representation
+Enhanced Variable Token Encoder for Permutation-Invariant Variable Representation
 
 Implements variable-as-token encoding where each design parameter becomes a token
-with semantic embeddings (name, role, group) fused with numeric values.
+with enhanced semantic embeddings that provide generalization while distinguishing variables.
+
+Key Features:
+- **Role Embeddings**: Semantic function (HEIGHT, WIDTH, DIELECTRIC_CONSTANT, CONDUCTIVITY, etc.)
+- **Type Embeddings**: Circuit element type (D=Dielectric, S=Signal, G=Ground, none=Geometric)
+- **Instance Embeddings**: Distinguish variables with same role (H_a vs H_b, both HEIGHT)
+- **Material Projections**: Learned projections from actual material properties (dk, df, conductivity)
+
+This design provides:
+- **Generalization**: No dependency on specific variable names (H_a, H_b → both HEIGHT)
+- **Variable Distinction**: Instance embeddings distinguish same-role variables
+- **Composition Support**: Model can learn H_real = -0.5*H_a + 2*H_b relationships
+- **Material Identity**: From actual property values, not arbitrary labels
+
+Benefits:
+- Works across different naming schemes (H_a/H_b same as H_first/H_second)
+- Supports variable composition learning through set aggregation
+- Maintains contour plotting ability (vary specific instances)
+- Future-proof to new material properties
 """
 
 import torch
@@ -20,9 +38,9 @@ class VariableTokenEncoder(nn.Module):
         self,
         variable_registry: Optional[VariableRegistry] = None,
         token_dim: int = 64,
-        name_embed_dim: int = 32,
         role_embed_dim: int = 16,
-        group_embed_dim: int = 16,
+        type_embed_dim: int = 16,
+        instance_embed_dim: int = 8,
         hidden_dim: int = 128,
         num_layers: int = 2,
         dropout: float = 0.1
@@ -33,33 +51,41 @@ class VariableTokenEncoder(nn.Module):
         self.token_dim = token_dim
         
         # Create embeddings for semantic information
-        self.name_embeddings = nn.Embedding(
-            len(self.registry.variable_names), name_embed_dim
-        )
-        
         self.role_embeddings = nn.Embedding(
             len(VariableRole), role_embed_dim
         )
         
-        # Group embeddings (including None group)
-        all_groups = set()
-        for var in self.registry.variables.values():
-            if var.group:
-                all_groups.add(var.group)
-        all_groups.add("none")  # For variables without groups
-        self.group_names = sorted(list(all_groups))
-        self.group_to_idx = {group: i for i, group in enumerate(self.group_names)}
+        # Instance embeddings to distinguish variables with same role
+        max_instances = max(self.registry.get_max_instances_per_role(), 8)  # At least 8 for safety
+        self.instance_embeddings = nn.Embedding(
+            max_instances, instance_embed_dim
+        )
         
-        self.group_embeddings = nn.Embedding(
-            len(self.group_names), group_embed_dim
+        # Type embeddings for circuit element types
+        self.circuit_types = self.registry.get_circuit_types()
+        self.type_to_idx = {ctype: i for i, ctype in enumerate(self.circuit_types)}
+        
+        self.type_embeddings = nn.Embedding(
+            len(self.circuit_types), type_embed_dim
+        )
+        
+        # Material property projection network
+        # Dynamically sized based on registry's material property schema
+        material_prop_dim = len(self.registry.get_material_property_schema())
+        material_embed_dim = type_embed_dim  # Same size as type embeddings for consistency
+        self.material_proj = nn.Sequential(
+            nn.Linear(material_prop_dim, material_embed_dim),  # Dynamic size -> embedding
+            nn.LayerNorm(material_embed_dim),
+            nn.ReLU(),
+            nn.Linear(material_embed_dim, material_embed_dim)
         )
         
         # Create mappings
-        self.name_to_idx = {name: i for i, name in enumerate(self.registry.variable_names)}
         self.role_to_idx = {role: i for i, role in enumerate(VariableRole)}
         
-        # Token fusion MLP
-        input_dim = 1 + name_embed_dim + role_embed_dim + group_embed_dim  # value + embeddings
+        # Token fusion MLP  
+        # input = value + role_embed + type_embed + instance_embed + material_embed
+        input_dim = 1 + role_embed_dim + type_embed_dim + instance_embed_dim + material_embed_dim
         
         layers = []
         current_dim = input_dim
@@ -82,9 +108,25 @@ class VariableTokenEncoder(nn.Module):
     
     def _init_embeddings(self):
         """Initialize embeddings with reasonable scales."""
-        nn.init.normal_(self.name_embeddings.weight, std=0.1)
-        nn.init.normal_(self.role_embeddings.weight, std=0.1) 
-        nn.init.normal_(self.group_embeddings.weight, std=0.1)
+        nn.init.normal_(self.role_embeddings.weight, std=0.1)
+        nn.init.normal_(self.type_embeddings.weight, std=0.1)
+        nn.init.normal_(self.instance_embeddings.weight, std=0.1)
+        
+        # Initialize material projection with Xavier initialization
+        for layer in self.material_proj:
+            if isinstance(layer, nn.Linear):
+                nn.init.xavier_uniform_(layer.weight)
+                nn.init.zeros_(layer.bias)
+    
+    def _extract_material_properties_as_tensor(self, variables: Dict[str, torch.Tensor], variable_name: str, device: torch.device) -> torch.Tensor:
+        """Extract material properties as tensor using registry method."""
+        # Use registry method to get properties in canonical order
+        material_prop_values = self.registry.get_material_properties_as_tensor_values(variables, variable_name)
+        
+        # Convert to tensor
+        material_props = torch.tensor(material_prop_values, device=device, dtype=torch.float32)
+        
+        return material_props
     
     def forward(
         self, 
@@ -142,27 +184,35 @@ class VariableTokenEncoder(nn.Module):
                     scaled_value = scaled_value.unsqueeze(0)  # [1]
             
             # Get embeddings
-            name_idx = self.name_to_idx[name]
             role_idx = self.role_to_idx[variable.role]
-            group_idx = self.group_to_idx.get(variable.group or "none", 0)
+            
+            # Infer circuit type and instance index using registry methods
+            circuit_type = self.registry.infer_circuit_type(name)
+            type_idx = self.type_to_idx[circuit_type]
+            instance_idx = self.registry.get_instance_index(name)
             
             # Create embedding tensors
             if device is None:
                 device = scaled_value.device
                 
-            name_emb = self.name_embeddings(torch.tensor(name_idx, device=device))
             role_emb = self.role_embeddings(torch.tensor(role_idx, device=device))
-            group_emb = self.group_embeddings(torch.tensor(group_idx, device=device))
+            type_emb = self.type_embeddings(torch.tensor(type_idx, device=device))
+            instance_emb = self.instance_embeddings(torch.tensor(instance_idx, device=device))
+            
+            # Get material properties and create material embedding using registry method
+            material_props = self._extract_material_properties_as_tensor(variables, name, device)
+            material_emb = self.material_proj(material_props)
             
             # Expand embeddings to batch size if needed
             if batch_size is not None:
-                name_emb = name_emb.unsqueeze(0).expand(batch_size, -1)
                 role_emb = role_emb.unsqueeze(0).expand(batch_size, -1)
-                group_emb = group_emb.unsqueeze(0).expand(batch_size, -1)
+                type_emb = type_emb.unsqueeze(0).expand(batch_size, -1)
+                instance_emb = instance_emb.unsqueeze(0).expand(batch_size, -1)
+                material_emb = material_emb.unsqueeze(0).expand(batch_size, -1)
             
-            # Concatenate value and embeddings
+            # Concatenate value and embeddings (no name embedding)
             token_input = torch.cat([
-                scaled_value, name_emb, role_emb, group_emb
+                scaled_value, role_emb, type_emb, instance_emb, material_emb
             ], dim=-1)
             
             # Pass through MLP to create token
@@ -428,3 +478,4 @@ class PMABlock(nn.Module):
         output = self.norm(seeds + attn_out)
         
         return output
+

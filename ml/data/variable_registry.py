@@ -379,6 +379,204 @@ class VariableRegistry:
             var = self.get_variable(name)  # Will auto-register if needed
             variables.append(var)
         return variables
+    
+    def infer_circuit_type(self, variable_name: str) -> str:
+        """
+        Infer circuit element type from variable name.
+        
+        Args:
+            variable_name: Variable name to analyze
+            
+        Returns:
+            Circuit type: "D" (dielectric), "S" (signal), "G" (ground), or "none" (geometric)
+        """
+        if variable_name.startswith('D_'):
+            return "D"  # Dielectric
+        elif variable_name.startswith('S_'):
+            return "S"  # Signal
+        elif variable_name.startswith('G_'):
+            return "G"  # Ground
+        else:
+            return "none"  # Geometric or other variables
+    
+    def extract_material_properties(self, variables: Dict[str, Union[float, np.ndarray, 'torch.Tensor']], variable_name: str) -> Dict[str, float]:
+        """
+        Extract all material properties for a given variable.
+        
+        This method dynamically discovers material properties based on naming patterns.
+        Future material properties can be added by extending the property detection logic.
+        
+        Args:
+            variables: Dictionary of all variable values
+            variable_name: Name of the variable to get material properties for
+            
+        Returns:
+            Dictionary mapping property names to values (e.g., {'dk': 4.2, 'df': 0.02, 'conductivity': 5.8e7})
+        """
+        import torch
+        
+        # Determine the material group from variable name
+        if '_' in variable_name:
+            parts = variable_name.split('_')
+            if len(parts) >= 2:
+                material_group = f"{parts[0]}_{parts[1]}"  # e.g., "D_1", "S_1", "G_1"
+            else:
+                material_group = parts[0]
+        else:
+            material_group = None
+            
+        def _extract_value(var_val):
+            """Helper to extract scalar value from various types."""
+            if isinstance(var_val, torch.Tensor):
+                return var_val.mean().item() if var_val.numel() > 1 else var_val.item()
+            elif isinstance(var_val, np.ndarray):
+                return np.mean(var_val) if var_val.size > 1 else float(var_val)
+            else:
+                return float(var_val)
+        
+        material_props = {}
+        
+        if material_group:
+            # Dynamically discover all material properties for this group
+            material_prefix = f"{material_group}_"
+            
+            # Look for all variables that belong to this material group
+            for var_name, var_value in variables.items():
+                if var_name.startswith(material_prefix):
+                    # Extract the property name (e.g., "dk", "df", "cond", etc.)
+                    property_name = var_name[len(material_prefix):]
+                    material_props[property_name] = _extract_value(var_value)
+        
+        # Add default values for standard properties if not found
+        # This maintains backward compatibility while allowing new properties
+        if 'dk' not in material_props:
+            material_props['dk'] = 1.0  # Default dielectric constant
+        if 'df' not in material_props:
+            material_props['df'] = 0.0  # Default dissipation factor
+        if 'cond' not in material_props:
+            material_props['cond'] = 0.0  # Default conductivity
+            
+        # Rename 'cond' to 'conductivity' for clarity (maintain API compatibility)
+        if 'cond' in material_props:
+            material_props['conductivity'] = material_props.pop('cond')
+        
+        return material_props
+    
+    def get_circuit_types(self) -> List[str]:
+        """Get all possible circuit element types."""
+        return ["D", "S", "G", "none"]
+    
+    def get_instance_index(self, var_name: str) -> int:
+        """
+        Get consistent instance index for variable within its role group.
+        
+        Variables with the same role are ordered alphabetically to ensure
+        consistent instance indices across different datasets/naming schemes.
+        
+        Args:
+            var_name: Variable name to get instance index for
+            
+        Returns:
+            Instance index (0-based) within the role group
+        """
+        if var_name not in self.variables:
+            return 0  # Default for unknown variables
+            
+        variable = self.get_variable(var_name)
+        
+        # Get all variables with the same role
+        same_role_vars = [name for name in self.variable_names 
+                         if self.get_variable(name).role == variable.role]
+        
+        # Sort alphabetically for consistent ordering across datasets
+        same_role_vars.sort()
+        
+        # Return position in sorted list
+        try:
+            return same_role_vars.index(var_name)
+        except ValueError:
+            return 0  # Fallback to first instance
+    
+    def get_max_instances_per_role(self) -> int:
+        """
+        Get maximum number of variables for any single role.
+        
+        This is used to size the instance embedding table.
+        
+        Returns:
+            Maximum number of variables that share the same role
+        """
+        from collections import Counter
+        
+        if not self.variable_names:
+            return 1  # Default minimum
+            
+        # Count variables per role
+        role_counts = Counter(
+            self.get_variable(name).role for name in self.variable_names
+        )
+        
+        return max(role_counts.values(), default=1)
+    
+    def get_role_groups(self) -> Dict[str, List[str]]:
+        """
+        Get variables grouped by their roles.
+        
+        Returns:
+            Dictionary mapping role names to lists of variable names with that role
+        """
+        role_groups = {}
+        
+        for var_name in self.variable_names:
+            variable = self.get_variable(var_name)
+            role_name = variable.role.value
+            
+            if role_name not in role_groups:
+                role_groups[role_name] = []
+            role_groups[role_name].append(var_name)
+        
+        # Sort each group alphabetically
+        for role_name in role_groups:
+            role_groups[role_name].sort()
+            
+        return role_groups
+    
+    def get_material_property_schema(self) -> List[str]:
+        """
+        Get the canonical ordering of material properties for neural network input.
+        
+        This defines the expected order of material properties when creating tensors.
+        New material properties can be added to the end of this list to maintain 
+        backward compatibility.
+        
+        Returns:
+            List of property names in canonical order for tensor creation
+        """
+        return ['dk', 'df', 'conductivity']  # Standard electromagnetic properties
+        
+        # Future extensions could include:
+        # return ['dk', 'df', 'conductivity', 'thickness', 'roughness', 'thermal_conductivity']
+    
+    def get_material_properties_as_tensor_values(self, variables: Dict[str, Union[float, np.ndarray, 'torch.Tensor']], variable_name: str) -> List[float]:
+        """
+        Get material properties as ordered list of values for tensor creation.
+        
+        Args:
+            variables: Dictionary of all variable values
+            variable_name: Name of the variable to get material properties for
+            
+        Returns:
+            List of property values in canonical order (matching get_material_property_schema)
+        """
+        material_props_dict = self.extract_material_properties(variables, variable_name)
+        schema = self.get_material_property_schema()
+        
+        # Extract values in canonical order, using defaults for missing properties
+        values = []
+        for prop_name in schema:
+            values.append(material_props_dict.get(prop_name, 0.0))
+        
+        return values
 
 
 # No default global registry instance - users should create their own VariableRegistry

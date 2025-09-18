@@ -253,4 +253,160 @@ def plot_sparam_reconstruction(
 
 def image_to_tensor(image: Image.Image) -> torch.Tensor:
     """Converts a PIL Image to a PyTorch tensor for TensorBoard."""
-    return torch.tensor(np.array(image)).permute(2, 0, 1) 
+    return torch.tensor(np.array(image)).permute(2, 0, 1)
+
+
+def plot_contour_2d(
+    var1_name: str,
+    var2_name: str,
+    var1_grid: torch.Tensor,
+    var2_grid: torch.Tensor,
+    predictions: torch.Tensor,
+    spec_threshold: float = None,
+    error_data: dict = None
+) -> plt.Figure:
+    """
+    Generate a 2D contour plot for two variables.
+    
+    Args:
+        var1_name: Name of first variable
+        var2_name: Name of second variable
+        var1_grid: Grid values for first variable
+        var2_grid: Grid values for second variable  
+        predictions: Predicted values on the grid
+        spec_threshold: Optional specification threshold to highlight
+        error_data: Optional dict with 'var1_values', 'var2_values', 'errors' for error plotting
+    
+    Returns:
+        matplotlib Figure object
+    """
+    try:
+        # Determine figure layout
+        if error_data is not None and len(error_data.get('errors', [])) > 0:
+            # Create side-by-side subplots for prediction and error
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+            axes = [ax1, ax2]
+        else:
+            # Single subplot for prediction only
+            fig, ax1 = plt.subplots(1, 1, figsize=(8, 6))
+            axes = [ax1]
+        
+        # Convert to numpy
+        var1_np = var1_grid.cpu().numpy()
+        var2_np = var2_grid.cpu().numpy()
+        pred_np = predictions.cpu().numpy()
+        
+        # === LEFT SUBPLOT: PREDICTIONS ===
+        cs = ax1.contourf(var1_np, var2_np, pred_np.T, levels=20, cmap='viridis', alpha=0.8)
+        fig.colorbar(cs, ax=ax1, label='Predicted Eye Width')
+        
+        # Add contour lines
+        cs_lines = ax1.contour(
+            var1_np, var2_np, pred_np.T, 
+            levels=10, colors='white', 
+            alpha=0.5, linewidths=1.0
+        )
+        
+        # Add specification threshold if available
+        if spec_threshold is not None:
+            cs_spec = ax1.contour(
+                var1_np, var2_np, pred_np.T, 
+                levels=[spec_threshold], 
+                colors='red', linewidths=2
+            )
+            ax1.clabel(cs_spec, fmt='Spec', inline=True, fontsize=10)
+        
+        # Formatting for prediction subplot
+        ax1.set_xlabel(f'{var1_name}')
+        ax1.set_ylabel(f'{var2_name}')
+        ax1.set_title(f'Predictions: {var1_name} vs {var2_name}')
+        ax1.grid(True, alpha=0.3)
+        
+        # === RIGHT SUBPLOT: ERRORS (if available) ===
+        if error_data is not None and len(error_data.get('errors', [])) > 0:
+            try:
+                from scipy.interpolate import griddata
+                
+                # Extract error data
+                var1_err = np.array(error_data['var1_values'])
+                var2_err = np.array(error_data['var2_values'])  
+                errors = np.array(error_data['errors'])
+                
+                # Remove any NaN or infinite values
+                valid_mask = np.isfinite(var1_err) & np.isfinite(var2_err) & np.isfinite(errors)
+                var1_err = var1_err[valid_mask]
+                var2_err = var2_err[valid_mask]
+                errors = errors[valid_mask]
+                
+                if len(errors) > 3:  # Need at least 3 points for interpolation
+                    # Interpolate errors to the same grid as predictions
+                    points = np.column_stack((var1_err, var2_err))
+                    error_grid = griddata(
+                        points, errors, 
+                        (var1_np, var2_np), 
+                        method='linear', 
+                        fill_value=np.nan
+                    )
+                    
+                    # Create error contour plot
+                    cs_err = ax2.contourf(var1_np, var2_np, error_grid.T, levels=20, 
+                                        cmap='RdYlBu_r', alpha=0.8)
+                    fig.colorbar(cs_err, ax=ax2, label='Prediction Error')
+                    
+                    # Add contour lines for error
+                    cs_err_lines = ax2.contour(var1_np, var2_np, error_grid.T, 
+                                             levels=10, colors='black', alpha=0.5, linewidths=1.0)
+                    
+                    # Add zero error line (perfect prediction)
+                    zero_levels = [0.0] if np.any(error_grid >= 0) and np.any(error_grid <= 0) else []
+                    if zero_levels:
+                        ax2.contour(var1_np, var2_np, error_grid.T, levels=zero_levels, 
+                                  colors='green', linewidths=2, linestyles='--')
+                    
+                    # Overlay actual data points
+                    scatter = ax2.scatter(var1_err, var2_err, c=errors, s=30, 
+                                        cmap='RdYlBu_r', edgecolors='black', linewidth=0.5)
+                    
+                else:
+                    # Not enough points for interpolation, just show scatter
+                    scatter = ax2.scatter(var1_err, var2_err, c=errors, s=50,
+                                        cmap='RdYlBu_r', edgecolors='black', linewidth=1.0)
+                    fig.colorbar(scatter, ax=ax2, label='Prediction Error')
+                    ax2.text(0.5, 0.95, f'Too few points ({len(errors)}) for contour', 
+                           transform=ax2.transAxes, ha='center', va='top',
+                           bbox=dict(boxstyle='round', facecolor='yellow', alpha=0.7))
+                
+                # Formatting for error subplot
+                ax2.set_xlabel(f'{var1_name}')
+                ax2.set_ylabel(f'{var2_name}')  
+                ax2.set_title(f'Prediction Errors: {var1_name} vs {var2_name}')
+                ax2.grid(True, alpha=0.3)
+                
+                # Match axis ranges
+                ax2.set_xlim(ax1.get_xlim())
+                ax2.set_ylim(ax1.get_ylim())
+                
+            except ImportError:
+                # scipy not available, show scatter only
+                var1_err = np.array(error_data['var1_values'])
+                var2_err = np.array(error_data['var2_values'])  
+                errors = np.array(error_data['errors'])
+                
+                scatter = ax2.scatter(var1_err, var2_err, c=errors, s=50,
+                                    cmap='RdYlBu_r', edgecolors='black', linewidth=1.0)
+                fig.colorbar(scatter, ax=ax2, label='Prediction Error')
+                ax2.set_xlabel(f'{var1_name}')
+                ax2.set_ylabel(f'{var2_name}')
+                ax2.set_title(f'Prediction Errors: {var1_name} vs {var2_name}')
+                ax2.grid(True, alpha=0.3)
+                ax2.text(0.5, 0.95, 'scipy unavailable - scatter only', 
+                       transform=ax2.transAxes, ha='center', va='top',
+                       bbox=dict(boxstyle='round', facecolor='orange', alpha=0.7))
+        
+        plt.tight_layout()
+        return fig
+        
+    except Exception as e:
+        print(f"Error generating 2D contour plot: {e}")
+        return None
+

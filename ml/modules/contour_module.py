@@ -7,6 +7,7 @@ and evaluation metrics for contour quality assessment.
 
 import torch
 import torch.nn as nn
+import torchmetrics as tm
 from lightning import LightningModule
 from lightning.pytorch.utilities.rank_zero import rank_zero_info
 from typing import Dict, List, Optional, Tuple, Any
@@ -18,7 +19,7 @@ from pathlib import Path
 from ..models.contour_model import ContourPredictor
 from ..utils.contour_losses import ContourLossFunction, AdversarialSmoothingLoss, MonotonicityLoss
 from ..data.variable_registry import VariableRegistry
-from ..utils.visualization import image_to_buffer
+from ..utils.visualization import image_to_buffer, plot_contour_2d
 
 
 class ContourModule(LightningModule):
@@ -35,11 +36,6 @@ class ContourModule(LightningModule):
         lambda_spec_band: float = 0.05,
         lambda_adversarial: float = 0.0,
         lambda_monotonicity: float = 0.0,
-        spec_threshold: Optional[float] = None,
-        # Training parameters
-        learning_rate: float = 1e-3,
-        weight_decay: float = 1e-4,
-        scheduler: str = "cosine",  # "cosine", "plateau", "step"
         # Random subspace training
         min_active_variables: int = 2,
         max_active_variables: int = 6,
@@ -47,7 +43,11 @@ class ContourModule(LightningModule):
         # Evaluation
         eval_contour_pairs: Optional[List[Tuple[str, str]]] = None,
         eval_resolution: int = 25,
-        save_contour_plots: bool = True
+        save_contour_plots: bool = True,
+        spec_threshold: Optional[float] = None,
+        # Specific contour variables (null means use random from eval_contour_pairs)
+        var1_name: Optional[str] = None,
+        var2_name: Optional[str] = None
     ):
         super().__init__()
         
@@ -92,27 +92,24 @@ class ContourModule(LightningModule):
             self.monotonicity_loss = None
         
         # Training parameters
-        self.learning_rate = learning_rate
-        self.weight_decay = weight_decay
-        self.scheduler = scheduler
         self.min_active_variables = min_active_variables
         self.max_active_variables = max_active_variables
         self.coordinate_dropout_rate = coordinate_dropout_rate
         
         # Evaluation parameters
-        self.eval_contour_pairs = eval_contour_pairs or [
-            ("W_wg1", "W_ws"),
-            ("H_ubm", "H_cbd"),
-            ("W_c", "L_l")
-        ]
+        self.eval_contour_pairs = eval_contour_pairs or []
         self.eval_resolution = eval_resolution
         self.save_contour_plots = save_contour_plots
+        self.var1_name = var1_name
+        self.var2_name = var2_name
         
-        # Contour plotting frequency (plot every N steps/epochs)
-        self.contour_plot_every_n_train_steps = 100  # Plot during training every 100 steps
-        self.contour_plot_every_n_val_steps = 10     # Plot during validation every 10 steps
+        # Initialize metrics using factory pattern like trace_ew_module
+        self.metrics = nn.ModuleDict({
+            "train_": self.metrics_factory(),
+            "val": self.metrics_factory(),
+        })
         
-        # Metrics tracking
+        # Step outputs for plotting
         self.training_step_outputs = []
         self.validation_step_outputs = []
     
@@ -191,77 +188,70 @@ class ContourModule(LightningModule):
             loss = nn.functional.mse_loss(predictions, targets)
             self.log('val/mse_loss', loss, on_step=False, on_epoch=True, prog_bar=True)
         
+        # Update metrics
+        with torch.no_grad():
+            self.update_metrics(stage, loss.detach(), predictions, targets, uncertainties)
+        
         # Store outputs for epoch-end processing
         self._collect_step_outputs(stage, predictions, targets, uncertainties, variables, 
                                  sequence_tokens, active_vars)
         
-        # Plot contours periodically during training/validation
-        self._maybe_plot_contours_during_step(stage, batch_idx, variables, sequence_tokens)
+        # Plot contours periodically during validation
+        self._plot_contours_if_needed(stage, batch_idx, variables, sequence_tokens)
         
         return loss
     
     def on_training_epoch_end(self):
         """Compute epoch-level training metrics."""
-        if not self.training_step_outputs:
-            return
+        log_metrics = self.compute_metrics("train_")
         
-        # Collect all predictions and targets
-        all_predictions = torch.cat([x['predictions'] for x in self.training_step_outputs])
-        all_targets = torch.cat([x['targets'] for x in self.training_step_outputs])
-        
-        # Compute metrics
-        mae = torch.mean(torch.abs(all_predictions - all_targets))
-        rmse = torch.sqrt(torch.mean((all_predictions - all_targets) ** 2))
-        
-        # R² score
-        ss_res = torch.sum((all_targets - all_predictions) ** 2)
-        ss_tot = torch.sum((all_targets - torch.mean(all_targets)) ** 2)
-        r2 = 1 - ss_res / ss_tot
-        
-        self.log('train/mae', mae, on_epoch=True)
-        self.log('train/rmse', rmse, on_epoch=True)
-        self.log('train/r2', r2, on_epoch=True)
-        
-        # Log variable usage statistics
-        all_active_vars = [x['active_variables'] for x in self.training_step_outputs]
-        var_usage = {}
-        for active_vars in all_active_vars:
-            for var in active_vars:
-                var_usage[var] = var_usage.get(var, 0) + 1
-        
-        rank_zero_info(f"Epoch {self.current_epoch} variable usage: {var_usage}")
+        # Log variable usage statistics if we have outputs
+        if self.training_step_outputs:
+            all_active_vars = [x['active_variables'] for x in self.training_step_outputs]
+            var_usage = {}
+            for active_vars in all_active_vars:
+                for var in active_vars:
+                    var_usage[var] = var_usage.get(var, 0) + 1
+            
+            rank_zero_info(f"Epoch {self.current_epoch} variable usage: {var_usage}")
         
         # Clear outputs
         self.training_step_outputs.clear()
     
     def on_validation_epoch_end(self):
         """Compute epoch-level validation metrics and generate contour plots."""
-        if not self.validation_step_outputs:
-            return
-        
-        # Collect all predictions and targets
-        all_predictions = torch.cat([x['predictions'] for x in self.validation_step_outputs])
-        all_targets = torch.cat([x['targets'] for x in self.validation_step_outputs])
-        
-        # Compute metrics
-        mae = torch.mean(torch.abs(all_predictions - all_targets))
-        rmse = torch.sqrt(torch.mean((all_predictions - all_targets) ** 2))
-        
-        # R² score
-        ss_res = torch.sum((all_targets - all_predictions) ** 2)
-        ss_tot = torch.sum((all_targets - torch.mean(all_targets)) ** 2)
-        r2 = 1 - ss_res / ss_tot
-        
-        self.log('val/mae', mae, on_epoch=True)
-        self.log('val/rmse', rmse, on_epoch=True)
-        self.log('val/r2', r2, on_epoch=True, prog_bar=True)
-        
-        # Generate contour evaluation plots
-        if self.save_contour_plots and len(self.validation_step_outputs) > 0:
-            self.generate_contour_evaluation_plots()
+        log_metrics = self.compute_metrics("val")
         
         # Clear outputs
         self.validation_step_outputs.clear()
+    
+    def _get_contour_pair_for_plotting(self) -> Optional[Tuple[str, str]]:
+        """Get the contour pair to plot (either explicit or random from eval_contour_pairs)."""
+        # If both var1_name and var2_name are specified, use them
+        if self.var1_name is not None and self.var2_name is not None:
+            if self.var1_name in self.registry and self.var2_name in self.registry:
+                return (self.var1_name, self.var2_name)
+            else:
+                rank_zero_info(f"Warning: Specified variables ({self.var1_name}, {self.var2_name}) not in registry")
+        
+        # If only one is specified, try to find a pair from eval_contour_pairs
+        if self.var1_name is not None or self.var2_name is not None:
+            target_var = self.var1_name or self.var2_name
+            for pair in self.eval_contour_pairs:
+                if target_var in pair and all(v in self.registry for v in pair):
+                    return pair
+            rank_zero_info(f"Warning: Could not find pair containing {target_var} in eval_contour_pairs")
+        
+        # Otherwise, randomly select from eval_contour_pairs
+        valid_pairs = [
+            pair for pair in self.eval_contour_pairs 
+            if all(v in self.registry for v in pair)
+        ]
+        
+        if valid_pairs:
+            return random.choice(valid_pairs)
+        
+        return None
     
     def _apply_random_subspace_perturbation(
         self, 
@@ -344,9 +334,13 @@ class ContourModule(LightningModule):
     ):
         """Collect outputs for epoch-end processing."""
         with torch.no_grad():
+            # Compute errors
+            errors = (predictions - targets).detach().cpu()
+            
             step_output = {
                 'predictions': predictions.detach().cpu(),
                 'targets': targets.detach().cpu(),
+                'errors': errors,
                 'uncertainties': uncertainties.detach().cpu() if uncertainties is not None else None,
                 'active_variables': active_vars
             }
@@ -361,25 +355,23 @@ class ContourModule(LightningModule):
                 })
                 self.validation_step_outputs.append(step_output)
     
-    def _maybe_plot_contours_during_step(
+    def _plot_contours_if_needed(
         self,
         stage: str,
         batch_idx: int,
         variables: Dict[str, torch.Tensor],
         sequence_tokens: torch.Tensor
     ):
-        """Plot contours periodically during training/validation steps."""
+        """Plot contours periodically during validation steps."""
         if not self.save_contour_plots or not self.logger:
             return
         
-        # Determine if we should plot based on step frequency
-        should_plot = False
-        if stage == "train":
-            should_plot = batch_idx % self.contour_plot_every_n_train_steps == 0
-        elif stage == "val":
-            should_plot = batch_idx % self.contour_plot_every_n_val_steps == 0
+        # Only plot during validation epochs (controlled by check_val_every_n_epoch)
+        if self.current_epoch % self.trainer.check_val_every_n_epoch != 0:
+            return
         
-        if not should_plot:
+        # Only plot once per epoch (on batch_idx 0)
+        if batch_idx != 0:
             return
         
         try:
@@ -393,36 +385,38 @@ class ContourModule(LightningModule):
             # Use the first sequence in the batch
             sequence = sequence_tokens[0] if sequence_tokens.dim() > 1 else sequence_tokens
             
-            # Plot contours for each evaluation pair
-            for i, (var1_name, var2_name) in enumerate(self.eval_contour_pairs):
-                if var1_name not in self.registry or var2_name not in self.registry:
-                    continue
+            # Get contour pair to plot (either explicit or random from eval_contour_pairs)
+            contour_pair = self._get_contour_pair_for_plotting()
+            if contour_pair is None:
+                return
+            
+            var1_name, var2_name = contour_pair
+            
+            try:
+                # Generate contour plot for the selected pair
+                fig = self._plot_step_contour(
+                    var1_name=var1_name,
+                    var2_name=var2_name,
+                    fixed_variables=fixed_vars,
+                    sequence_tokens=sequence,
+                    stage=stage,
+                    step=batch_idx
+                )
                 
-                try:
-                    # Generate contour plot
-                    fig = self._plot_2d_contour(
-                        var1_name=var1_name,
-                        var2_name=var2_name,
-                        fixed_variables=fixed_vars,
-                        sequence_tokens=sequence,
-                        stage=stage,
-                        step=batch_idx
-                    )
+                if fig is not None and self.logger:
+                    # Log to tensorboard (following trace_ew_module pattern)
+                    plot_name = f'contours_{stage}/{var1_name}_vs_{var2_name}'
+                    self.logger.experiment.add_image(plot_name, image_to_buffer(fig), self.current_epoch)
+                    plt.close(fig)
                     
-                    if fig is not None and self.logger:
-                        # Log to tensorboard (following trace_ew_module pattern)
-                        plot_name = f'contours_{stage}/{var1_name}_vs_{var2_name}'
-                        self.logger.experiment.add_image(plot_name, image_to_buffer(fig), self.current_epoch)
-                        plt.close(fig)
-                        
-                except Exception as e:
-                    rank_zero_info(f"Failed to generate step contour plot for {var1_name} vs {var2_name}: {e}")
-                    continue
+            except Exception as e:
+                rank_zero_info(f"Failed to generate step contour plot for {var1_name} vs {var2_name}: {e}")
+                return
                     
         except Exception as e:
             rank_zero_info(f"Error in contour plotting during {stage} step {batch_idx}: {e}")
     
-    def _plot_2d_contour(
+    def _plot_step_contour(
         self,
         var1_name: str,
         var2_name: str,
@@ -432,7 +426,7 @@ class ContourModule(LightningModule):
         step: int,
         resolution: int = 20  # Lower resolution for step plots
     ) -> Optional[plt.Figure]:
-        """Generate a 2D contour plot for two variables."""
+        """Generate a step-level contour plot using the visualization module."""
         try:
             # Get variable bounds
             var1_bounds = self.registry.get_bounds(var1_name)
@@ -452,53 +446,68 @@ class ContourModule(LightningModule):
                     device=self.device
                 )
             
-            # Create plot
-            fig, ax = plt.subplots(1, 1, figsize=(6, 5))
+            # Prepare error data from validation outputs collected so far
+            error_data = self._extract_error_data_for_variables(var1_name, var2_name)
             
-            # Convert to numpy
-            var1_np = var1_grid.cpu().numpy()
-            var2_np = var2_grid.cpu().numpy()
-            pred_np = predictions.cpu().numpy()
-            
-            # Contour plot
-            cs = ax.contourf(var1_np, var2_np, pred_np.T, levels=15, cmap='viridis', alpha=0.8)
-            fig.colorbar(cs, ax=ax, label='Predicted Eye Width')
-            
-            # Add contour lines
-            cs_lines = ax.contour(var1_np, var2_np, pred_np.T, levels=8, colors='white', alpha=0.6, linewidths=0.8)
-            
-            # Add specification threshold if available
-            if self.spec_threshold is not None:
-                cs_spec = ax.contour(
-                    var1_np, var2_np, pred_np.T, 
-                    levels=[self.spec_threshold], 
-                    colors='red', linewidths=2
-                )
-                ax.clabel(cs_spec, fmt='Spec', inline=True, fontsize=8)
-            
-            # Formatting
-            var1_units = self.registry.get_variable(var1_name).units
-            var2_units = self.registry.get_variable(var2_name).units
-            
-            ax.set_xlabel(f'{var1_name} ({var1_units})')
-            ax.set_ylabel(f'{var2_name} ({var2_units})')
-            
-            # Title with step information
-            epoch_info = f"Epoch {self.current_epoch}"
-            step_info = f"Step {step}" if stage == "train" else f"Val Step {step}"
-            ax.set_title(f'{var1_name} vs {var2_name}\n{epoch_info}, {step_info}', fontsize=10)
-            
-            ax.grid(True, alpha=0.3)
-            plt.tight_layout()
+            # Use visualization module to create plot
+            fig = plot_contour_2d(
+                var1_name=var1_name,
+                var2_name=var2_name,
+                var1_grid=var1_grid,
+                var2_grid=var2_grid,
+                predictions=predictions,
+                spec_threshold=self.spec_threshold,
+                error_data=error_data
+            )
             
             return fig
             
         except Exception as e:
-            rank_zero_info(f"Error generating 2D contour plot: {e}")
+            rank_zero_info(f"Error generating step contour plot: {e}")
+            return None
+    
+    def _extract_error_data_for_variables(self, var1_name: str, var2_name: str) -> Optional[Dict]:
+        """Extract error data for specific variable pair from validation outputs."""
+        try:
+            if not self.validation_step_outputs:
+                return None
+            
+            var1_values = []
+            var2_values = []
+            errors = []
+            
+            for output in self.validation_step_outputs:
+                variables = output.get('variables', {})
+                step_errors = output.get('errors', None)
+                
+                if (var1_name in variables and var2_name in variables and 
+                    step_errors is not None):
+                    
+                    # Get variable values for this step
+                    var1_vals = variables[var1_name]  # [batch_size]
+                    var2_vals = variables[var2_name]  # [batch_size] 
+                    step_errs = step_errors.squeeze()  # [batch_size]
+                    
+                    # Convert to lists and extend
+                    var1_values.extend(var1_vals.numpy().flatten())
+                    var2_values.extend(var2_vals.numpy().flatten())
+                    errors.extend(step_errs.numpy().flatten())
+            
+            if len(errors) > 0:
+                return {
+                    'var1_values': var1_values,
+                    'var2_values': var2_values, 
+                    'errors': errors
+                }
+            else:
+                return None
+                
+        except Exception as e:
+            rank_zero_info(f"Error extracting error data: {e}")
             return None
     
     def generate_contour_evaluation_plots(self):
-        """Generate 2D contour plots for evaluation pairs."""
+        """Generate 2D contour plots for evaluation pairs using visualization module."""
         if not self.validation_step_outputs:
             return
         
@@ -507,108 +516,61 @@ class ContourModule(LightningModule):
         variables = sample['variables']
         sequence_tokens = sample['sequence_tokens']
         
-        # Create fixed variable values (use medians)
+        # Create fixed variable values (use defaults)
         fixed_vars = self.registry.get_default_values()
         
-        # Generate plots for each evaluation pair
-        for var1_name, var2_name in self.eval_contour_pairs:
-            if var1_name not in self.registry or var2_name not in self.registry:
-                continue
-            
-            try:
-                # Get variable ranges
-                var1_bounds = self.registry.get_bounds(var1_name)
-                var2_bounds = self.registry.get_bounds(var2_name)
-                
-                # Generate contour
-                self.model.eval()
-                with torch.no_grad():
-                    var1_grid, var2_grid, predictions = self.model.predict_contour_2d(
-                        var1_name=var1_name,
-                        var2_name=var2_name,
-                        fixed_variables=fixed_vars,
-                        sequence_tokens=sequence_tokens[0],  # Use first sequence
-                        var1_range=var1_bounds,
-                        var2_range=var2_bounds,
-                        resolution=self.eval_resolution,
-                        device=self.device
-                    )
-                
-                # Create plot
-                fig, ax = plt.subplots(1, 1, figsize=(8, 6))
-                
-                # Convert to numpy
-                var1_np = var1_grid.cpu().numpy()
-                var2_np = var2_grid.cpu().numpy()
-                pred_np = predictions.cpu().numpy()
-                
-                # Contour plot
-                cs = ax.contourf(var1_np, var2_np, pred_np.T, levels=20, cmap='viridis')
-                fig.colorbar(cs, ax=ax, label='Predicted Eye Width')
-                
-                # Add contour lines
-                cs_lines = ax.contour(var1_np, var2_np, pred_np.T, levels=10, colors='white', alpha=0.5)
-                
-                # Add specification threshold if available
-                if self.spec_threshold is not None:
-                    cs_spec = ax.contour(
-                        var1_np, var2_np, pred_np.T, 
-                        levels=[self.spec_threshold], 
-                        colors='red', linewidths=2
-                    )
-                    ax.clabel(cs_spec, fmt='Spec', inline=True)
-                
-                ax.set_xlabel(f'{var1_name} ({self.registry.get_variable(var1_name).units})')
-                ax.set_ylabel(f'{var2_name} ({self.registry.get_variable(var2_name).units})')
-                ax.set_title(f'Contour: {var1_name} vs {var2_name} (Epoch {self.current_epoch})')
-                
-                # Log plot to tensorboard
-                if self.logger:
-                    self.logger.experiment.add_image(
-                        f'contours/{var1_name}_vs_{var2_name}',
-                        image_to_buffer(fig),
-                        self.current_epoch
-                    )
-                
-                plt.close(fig)
-                
-            except Exception as e:
-                rank_zero_info(f"Failed to generate contour plot for {var1_name} vs {var2_name}: {e}")
-                continue
-    
-    def configure_optimizers(self):
-        """Configure optimizer and learning rate scheduler."""
-        optimizer = torch.optim.AdamW(
-            self.parameters(),
-            lr=self.learning_rate,
-            weight_decay=self.weight_decay
-        )
+        # Get contour pair to plot (either explicit or random from eval_contour_pairs)
+        contour_pair = self._get_contour_pair_for_plotting()
+        if contour_pair is None:
+            return
         
-        if self.scheduler == "cosine":
-            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-                optimizer, T_max=self.trainer.max_epochs
+        var1_name, var2_name = contour_pair
+        
+        try:
+            # Get variable ranges
+            var1_bounds = self.registry.get_bounds(var1_name)
+            var2_bounds = self.registry.get_bounds(var2_name)
+            
+            # Generate contour using model
+            self.model.eval()
+            with torch.no_grad():
+                var1_grid, var2_grid, predictions = self.model.predict_contour_2d(
+                    var1_name=var1_name,
+                    var2_name=var2_name,
+                    fixed_variables=fixed_vars,
+                    sequence_tokens=sequence_tokens[0],  # Use first sequence
+                    var1_range=var1_bounds,
+                    var2_range=var2_bounds,
+                    resolution=self.eval_resolution,
+                    device=self.device
+                )
+            
+            # Prepare error data from validation outputs
+            error_data = self._extract_error_data_for_variables(var1_name, var2_name)
+            
+            # Use visualization module to create plot
+            fig = plot_contour_2d(
+                var1_name=var1_name,
+                var2_name=var2_name,
+                var1_grid=var1_grid,
+                var2_grid=var2_grid,
+                predictions=predictions,
+                spec_threshold=self.spec_threshold,
+                error_data=error_data
             )
-            return [optimizer], [scheduler]
-        elif self.scheduler == "plateau":
-            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-                optimizer, mode='min', factor=0.5, patience=10
-            )
-            return {
-                "optimizer": optimizer,
-                "lr_scheduler": {
-                    "scheduler": scheduler,
-                    "monitor": "val/mse_loss",
-                    "interval": "epoch",
-                    "frequency": 1,
-                },
-            }
-        elif self.scheduler == "step":
-            scheduler = torch.optim.lr_scheduler.StepLR(
-                optimizer, step_size=30, gamma=0.1
-            )
-            return [optimizer], [scheduler]
-        else:
-            return optimizer
+            
+            # Log plot to tensorboard
+            if fig is not None and self.logger:
+                self.logger.experiment.add_image(
+                    f'contours/{var1_name}_vs_{var2_name}',
+                    image_to_buffer(fig),
+                    self.current_epoch
+                )
+                plt.close(fig)
+            
+        except Exception as e:
+            rank_zero_info(f"Failed to generate contour evaluation plot for {var1_name} vs {var2_name}: {e}")
+    
     
     def predict_contour(
         self,
@@ -647,8 +609,6 @@ class ContourModule(LightningModule):
     def set_contour_plot_config(
         self,
         eval_pairs: Optional[List[Tuple[str, str]]] = None,
-        train_step_frequency: Optional[int] = None,
-        val_step_frequency: Optional[int] = None,
         resolution: Optional[int] = None,
         enable_plotting: Optional[bool] = None
     ):
@@ -657,8 +617,6 @@ class ContourModule(LightningModule):
         
         Args:
             eval_pairs: List of (var1, var2) pairs to plot
-            train_step_frequency: Plot every N training steps (None to keep current)
-            val_step_frequency: Plot every N validation steps (None to keep current)
             resolution: Grid resolution for contour plots
             enable_plotting: Enable/disable contour plotting
         """
@@ -673,14 +631,6 @@ class ContourModule(LightningModule):
             
             self.eval_contour_pairs = valid_pairs
             rank_zero_info(f"Updated contour evaluation pairs: {self.eval_contour_pairs}")
-        
-        if train_step_frequency is not None:
-            self.contour_plot_every_n_train_steps = train_step_frequency
-            rank_zero_info(f"Updated training contour plot frequency: every {train_step_frequency} steps")
-        
-        if val_step_frequency is not None:
-            self.contour_plot_every_n_val_steps = val_step_frequency  
-            rank_zero_info(f"Updated validation contour plot frequency: every {val_step_frequency} steps")
         
         if resolution is not None:
             self.eval_resolution = resolution
@@ -719,7 +669,8 @@ class ContourModule(LightningModule):
         # Group variables by role
         role_groups = {}
         for var_name in self.registry.variable_names:
-            role = self.registry.get_role(var_name).value
+            variable = self.registry.get_variable(var_name)
+            role = variable.role.value
             if role not in role_groups:
                 role_groups[role] = []
             role_groups[role].append(var_name)
@@ -741,3 +692,56 @@ class ContourModule(LightningModule):
                     paired_roles[f"{role1}_vs_{role2}"] = cross_pairs
         
         return paired_roles
+    
+    def metrics_factory(self):
+        """Create metrics for contour prediction following trace_ew_module pattern."""
+        metrics = {
+            'loss': tm.MeanMetric,
+            'mae': tm.MeanAbsoluteError,
+            'mse': tm.MeanSquaredError,
+            'rmse': lambda: tm.MeanSquaredError(squared=False),
+            'r2': tm.R2Score,
+        }
+        metrics_dict = nn.ModuleDict()
+        for k, metric in metrics.items():
+            metrics_dict[k] = metric()
+        return metrics_dict
+    
+    def update_metrics(
+        self,
+        stage: str,
+        loss: torch.Tensor,
+        predictions: torch.Tensor,
+        targets: torch.Tensor,
+        uncertainties: Optional[torch.Tensor] = None
+    ):
+        """Update metrics for the given stage."""
+        # Flatten tensors for metric computation
+        pred_flat = predictions.flatten()
+        target_flat = targets.flatten()
+        
+        # Update all metrics
+        for key, metric in self.metrics[stage].items():
+            if 'loss' in key:
+                metric.update(loss)
+            else:
+                metric.update(pred_flat, target_flat)
+    
+    def compute_metrics(self, stage: str):
+        """Compute and log metrics for the given stage."""
+        log_metrics = {}
+        for key, metric in self.metrics[stage].items():
+            log_metrics[f'{stage}/{key}'] = metric.compute()
+            metric.reset()
+        
+        if self.logger is not None:
+            self.logger.log_metrics(log_metrics, self.current_epoch)
+        
+        # Log validation metrics to progress bar
+        if stage == "val":
+            self.log(
+                'hp_metric', log_metrics[f'{stage}/mae'],
+                prog_bar=True, on_epoch=True, on_step=False, sync_dist=True
+            )
+        
+        return log_metrics
