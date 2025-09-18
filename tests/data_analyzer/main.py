@@ -19,6 +19,7 @@ def main():
     parser_clean = subparsers.add_parser("clean", help="Clean the pickle files in-place.")
     parser_clean.add_argument("--block_size", type=int, help="Only keep samples with this block size.")
     parser_clean.add_argument("--remove-block-size-1", action="store_true", help="Remove samples with block size 1 direction patterns.")
+    parser_clean.add_argument("--remove-duplicates", action="store_true", help="Remove samples with duplicate configuration values (keeps first occurrence).")
 
     # --- Validate Command ---
     parser_validate = subparsers.add_parser("validate", help="Validate pickle data against simulation.")
@@ -52,7 +53,14 @@ def main():
                 all_results.extend(results)
                 file_stats.append({'file': pfile.name, 'samples': len(results)})
         
-        analysis_results = {'file_stats': file_stats}
+        # Analyze duplications across all files
+        print("Analyzing duplications...")
+        duplication_stats = analysis.analyze_duplications_across_files(pickle_files)
+        
+        analysis_results = {
+            'file_stats': file_stats,
+            'duplication_stats': duplication_stats
+        }
         analysis.plot_eye_width_distributions(all_results, output_dir)
         analysis.generate_summary_report(pickle_dir, pickle_files, all_results, analysis_results, output_dir)
 
@@ -64,7 +72,8 @@ def main():
                 n_before, n_removed = cleaning.clean_pickle_file_inplace(
                     pfile, 
                     block_size=args.block_size, 
-                    remove_block_size_1=args.remove_block_size_1
+                    remove_block_size_1=args.remove_block_size_1,
+                    remove_duplicates=args.remove_duplicates
                 )
                 total_before += n_before
                 total_removed += n_removed

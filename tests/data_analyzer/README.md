@@ -32,8 +32,9 @@ python tests/analyze_pickle_data.py /path/to/your/pickle_data analyze
 **What it does:**
 -   Loads all pickle files and aggregates the data.
 -   Calculates statistics for eye-widths, direction block sizes, and file sample counts.
+-   **Analyzes duplicate configurations** within each file and across all files.
 -   Generates and saves plots for eye-width distributions (`eye_width_distributions.png`).
--   Generates and saves a detailed text summary (`training_data_summary.txt`).
+-   Generates and saves a detailed text summary (`training_data_summary.txt`) including duplication analysis.
 -   All outputs are saved to a timestamped directory inside `tests/`, for example `tests/analyzer_output_20231027_123456/`.
 
 ---
@@ -63,9 +64,16 @@ python tests/analyze_pickle_data.py /path/to/your/pickle_data clean [options]
         python tests/analyze_pickle_data.py ./data clean --remove-block-size-1
         ```
 
-You can combine these options. For example, to only keep samples with block size 2 and also remove any block size 1 patterns (though this is somewhat redundant):
+-   `--remove-duplicates`:
+    -   Removes samples with duplicate configuration values, keeping only the first occurrence of each unique configuration.
+    -   **Example:**
+        ```bash
+        python tests/analyze_pickle_data.py ./data clean --remove-duplicates
+        ```
+
+You can combine these options. For example, to only keep samples with block size 2, remove block size 1 patterns, and remove duplicates:
 ```bash
-python tests/analyze_pickle_data.py ./data clean --block_size 2 --remove-block-size-1
+python tests/analyze_pickle_data.py ./data clean --block_size 2 --remove-block-size-1 --remove-duplicates
 ```
 
 ---

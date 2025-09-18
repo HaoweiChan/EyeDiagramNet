@@ -26,6 +26,83 @@ except ImportError:
 
 from .cleaning import estimate_block_size
 
+
+def detect_duplicate_configs(results: List[SimulationResult]) -> dict:
+    """Detect duplicate configuration values within a list of simulation results."""
+    if not results:
+        return {'total_samples': 0, 'unique_configs': 0, 'duplicate_count': 0, 'duplicate_groups': []}
+    
+    # Create config signatures for comparison
+    config_signatures = []
+    config_to_indices = {}
+    
+    for i, result in enumerate(results):
+        # Create a tuple of config values for hashing/comparison
+        config_tuple = tuple(result.config_values)
+        config_signatures.append(config_tuple)
+        
+        if config_tuple not in config_to_indices:
+            config_to_indices[config_tuple] = []
+        config_to_indices[config_tuple].append(i)
+    
+    # Find duplicates
+    duplicate_groups = []
+    duplicate_count = 0
+    
+    for config_tuple, indices in config_to_indices.items():
+        if len(indices) > 1:
+            duplicate_groups.append({
+                'config_values': list(config_tuple),
+                'sample_indices': indices,
+                'count': len(indices)
+            })
+            duplicate_count += len(indices) - 1  # All but one are duplicates
+    
+    return {
+        'total_samples': len(results),
+        'unique_configs': len(config_to_indices),
+        'duplicate_count': duplicate_count,
+        'duplicate_groups': duplicate_groups
+    }
+
+
+def analyze_duplications_across_files(pickle_files_list: list[Path]) -> dict:
+    """Analyze duplications in config values across all pickle files."""
+    file_duplication_stats = {}
+    total_duplicates = 0
+    total_samples = 0
+    total_unique_configs = 0
+    
+    from common.pickle_utils import load_pickle_data
+    
+    for pfile in pickle_files_list:
+        try:
+            results = load_pickle_data(pfile)
+            if results:
+                file_stats = detect_duplicate_configs(results)
+                file_duplication_stats[str(pfile)] = file_stats
+                total_duplicates += file_stats['duplicate_count']
+                total_samples += file_stats['total_samples']
+                total_unique_configs += file_stats['unique_configs']
+        except Exception as e:
+            file_duplication_stats[str(pfile)] = {
+                'error': str(e),
+                'total_samples': 0,
+                'unique_configs': 0,
+                'duplicate_count': 0,
+                'duplicate_groups': []
+            }
+    
+    return {
+        'file_stats': file_duplication_stats,
+        'total_samples_across_files': total_samples,
+        'total_unique_configs_across_files': total_unique_configs,
+        'total_duplicates_across_files': total_duplicates,
+        'files_with_duplicates': sum(1 for stats in file_duplication_stats.values() 
+                                   if isinstance(stats, dict) and stats.get('duplicate_count', 0) > 0)
+    }
+
+
 def detect_legacy_format_files(pickle_files_list: list[Path]) -> dict:
     """Detect which pickle files use legacy naming conventions."""
     legacy_stats = {
@@ -204,6 +281,64 @@ def generate_summary_report(pickle_dir: Path, pickle_files: list, all_results: L
         report.append(f"  Average samples per file: {summary_df['samples'].mean():.1f}")
         report.append(f"  Min samples per file: {summary_df['samples'].min()}")
         report.append(f"  Max samples per file: {summary_df['samples'].max()}")
+        report.append("")
+
+    # Duplication analysis
+    if analysis_results.get('duplication_stats'):
+        dup_stats = analysis_results['duplication_stats']
+        report.append("DUPLICATION ANALYSIS:")
+        report.append(f"  Files with duplicates: {dup_stats['files_with_duplicates']}/{len(pickle_files)}")
+        report.append(f"  Total duplicate samples: {dup_stats['total_duplicates_across_files']}")
+        report.append(f"  Total unique configurations: {dup_stats['total_unique_configs_across_files']}")
+        
+        if dup_stats['total_samples_across_files'] > 0:
+            dup_percentage = (dup_stats['total_duplicates_across_files'] / 
+                            dup_stats['total_samples_across_files'] * 100)
+            report.append(f"  Duplication rate: {dup_percentage:.2f}%")
+        
+        # Report files with high duplication rates
+        high_dup_files = []
+        for file_path, file_stats in dup_stats['file_stats'].items():
+            if isinstance(file_stats, dict) and file_stats.get('duplicate_count', 0) > 0:
+                if file_stats['total_samples'] > 0:
+                    dup_rate = file_stats['duplicate_count'] / file_stats['total_samples'] * 100
+                    if dup_rate > 10:  # Files with >10% duplication rate
+                        file_name = Path(file_path).name
+                        high_dup_files.append(f"{file_name} ({dup_rate:.1f}%)")
+        
+        if high_dup_files:
+            report.append(f"  Files with high duplication (>10%): {', '.join(high_dup_files[:5])}")
+            if len(high_dup_files) > 5:
+                report.append(f"    ... and {len(high_dup_files) - 5} more")
+        
+        report.append("")
+
+    # Configuration parameters analysis
+    if all_results:
+        config_keys = all_results[0].config_keys
+        report.append("CONFIGURATION PARAMETERS:")
+        report.append(f"  Parameter count: {len(config_keys)}")
+        report.append(f"  Parameter names: {', '.join(config_keys)}")
+        
+        # Show sample configuration values for first few samples
+        report.append("\n  Sample configurations (first 3 samples):")
+        for i, result in enumerate(all_results[:3]):
+            config_dict = dict(zip(result.config_keys, result.config_values))
+            report.append(f"    Sample {i+1}:")
+            for key, value in config_dict.items():
+                report.append(f"      {key}: {value}")
+            if i < 2:  # Add separator between samples
+                report.append("")
+        
+        # Show configuration value ranges
+        if len(all_results) > 1:
+            report.append("\n  Parameter value ranges:")
+            import numpy as np
+            for j, key in enumerate(config_keys):
+                values = [result.config_values[j] for result in all_results]
+                values_array = np.array(values)
+                report.append(f"    {key}: [{np.min(values_array):.6f}, {np.max(values_array):.6f}]")
+        
         report.append("")
 
     # Add more sections as needed...

@@ -40,11 +40,36 @@ def detect_block_size_1_patterns(directions: list) -> bool:
     block_lengths = np.diff(all_indices)
     return np.any(block_lengths == 1)
 
-def clean_pickle_file_inplace(pfile: Path, block_size: int = None, remove_block_size_1: bool = False) -> tuple[int, int]:
+
+def remove_duplicate_configs(results: List[SimulationResult]) -> List[SimulationResult]:
+    """Remove samples with duplicate configuration values, keeping only the first occurrence."""
+    if not results:
+        return results
+    
+    seen_configs = set()
+    unique_results = []
+    
+    for result in results:
+        # Create a tuple of config values for comparison
+        config_tuple = tuple(result.config_values)
+        
+        if config_tuple not in seen_configs:
+            seen_configs.add(config_tuple)
+            unique_results.append(result)
+    
+    return unique_results
+
+def clean_pickle_file_inplace(pfile: Path, block_size: int = None, remove_block_size_1: bool = False, remove_duplicates: bool = False) -> tuple[int, int]:
     """
-    Filters samples in a pickle file based on direction block size.
+    Filters samples in a pickle file based on direction block size and/or duplicate configurations.
     The file is overwritten in-place with the cleaned data, preserving the original format.
     A backup of the original file is created with a .bak extension.
+    
+    Args:
+        pfile: Path to the pickle file to clean
+        block_size: Only keep samples with this specific direction block size
+        remove_block_size_1: Remove samples with block size 1 direction patterns
+        remove_duplicates: Remove samples with duplicate configuration values (keeps first occurrence)
     
     Note: If the input file uses legacy format (snp_txs/snp_rxs), it will be 
     automatically converted to the new format (snp_drvs/snp_odts) when saved.
@@ -66,6 +91,10 @@ def clean_pickle_file_inplace(pfile: Path, block_size: int = None, remove_block_
     if n_samples_before == 0:
         return 0, 0
 
+    # Apply duplicate removal first if requested
+    if remove_duplicates:
+        results = remove_duplicate_configs(results)
+    
     # Filter the list of dataclasses
     valid_results: List[SimulationResult] = []
     for result in results:
