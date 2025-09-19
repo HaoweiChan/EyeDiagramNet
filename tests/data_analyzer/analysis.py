@@ -144,14 +144,12 @@ plt.rcParams['figure.figsize'] = (12, 8)
 
 def is_numeric_list(data: list) -> bool:
     """Check if a list contains numeric data (non-string)."""
-    import numpy as np  # Explicit import to ensure np is available
     if not data or not isinstance(data, (list, np.ndarray)):
         return False
     return not isinstance(data[0], str)
 
 def compute_direction_stats_for_files(pickle_files_list: list[Path]) -> pd.DataFrame:
     """Build a per-sample directions stats dataframe across all files."""
-    import numpy as np  # Explicit import to ensure np is available
     stats: list[dict] = []
     for pfile in pickle_files_list:
         try:
@@ -183,7 +181,6 @@ def compute_direction_stats_for_files(pickle_files_list: list[Path]) -> pd.DataF
 
 def plot_eye_width_distributions(all_results: List[SimulationResult], output_dir: Path):
     """Generates and saves plots for eye-width distributions."""
-    import numpy as np  # Explicit import to ensure np is available
     if not all_results:
         print("No eye width data to plot.")
         return
@@ -237,7 +234,6 @@ def plot_eye_width_distributions(all_results: List[SimulationResult], output_dir
 
 def generate_summary_report(pickle_dir: Path, pickle_files: list, all_results: List[SimulationResult], analysis_results: dict, output_dir: Path):
     """Generates and saves a final summary report."""
-    import numpy as np  # Explicit import to ensure np is available
     report = []
     report.append("EYE DIAGRAM TRAINING DATA SUMMARY REPORT")
     report.append("=" * 50)
