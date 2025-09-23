@@ -333,7 +333,6 @@ def generate_summary_report(pickle_dir: Path, pickle_files: list, all_results: L
         # Show configuration value ranges
         if len(all_results) > 1:
             report.append("\n  Parameter value ranges:")
-            import numpy as np
             for j, key in enumerate(config_keys):
                 values = [result.config_values[j] for result in all_results]
                 values_array = np.array(values)

@@ -1,9 +1,37 @@
+#!/usr/bin/env python3
+"""
+A comprehensive tool to analyze, clean, and validate training pickle data.
+
+Usage:
+    python tests/data_analyzer/main.py <pickle_dir> <command> [options]
+    python -m tests.data_analyzer.main <pickle_dir> <command> [options]
+
+Commands:
+    analyze     Perform a full analysis of the pickle data.
+    clean       Clean the pickle files in-place.
+    validate    Validate pickle data against simulation.
+
+For more detailed help on each command, run:
+    python -m tests.data_analyzer.main <pickle_dir> <command> --help
+"""
+
 import argparse
 import pickle
+import sys
 from pathlib import Path
 from datetime import datetime
 
-from . import analysis, cleaning, validation
+# Add the project root to the Python path if not already there
+project_root = Path(__file__).parent.parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
+# Use absolute imports when running as main script, relative when imported as module
+if __name__ == "__main__":
+    from tests.data_analyzer import analysis, cleaning, validation
+else:
+    from . import analysis, cleaning, validation
+
 from common.pickle_utils import load_pickle_data
 
 def main():
@@ -86,5 +114,5 @@ def main():
     elif args.command == "validate":
         validation.run_validation(pickle_files, args.max_files, args.max_samples, output_dir)
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
