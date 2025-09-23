@@ -336,7 +336,27 @@ def generate_summary_report(pickle_dir: Path, pickle_files: list, all_results: L
             for j, key in enumerate(config_keys):
                 values = [result.config_values[j] for result in all_results]
                 values_array = np.array(values)
-                report.append(f"    {key}: [{np.min(values_array):.6f}, {np.max(values_array):.6f}]")
+                
+                # Check if values are numeric or string
+                if values_array.dtype.kind in ['U', 'S', 'O']:  # Unicode, byte string, or object
+                    # For string values, show unique values or range
+                    unique_values = np.unique(values_array)
+                    if len(unique_values) <= 5:
+                        report.append(f"    {key}: {list(unique_values)}")
+                    else:
+                        report.append(f"    {key}: {len(unique_values)} unique values")
+                else:
+                    # For numeric values, show min/max range
+                    try:
+                        numeric_values = values_array.astype(float)
+                        report.append(f"    {key}: [{np.min(numeric_values):.6f}, {np.max(numeric_values):.6f}]")
+                    except (ValueError, TypeError):
+                        # Fallback for mixed types
+                        unique_values = np.unique(values_array)
+                        if len(unique_values) <= 5:
+                            report.append(f"    {key}: {list(unique_values)}")
+                        else:
+                            report.append(f"    {key}: {len(unique_values)} unique values")
         
         report.append("")
 
