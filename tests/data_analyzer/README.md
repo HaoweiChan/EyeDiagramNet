@@ -4,14 +4,14 @@ This directory contains a comprehensive tool for analyzing, cleaning, and valida
 
 ## Main Script
 
-The primary entry point for this tool is `tests/analyze_pickle_data.py`.
+The primary entry point for this tool is `tests/data_analyzer/main.py`.
 
 ## Usage
 
 The tool is structured with subcommands to perform different tasks. The basic structure of a command is:
 
 ```bash
-python tests/analyze_pickle_data.py <path_to_pickle_dir> <command> [options]
+python -m tests.data_analyzer.main {analyze,clean,validate} <path_to_pickle_dir> [options]
 ```
 
 ### Commands
@@ -26,7 +26,7 @@ This command performs a full analysis of the data in the specified directory. It
 
 **Usage:**
 ```bash
-python tests/analyze_pickle_data.py /path/to/your/pickle_data analyze
+python -m tests.data_analyzer.main analyze /path/to/your/pickle_data
 ```
 
 **What it does:**
@@ -45,7 +45,7 @@ This command performs in-place cleaning of the pickle files. It can remove sampl
 
 **Usage:**
 ```bash
-python tests/analyze_pickle_data.py /path/to/your/pickle_data clean [options]
+python -m tests.data_analyzer.main clean /path/to/your/pickle_data [options]
 ```
 
 **Options:**
@@ -54,26 +54,26 @@ python tests/analyze_pickle_data.py /path/to/your/pickle_data clean [options]
     -   Only keeps samples where the estimated direction block size is exactly `<N>`.
     -   **Example:** To keep only samples with a block size of 2:
         ```bash
-        python tests/analyze_pickle_data.py ./data clean --block_size 2
+        python -m tests.data_analyzer.main clean ./data --block_size 2
         ```
 
 -   `--remove-block-size-1`:
     -   Removes samples that are known to be "contaminated" from older collection processes, which are identified by having a direction block size of 1.
     -   **Example:**
         ```bash
-        python tests/analyze_pickle_data.py ./data clean --remove-block-size-1
+        python -m tests.data_analyzer.main clean ./data --remove-block-size-1
         ```
 
 -   `--remove-duplicates`:
     -   Removes samples with duplicate configuration values, keeping only the first occurrence of each unique configuration.
     -   **Example:**
         ```bash
-        python tests/analyze_pickle_data.py ./data clean --remove-duplicates
+        python -m tests.data_analyzer.main clean ./data --remove-duplicates
         ```
 
 You can combine these options. For example, to only keep samples with block size 2, remove block size 1 patterns, and remove duplicates:
 ```bash
-python tests/analyze_pickle_data.py ./data clean --block_size 2 --remove-block-size-1 --remove-duplicates
+python -m tests.data_analyzer.main clean ./data --block_size 2 --remove-block-size-1 --remove-duplicates
 ```
 
 ---
@@ -84,7 +84,7 @@ This command validates the eye-width data in the pickle files by re-running the 
 
 **Usage:**
 ```bash
-python tests/analyze_pickle_data.py /path/to/your/pickle_data validate [options]
+python -m tests.data_analyzer.main validate /path/to/your/pickle_data [options]
 ```
 
 **Options:**
@@ -93,14 +93,14 @@ python tests/analyze_pickle_data.py /path/to/your/pickle_data validate [options]
     -   The maximum number of randomly selected pickle files to validate. Defaults to `3`.
     -   **Example:** To validate 10 files:
         ```bash
-        python tests/analyze_pickle_data.py ./data validate --max_files 10
+        python -m tests.data_analyzer.main validate ./data --max_files 10
         ```
 
 -   `--max_samples <M>`:
     -   The maximum number of samples to validate from *each* selected file. Defaults to `5`.
     -   **Example:** To validate 20 samples from each file:
         ```bash
-        python tests/analyze_pickle_data.py ./data validate --max_samples 20
+        python -m tests.data_analyzer.main validate ./data --max_samples 20
         ```
 
 **What it does:**

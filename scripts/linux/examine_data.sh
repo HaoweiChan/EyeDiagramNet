@@ -1,10 +1,12 @@
 #!/bin/tcsh
+module load LSF/mtkgpu
 module load Python3/3.12.2_gpu_torch270
 source /proj/siaiadm/ew_predictor/.venv/sipi_torch270/bin/activate.csh
 
 set python_cmd = ( \
     python3 -m tests.data_analyzer.main \
+    validate \
     /proj/siaiadm/ew_predictor/data/add_ind_dir \
-    validate --max_files 20 --max_samples 2 $argv \
+    --max_files 20 --max_samples 2 $argv \
 )
-bsub -J LongJob -q ML_CPU -app ML_CPU -P d_09017 $python_cmd
+bsub -Is -J LongJob -q ML_CPU -app ML_CPU -P d_09017 $python_cmd

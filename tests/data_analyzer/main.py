@@ -3,8 +3,8 @@
 A comprehensive tool to analyze, clean, and validate training pickle data.
 
 Usage:
-    python tests/data_analyzer/main.py <pickle_dir> <command> [options]
-    python -m tests.data_analyzer.main <pickle_dir> <command> [options]
+    python tests/data_analyzer/main.py {analyze,clean,validate} <pickle_dir> [options]
+    python -m tests.data_analyzer.main {analyze,clean,validate} <pickle_dir> [options]
 
 Commands:
     analyze     Perform a full analysis of the pickle data.
@@ -12,7 +12,7 @@ Commands:
     validate    Validate pickle data against simulation.
 
 For more detailed help on each command, run:
-    python -m tests.data_analyzer.main <pickle_dir> <command> --help
+    python -m tests.data_analyzer.main {analyze,clean,validate} --help
 """
 
 import argparse
@@ -36,21 +36,23 @@ from common.pickle_utils import load_pickle_data
 
 def main():
     parser = argparse.ArgumentParser(description="A comprehensive tool to analyze, clean, and validate training pickle data.")
-    parser.add_argument("pickle_dir", type=str, help="Path to the directory containing pickle files.")
     
     subparsers = parser.add_subparsers(dest="command", required=True, help="Available commands")
 
     # --- Analyze Command ---
     parser_analyze = subparsers.add_parser("analyze", help="Perform a full analysis of the pickle data.")
+    parser_analyze.add_argument("pickle_dir", type=str, help="Path to the directory containing pickle files.")
     
     # --- Clean Command ---
     parser_clean = subparsers.add_parser("clean", help="Clean the pickle files in-place.")
+    parser_clean.add_argument("pickle_dir", type=str, help="Path to the directory containing pickle files.")
     parser_clean.add_argument("--block_size", type=int, help="Only keep samples with this block size.")
     parser_clean.add_argument("--remove-block-size-1", action="store_true", help="Remove samples with block size 1 direction patterns.")
     parser_clean.add_argument("--remove-duplicates", action="store_true", help="Remove samples with duplicate configuration values (keeps first occurrence).")
 
     # --- Validate Command ---
     parser_validate = subparsers.add_parser("validate", help="Validate pickle data against simulation.")
+    parser_validate.add_argument("pickle_dir", type=str, help="Path to the directory containing pickle files.")
     parser_validate.add_argument("--max_files", type=int, default=3, help="Max number of files to validate.")
     parser_validate.add_argument("--max_samples", type=int, default=5, help="Max number of samples per file.")
 
