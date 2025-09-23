@@ -1,5 +1,4 @@
 import os
-import time
 import math
 import scipy
 import traceback
@@ -7,10 +6,8 @@ import skrf as rf
 import numpy as np
 from typing import Optional, Dict, Any
 from dataclasses import dataclass, field, fields
-from pathlib import Path
 
 from .network_utils import s2y, y2s, s2z, z2s, generate_test_pattern
-from skrf.io.network import read_snp
 
 # ===============================================
 # PERFORMANCE OPTIMIZATION FUNCTIONS (PHASE 1)
