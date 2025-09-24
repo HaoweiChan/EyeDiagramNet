@@ -47,26 +47,17 @@ def remove_duplicate_configs(results: List[SimulationResult]) -> List[Simulation
     if not results:
         return results
     
-    # Use same logic as analysis.py detect_duplicate_configs function
-    config_to_indices = {}
+    seen_configs = set()
+    unique_results = []
     
-    for i, result in enumerate(results):
+    for result in results:
         # Create a tuple of config values for hashing/comparison (same as analysis.py)
         config_tuple = tuple(result.config_values)
         
-        if config_tuple not in config_to_indices:
-            config_to_indices[config_tuple] = []
-        config_to_indices[config_tuple].append(i)
-    
-    # Keep only the first occurrence of each unique config
-    unique_results = []
-    for config_tuple, indices in config_to_indices.items():
-        # Always keep the first occurrence (smallest index)
-        first_index = min(indices)
-        unique_results.append(results[first_index])
-    
-    # Sort by original order to maintain consistency
-    unique_results.sort(key=lambda r: results.index(r))
+        # Only add if we haven't seen this config before
+        if config_tuple not in seen_configs:
+            seen_configs.add(config_tuple)
+            unique_results.append(result)
     
     return unique_results
 
@@ -102,8 +93,6 @@ def clean_pickle_file_inplace(pfile: Path, block_size: int = None, remove_block_
     if n_samples_before == 0:
         return 0, 0
     
-    print(f"\nProcessing {pfile.name}:")
-    print(f"  Loaded {n_samples_before} samples")
     if block_size is not None:
         print(f"  Will filter for block_size = {block_size}")
     if remove_block_size_1:
