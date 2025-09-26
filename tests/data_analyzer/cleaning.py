@@ -31,9 +31,8 @@ def detect_block_size_1_patterns(directions: list) -> bool:
     block_lengths = np.diff(all_indices)
     return np.any(block_lengths == 1)
 
-def remove_duplicate_configs(results: List[SimulationResult]) -> List[SimulationResult]:
-    """Remove samples with duplicate configuration values, keeping only the first occurrence.
-    Uses the same logic as detect_duplicate_configs in analysis.py for consistency."""
+def remove_duplicate_configs(results: List[SimulationResult], precision: int = 8) -> List[SimulationResult]:
+    """Remove samples with duplicate configuration values, keeping only the first occurrence."""
     if not results:
         return results
     
@@ -42,19 +41,18 @@ def remove_duplicate_configs(results: List[SimulationResult]) -> List[Simulation
     
     for result in results:
         try:
-            # Create a tuple of config values for hashing/comparison (same as analysis.py)
-            config_tuple = tuple(result.config_values)
+            # Round float values to handle precision issues
+            rounded_values = [round(v, precision) if isinstance(v, float) else v for v in result.config_values]
+            config_tuple = tuple(rounded_values)
             
-            # Only add if we haven't seen this config before
             if config_tuple not in seen_configs:
                 seen_configs.add(config_tuple)
                 unique_results.append(result)
-            # If we've seen this config, skip it (this is the duplicate removal)
         except (TypeError, ValueError) as e:
             # If config values aren't hashable, keep the result (safer than dropping it)
             print(f"Warning: Could not hash config values for duplicate checking: {e}")
             unique_results.append(result)
-    
+            
     return unique_results
 
 def clean_pickle_file_inplace(pfile: Path, block_size: int = None, remove_block_size_1: bool = False, remove_duplicates: bool = False) -> tuple[int, int]:
@@ -96,9 +94,6 @@ def clean_pickle_file_inplace(pfile: Path, block_size: int = None, remove_block_
     if remove_duplicates:
         print(f"  Will remove duplicate configurations")
 
-    # Track if any changes were made
-    changes_made = False
-    
     # Apply duplicate removal first if requested
     if remove_duplicates:
         print(f"  Before duplicate removal: {len(results)} samples")
@@ -106,14 +101,8 @@ def clean_pickle_file_inplace(pfile: Path, block_size: int = None, remove_block_
         from .analysis import detect_duplicate_configs
         dup_stats = detect_duplicate_configs(results)
         print(f"  Detected duplicates: {dup_stats['duplicate_count']} samples in {len(dup_stats['duplicate_groups'])} groups")
-        original_length = len(results)
         results = remove_duplicate_configs(results)
-        new_length = len(results)
-        print(f"  After duplicate removal: {new_length} samples")
-        duplicates_removed = original_length - new_length
-        print(f"  Duplicates actually removed from this file: {duplicates_removed}")
-        if duplicates_removed > 0:
-            changes_made = True
+        print(f"  After duplicate removal: {len(results)} samples")
     
     # Filter the list of dataclasses
     valid_results: List[SimulationResult] = []
@@ -133,17 +122,10 @@ def clean_pickle_file_inplace(pfile: Path, block_size: int = None, remove_block_
             valid_results.append(result)
 
     n_samples_after = len(valid_results)
-    total_removed = n_samples_before - n_samples_after
+    num_removed = n_samples_before - n_samples_after
 
-    # Only skip saving if no changes were made at all
-    if not changes_made and total_removed == 0:
+    if num_removed == 0:
         return n_samples_before, 0
-    
-    # If we made changes (e.g. duplicate removal) but final count is same as original,
-    # we still need to save because the data content has changed
-    if changes_made and total_removed == 0:
-        print(f"  Note: File content changed but sample count unchanged - still saving")
-        total_removed = n_samples_before - n_samples_after  # Could be 0, but we still save
 
     # Backup the original file
     backup_path = pfile.with_suffix(pfile.suffix + '.bak')
@@ -170,4 +152,4 @@ def clean_pickle_file_inplace(pfile: Path, block_size: int = None, remove_block_
     if legacy_format_detected:
         print(f"Note: Converted {pfile.name} from legacy format (snp_txs/snp_rxs) to new format (snp_drvs/snp_odts)")
 
-    return n_samples_before, total_removed
+    return n_samples_before, num_removed
