@@ -13,7 +13,6 @@ Visualizes 2D cross-section of sequence.csv and variation.csv data showing:
 
 import sys
 import argparse
-import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
@@ -32,7 +31,13 @@ except ImportError:
 
 
 class SequenceVisualizer:
-    """Visualize 2D cross-section of contour sequence data."""
+    """Visualize 2D cross-section of contour sequence data.
+    
+    Expects data directories to contain matching files:
+    - *_sequence_input.csv (structure definition)
+    - *_variations_variable.csv (parameter values)
+    where * is the same prefix for both files.
+    """
     
     def __init__(self):
         # Color scheme for different material types
@@ -50,14 +55,11 @@ class SequenceVisualizer:
         }
     
     def load_data(self, data_dir: Path) -> Tuple[pd.DataFrame, pd.DataFrame]:
-        """Load sequence.csv and variation.csv files."""
-        sequence_file = data_dir / "sequence.csv"
-        variation_file = data_dir / "variation.csv"
+        """Load *_sequence_input.csv and *_variations_variable.csv files using ContourProcessor."""
+        processor = ContourProcessor()
         
-        if not sequence_file.exists():
-            raise FileNotFoundError(f"sequence.csv not found in {data_dir}")
-        if not variation_file.exists():
-            raise FileNotFoundError(f"variation.csv not found in {data_dir}")
+        # Use ContourProcessor's locate_files to find matching files
+        sequence_file, variation_file = processor.locate_files(data_dir)
         
         sequence_df = pd.read_csv(sequence_file)
         variation_df = pd.read_csv(variation_file)
@@ -293,13 +295,19 @@ class SequenceVisualizer:
         print("Sequence Visualizer Demo")
         print("=" * 50)
         
-        # Find all contour test directories
-        test_dirs = [d for d in base_dir.iterdir() 
-                    if d.is_dir() and (d / "sequence.csv").exists() and (d / "variation.csv").exists()]
+        # Find all contour test directories with matching sequence/variation files
+        test_dirs = []
+        for d in base_dir.iterdir():
+            if d.is_dir():
+                # Check for matching sequence and variation files
+                has_sequence = any(d.glob("*_sequence_input.csv"))
+                has_variation = any(d.glob("*_variations_variable.csv"))
+                if has_sequence and has_variation:
+                    test_dirs.append(d)
         
         if not test_dirs:
             print(f"WARNING: No contour test data found in {base_dir}")
-            print("TIP: Generate test data with: python tests/data_generation/main.py contour --name demo_data")
+            print("TIP: Generate test data with matching *_sequence_input.csv and *_variations_variable.csv files")
             return
         
         total_visualizations = 0

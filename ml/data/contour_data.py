@@ -40,17 +40,40 @@ class ContourProcessor:
         self.var_length_map = {}
 
     def locate_files(self, data_dir: Union[str, Path]) -> Tuple[Path, Path]:
-        """Locate sequence.csv and variation.csv files in the given directory."""
+        """Locate *_sequence_input.csv and *_variations_variable.csv files with matching prefix."""
         data_path = Path(data_dir)
         
-        sequence_file = data_path / "sequence.csv"
-        variation_file = data_path / "variation.csv"
+        # Find all sequence and variation files
+        sequence_files = list(data_path.glob("*_sequence_input.csv"))
+        variation_files = list(data_path.glob("*_variations_variable.csv"))
         
-        if not sequence_file.exists():
-            raise FileNotFoundError(f"sequence.csv not found in {data_path}")
-        if not variation_file.exists():
-            raise FileNotFoundError(f"variation.csv not found in {data_path}")
-            
+        if not sequence_files:
+            raise FileNotFoundError(f"No *_sequence_input.csv files found in {data_path}")
+        if not variation_files:
+            raise FileNotFoundError(f"No *_variations_variable.csv files found in {data_path}")
+        
+        # Extract prefixes
+        seq_prefixes = {f.name.replace("_sequence_input.csv", ""): f for f in sequence_files}
+        var_prefixes = {f.name.replace("_variations_variable.csv", ""): f for f in variation_files}
+        
+        # Find matching prefixes
+        common_prefixes = set(seq_prefixes.keys()) & set(var_prefixes.keys())
+        
+        if not common_prefixes:
+            raise FileNotFoundError(
+                f"No matching sequence/variation file pairs found in {data_path}. "
+                f"Sequence prefixes: {list(seq_prefixes.keys())}, "
+                f"Variation prefixes: {list(var_prefixes.keys())}"
+            )
+        
+        # Use the first matching prefix (or you could add logic to select a specific one)
+        prefix = sorted(common_prefixes)[0]
+        sequence_file = seq_prefixes[prefix]
+        variation_file = var_prefixes[prefix]
+        
+        if len(common_prefixes) > 1:
+            rank_zero_info(f"Multiple matching file pairs found. Using prefix: '{prefix}'")
+        
         return sequence_file, variation_file
 
     def parse_sequence(self, sequence_path: Path) -> pd.DataFrame:
@@ -308,62 +331,7 @@ class ContourProcessor:
             'n_lengths': len(self.length_cols)
         }
 
-
 class ContourDataset(Dataset):
-    """Dataset for contour data combining sequence and variation information with eye width labels."""
-    
-    def __init__(
-        self,
-        contour_data: np.ndarray,
-        directions: np.ndarray,
-        boundaries: np.ndarray,
-        eye_widths: np.ndarray,
-        case_ids: List[int],
-        feature_info: Dict[str, int],
-        train: bool = False
-    ):
-        super().__init__()
-        
-        self.contour_data = torch.from_numpy(contour_data).float()
-        self.directions = torch.from_numpy(directions).int()
-        self.boundaries = torch.from_numpy(boundaries).float()
-        self.eye_widths = torch.from_numpy(eye_widths).float()
-        self.case_ids = case_ids
-        self.train = train
-        self.feature_info = feature_info  # Store feature counts for slice calculation
-        
-        # Feature dimensions for reference
-        self.n_cases, self.n_segments, self.n_features = self.contour_data.shape
-        
-        # Repetition represents the number of boundary conditions per case/sequence
-        self.repetition = self.boundaries.size(1) if len(self.boundaries.shape) > 1 else 1
-        
-        rank_zero_info(f"ContourDataset initialized: {self.n_cases} cases, "
-                      f"{self.n_segments} segments, {self.n_features} features, "
-                      f"{self.repetition} boundary conditions per case")
-        rank_zero_info(f"Feature breakdown: {self.feature_info}")
-
-    def __len__(self) -> int:
-        return self.n_cases * self.repetition
-
-    def __getitem__(self, index: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, int]:
-        # Calculate seq_index (which case) and bnd_index (which boundary condition within that case)
-        seq_index = index // self.repetition
-        bnd_index = index % self.repetition
-        
-        # Get contour sequence for the case
-        contour_seq = self.contour_data[seq_index]
-        case_id = self.case_ids[seq_index]
-        
-        # Get direction, boundary, and eye width for the specific boundary condition
-        direction = self.directions[seq_index, bnd_index]
-        boundary = self.boundaries[seq_index, bnd_index]
-        eye_width = self.eye_widths[seq_index, bnd_index]
-        
-        return contour_seq, direction, boundary, eye_width, case_id
-
-
-class ContourVariableDataset(Dataset):
     """
     Dataset for variable-as-token contour prediction.
     
@@ -518,58 +486,7 @@ class ContourVariableDataset(Dataset):
         
         return stats
 
-    def transform(self, seq_scaler, fix_scaler) -> 'ContourDataset':
-        """Apply scaling transformations to the data."""
-        # Scale only the continuous features (skip segment, layer, type indices)
-        # Features structure: [segment, layer, type, heights..., widths..., length, material_props...]
-        scalable_start_idx = 3  # Skip segment, layer, type
-        
-        scalable_data = self.contour_data[:, :, scalable_start_idx:]
-        original_shape = scalable_data.shape
-        
-        # Flatten for scaling
-        scalable_flat = scalable_data.reshape(-1, original_shape[-1])
-        scaled_flat = seq_scaler.transform(scalable_flat)
-        scaled_data = scaled_flat.reshape(original_shape)
-        
-        # Update the dataset contour data
-        self.contour_data[:, :, scalable_start_idx:] = scaled_data.float()
-        
-        # Scale boundary features
-        num = len(self.contour_data)
-        bound_dim = self.boundaries.size(-1)
-        scaled_boundary = fix_scaler.transform(self.boundaries).reshape(num, -1, bound_dim)
-        self.boundaries = scaled_boundary.float()
-        
-        return self
-
-    def get_feature_info(self) -> Dict[str, slice]:
-        """Get information about feature slices for analysis."""
-        start_idx = 3  # Skip segment, layer, type
-        
-        # Calculate dynamic slices based on actual feature counts
-        heights_start = start_idx
-        heights_end = heights_start + self.feature_info['n_heights']
-        
-        widths_start = heights_end
-        widths_end = widths_start + self.feature_info['n_widths']
-        
-        lengths_start = widths_end
-        lengths_end = lengths_start + self.feature_info['n_lengths']
-        
-        material_start = lengths_end
-        material_end = material_start + 3  # Always 3 material properties
-        
-        return {
-            'basic_info': slice(0, 3),  # segment, layer, type
-            'heights': slice(heights_start, heights_end),
-            'widths': slice(widths_start, widths_end),
-            'lengths': slice(lengths_start, lengths_end), 
-            'material': slice(material_start, material_end)
-        }
-
-
-class ContourVariableDataModule(LightningDataModule):
+class ContourDataModule(LightningDataModule):
     """Lightning DataModule for variable-as-token contour prediction."""
     
     def __init__(
@@ -601,9 +518,9 @@ class ContourVariableDataModule(LightningDataModule):
         self.perturbation_scale = perturbation_scale
         
         # Initialize datasets
-        self.train_dataset: Dict[str, ContourVariableDataset] = {}
-        self.val_dataset: Dict[str, ContourVariableDataset] = {}
-        self.test_dataset: Dict[str, ContourVariableDataset] = {}
+        self.train_dataset: Dict[str, ContourDataset] = {}
+        self.val_dataset: Dict[str, ContourDataset] = {}
+        self.test_dataset: Dict[str, ContourDataset] = {}
 
     def setup(self, stage: Optional[str] = None, nan: int = -1):
         """Setup datasets by converting contour data to variable-token format."""
@@ -693,7 +610,7 @@ class ContourVariableDataModule(LightningDataModule):
                     y_test = eye_widths[test_idx]
                     case_ids_test = [case_ids_filtered[i] for i in test_idx]
                     
-                    self.test_dataset[name] = ContourVariableDataset(
+                    self.test_dataset[name] = ContourDataset(
                         sequence_data=seq_test,
                         variable_data=var_test,
                         eye_widths=y_test,
@@ -732,7 +649,7 @@ class ContourVariableDataModule(LightningDataModule):
                     case_ids_val = [case_ids_filtered[i] for i in val_idx]
                 
                 # Create training dataset
-                self.train_dataset[name] = ContourVariableDataset(
+                self.train_dataset[name] = ContourDataset(
                     sequence_data=seq_tr,
                     variable_data=var_tr,
                     eye_widths=y_tr,
@@ -747,7 +664,7 @@ class ContourVariableDataModule(LightningDataModule):
                 
                 # Create validation dataset if we have data
                 if len(seq_val) > 0:
-                    self.val_dataset[name] = ContourVariableDataset(
+                    self.val_dataset[name] = ContourDataset(
                         sequence_data=seq_val,
                         variable_data=var_val,
                         eye_widths=y_val,
@@ -884,7 +801,7 @@ class ContourVariableDataModule(LightningDataModule):
             pin_memory=True
         )
 
-    def _combine_datasets(self, dataset_dict: Dict[str, ContourVariableDataset]) -> Dataset:
+    def _combine_datasets(self, dataset_dict: Dict[str, ContourDataset]) -> Dataset:
         """Combine multiple datasets into one."""
         from torch.utils.data import ConcatDataset
         
@@ -895,7 +812,7 @@ class ContourVariableDataModule(LightningDataModule):
             return ConcatDataset(datasets)
         else:
             # Empty dataset
-            return ContourVariableDataset(
+            return ContourDataset(
                 sequence_data=np.array([[]]),
                 variable_data={},
                 eye_widths=np.array([]),
@@ -903,262 +820,3 @@ class ContourVariableDataModule(LightningDataModule):
                 variable_registry=self.registry,
                 train=False
             )
-
-
-class ContourDataModule(LightningDataModule):
-    """Lightning DataModule for contour data with eye width labels."""
-    
-    def __init__(
-        self,
-        data_dirs: Union[Dict[str, str], List[str]],
-        label_dir: str,
-        batch_size: int = 32,
-        test_size: float = 0.2,
-        scaler_path: Optional[str] = None,
-    ):
-        super().__init__()
-        self.data_dirs = data_dirs
-        self.label_dir = Path(label_dir)
-        self.batch_size = batch_size
-        self.test_size = test_size
-        self.scaler_path = scaler_path
-        
-        # Initialize datasets
-        self.train_dataset: Dict[str, ContourDataset] = {}
-        self.val_dataset: Dict[str, ContourDataset] = {}
-        self.test_dataset: Dict[str, ContourDataset] = {}
-
-    def setup(self, stage: Optional[str] = None, nan: int = -1):
-        """Setup the datasets for training, validation, and testing."""
-        # Scalers (similar to eyewidth_data.py)
-        fit_scaler = True
-        try:
-            if self.scaler_path is None:
-                raise FileNotFoundError("No scaler path provided")
-            # Use weights_only=False for backward compatibility with custom scaler classes
-            self.seq_scaler, self.fix_scaler = torch.load(self.scaler_path, weights_only=False)
-            rank_zero_info(f"Loaded scalers from {self.scaler_path}")
-            fit_scaler = False
-        except (FileNotFoundError, AttributeError, EOFError) as e:
-            # In test/predict modes, we must have valid scalers - don't create new ones
-            if stage in ["test", "predict"] or stage is None:
-                error_msg = f"Cannot find or load scaler file for {stage or 'test/predict'} mode"
-                if self.scaler_path:
-                    error_msg += f" at path: {self.scaler_path}"
-                else:
-                    error_msg += " (no scaler_path provided)"
-                error_msg += f". Original error: {e}"
-                rank_zero_info(f"ERROR: {error_msg}")
-                raise FileNotFoundError(error_msg)
-            
-            # Only create new scalers during training
-            self.seq_scaler = MinMaxScaler(nan=nan)
-            self.fix_scaler = MinMaxScaler(nan=nan)
-            rank_zero_info("Could not find scalers on disk, creating new ones for training.")
-
-        # Locate every CSV once via processor
-        csv_processor = CSVProcessor()
-        csv_paths = csv_processor.locate(self.data_dirs)  # dict[str, Path]
-        
-        # Process each named dataset
-        for name, csv_path in csv_paths.items():
-            case_ids, input_arr = csv_processor.parse(csv_path)
-            
-            # Load labels using unified pickle directory loader
-            labels = load_pickle_directory(self.label_dir, name)
-            
-            # Keep only indices present in labels
-            label_keys = set(labels.keys())
-            keep_idx = [i for i, cid in enumerate(case_ids) if cid in label_keys]
-            input_arr = input_arr[keep_idx]
-            sorted_keys = [case_ids[i] for i in keep_idx]
-            sorted_vals = [labels[k] for k in sorted_keys]
-            
-            # Align tensors by selecting entries that match the maximum length
-            lengths = [len(v[0]) for v in sorted_vals if v and v[0] is not None]
-            if not lengths:
-                rank_zero_info(f"No valid label entries for {name}; skipping.")
-                continue
-            max_len = max(lengths)
-            
-            keep_indices = [i for i, s in enumerate(sorted_vals) if len(s[0]) == max_len]
-            sorted_vals = [sorted_vals[i] for i in keep_indices]
-            input_arr = input_arr[keep_indices]
-            
-            configs_list, directions_list, eye_widths_list, _, metas_list = zip(*sorted_vals)
-            config_keys = metas_list[0]['config_keys']
-            boundaries = convert_configs_to_boundaries(configs_list, config_keys)
-            
-            directions, eye_widths = map(np.array, (directions_list, eye_widths_list))
-            eye_widths[eye_widths < 0] = 0
-            
-            rank_zero_info(f"{name}| input_seq {input_arr.shape} | eye_width {eye_widths.shape}")
-            
-            # Train/val/test split
-            indices = np.arange(len(input_arr))
-            
-            # For test stage, use the entire dataset as test set
-            if stage == "test":
-                test_idx = indices
-                x_seq_test = input_arr[test_idx]
-                x_tok_test = directions[test_idx]
-                x_fix_test = boundaries[test_idx]
-                y_test = eye_widths[test_idx]
-                case_ids_test = [case_ids[i] for i in test_idx]
-                
-                # Create test dataset
-                self.test_dataset[name] = ContourDataset(
-                    x_seq_test, x_tok_test, x_fix_test, y_test, case_ids_test, 
-                    {'n_heights': 0, 'n_widths': 0, 'n_lengths': 0}, train=False
-                )
-                # Apply scaling if scalers are available
-                if hasattr(self, 'seq_scaler') and hasattr(self, 'fix_scaler'):
-                    self.test_dataset[name] = self.test_dataset[name].transform(
-                        self.seq_scaler, self.fix_scaler
-                    )
-                continue
-            
-            # Check if dataset is too small for proper validation
-            total_dataset_size = eye_widths.shape[0] * eye_widths.shape[1]
-            estimated_batch_size = max(1, self.batch_size // max(1, len(csv_paths)))
-            estimated_batches = max(1, total_dataset_size // estimated_batch_size)
-            
-            if estimated_batches < 10:
-                # Dataset too small - use all samples for training
-                rank_zero_info(f"Dataset '{name}' too small for validation (~{estimated_batches} batches < 10), using all {total_dataset_size} samples for training")
-                x_seq_tr, x_seq_val = input_arr, np.array([])
-                x_tok_tr, x_tok_val = directions, np.array([])
-                x_fix_tr, x_fix_val = boundaries, np.array([]).reshape(0, boundaries.shape[-1])
-                y_tr, y_val = eye_widths, np.array([])
-                case_ids_tr = case_ids
-                case_ids_val = []
-            else:
-                # Normal train/val split  
-                train_idx, val_idx = train_test_split(
-                    indices, test_size=self.test_size, shuffle=True, random_state=42
-                )
-                
-                x_seq_tr, x_seq_val = input_arr[train_idx], input_arr[val_idx]
-                x_tok_tr, x_tok_val = directions[train_idx], directions[val_idx]
-                x_fix_tr, x_fix_val = boundaries[train_idx], boundaries[val_idx]
-                y_tr, y_val = eye_widths[train_idx], eye_widths[val_idx]
-                case_ids_tr = [case_ids[i] for i in train_idx]
-                case_ids_val = [case_ids[i] for i in val_idx]
-            
-            # Feature info (placeholder - would need to be computed from contour processing)
-            feature_info = {'n_heights': 0, 'n_widths': 0, 'n_lengths': 0}
-            
-            # Create datasets
-            self.train_dataset[name] = ContourDataset(
-                x_seq_tr, x_tok_tr, x_fix_tr, y_tr, case_ids_tr, feature_info, train=True
-            )
-            
-            if len(x_seq_val) > 0:
-                self.val_dataset[name] = ContourDataset(
-                    x_seq_val, x_tok_val, x_fix_val, y_val, case_ids_val, feature_info, train=False
-                )
-            
-            # Fit scalers on training data
-            if fit_scaler:
-                # Fit seq_scaler on contour sequences (skip first 3 categorical features)
-                scalable_start_idx = 3
-                scalable_data = x_seq_tr[:, :, scalable_start_idx:]
-                scalable_flat = scalable_data.reshape(-1, scalable_data.shape[-1])
-                self.seq_scaler.fit(scalable_flat)
-                
-                # Fit fix_scaler on boundaries
-                bound_flat = x_fix_tr.reshape(-1, x_fix_tr.shape[-1])
-                self.fix_scaler.fit(bound_flat)
-                
-                fit_scaler = False  # Only fit once
-                
-                # Save scalers
-                if self.scaler_path:
-                    torch.save((self.seq_scaler, self.fix_scaler), self.scaler_path)
-                    rank_zero_info(f"Saved scalers to {self.scaler_path}")
-            
-            # Apply scaling to datasets
-            self.train_dataset[name] = self.train_dataset[name].transform(
-                self.seq_scaler, self.fix_scaler
-            )
-            
-            if name in self.val_dataset:
-                self.val_dataset[name] = self.val_dataset[name].transform(
-                    self.seq_scaler, self.fix_scaler
-                )
-
-    def _normalize_data_dirs(self) -> Dict[str, str]:
-        """Normalize data_dirs to a consistent dict format."""
-        if isinstance(self.data_dirs, list):
-            return {f"contour_{i}": dir_path for i, dir_path in enumerate(self.data_dirs)}
-        return self.data_dirs
-
-    def train_dataloader(self) -> DataLoader:
-        """Create training data loader."""
-        if not self.train_dataset:
-            raise RuntimeError("No training datasets available")
-        
-        # Calculate batch size per dataset
-        num_datasets = len(self.train_dataset)
-        per_dataset_batch_size = max(1, self.batch_size // num_datasets)
-        
-        loaders = {}
-        for name, dataset in self.train_dataset.items():
-            loader = get_loader_from_dataset(
-                dataset, batch_size=per_dataset_batch_size, shuffle=True
-            )
-            loaders[name] = loader
-            rank_zero_info(f"Train loader '{name}': {len(dataset)} samples, "
-                          f"batch_size={per_dataset_batch_size}, {len(loader)} batches")
-        
-        if len(loaders) == 1:
-            return list(loaders.values())[0]
-        else:
-            from lightning.pytorch.utilities import CombinedLoader
-            return CombinedLoader(loaders, mode="max_size_cycle")
-
-    def val_dataloader(self) -> Optional[DataLoader]:
-        """Create validation data loader."""
-        if not self.val_dataset:
-            return None
-        
-        num_datasets = len(self.val_dataset)
-        per_dataset_batch_size = max(1, int(self.batch_size * 1.5) // num_datasets)
-        
-        loaders = {}
-        for name, dataset in self.val_dataset.items():
-            loader = get_loader_from_dataset(
-                dataset, batch_size=per_dataset_batch_size, shuffle=False
-            )
-            loaders[name] = loader
-            rank_zero_info(f"Val loader '{name}': {len(dataset)} samples, "
-                          f"batch_size={per_dataset_batch_size}, {len(loader)} batches")
-        
-        if len(loaders) == 1:
-            return list(loaders.values())[0]
-        else:
-            from lightning.pytorch.utilities import CombinedLoader
-            return CombinedLoader(loaders, mode="min_size")
-
-    def test_dataloader(self) -> Optional[DataLoader]:
-        """Create test data loader."""
-        if not self.test_dataset:
-            return None
-        
-        num_datasets = len(self.test_dataset)
-        per_dataset_batch_size = max(1, int(self.batch_size * 1.5) // num_datasets)
-        
-        loaders = {}
-        for name, dataset in self.test_dataset.items():
-            loader = get_loader_from_dataset(
-                dataset, batch_size=per_dataset_batch_size, shuffle=False
-            )
-            loaders[name] = loader
-            rank_zero_info(f"Test loader '{name}': {len(dataset)} samples, "
-                          f"batch_size={per_dataset_batch_size}, {len(loader)} batches")
-        
-        if len(loaders) == 1:
-            return list(loaders.values())[0]
-        else:
-            from lightning.pytorch.utilities import CombinedLoader
-            return CombinedLoader(loaders, mode="min_size")
