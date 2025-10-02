@@ -67,7 +67,7 @@ class SequenceVisualizer:
         return sequence_df, variation_df
     
     def extract_segments_info(self, sequence_df: pd.DataFrame, variation_row: pd.Series) -> List[Dict]:
-        """Extract segment information with resolved dimensions."""
+        """Extract segment information with resolved dimensions and variable dependencies."""
         processor = ContourProcessor()
         
         # Parse sequence and sync with variation  
@@ -90,24 +90,36 @@ class SequenceVisualizer:
                 'type_category': seg_row['Type'][0] if isinstance(seg_row['Type'], str) else 'D'  # Extract D/S/G
             }
             
-            # Calculate resolved widths (sum of all width contributions for this segment)
+            # Calculate resolved widths and track contributing variables
             total_width = 0
+            width_contributors = []
             for w_col in processor.width_cols:
                 multiplier = seg_row.get(w_col, 0.0)
                 base_key = processor.var_width_map.get(w_col)
                 base_value = base_dims.get(base_key, 0.0) if base_key else 0.0
-                total_width += multiplier * base_value
+                contribution = multiplier * base_value
+                if abs(contribution) > 1e-6:  # Non-zero contribution
+                    total_width += contribution
+                    width_contributors.append((base_key, abs(contribution)))
             
-            # Calculate resolved height (sum of all height contributions for this segment) 
+            # Calculate resolved height and track contributing variables
             total_height = 0
+            height_contributors = []
             for h_col in processor.height_cols:
                 multiplier = seg_row.get(h_col, 0.0)
                 base_key = processor.var_height_map.get(h_col)
                 base_value = base_dims.get(base_key, 0.0) if base_key else 0.0
-                total_height += multiplier * base_value
+                contribution = multiplier * base_value
+                if abs(contribution) > 1e-6:  # Non-zero contribution
+                    total_height += contribution
+                    height_contributors.append((base_key, abs(contribution)))
             
-            segment_info['width'] = abs(total_width) if total_width != 0 else 1.0  # Use absolute value, min 1.0
-            segment_info['height'] = abs(total_height) if total_height != 0 else 1.0  # Use absolute value, min 1.0
+            segment_info['width'] = abs(total_width) if total_width != 0 else 1.0
+            segment_info['height'] = abs(total_height) if total_height != 0 else 1.0
+            
+            # Identify single-variable dependencies
+            segment_info['width_variable'] = width_contributors[0][0] if len(width_contributors) == 1 else None
+            segment_info['height_variable'] = height_contributors[0][0] if len(height_contributors) == 1 else None
             
             segments_info.append(segment_info)
         
@@ -129,7 +141,7 @@ class SequenceVisualizer:
         return layers
     
     def calculate_layer_dimensions(self, layers: Dict[int, List[Dict]]) -> Dict[int, Dict]:
-        """Calculate dimensions for each layer."""
+        """Calculate dimensions for each layer and identify variable dependencies."""
         layer_info = {}
         
         for layer_id, segments in layers.items():
@@ -139,10 +151,17 @@ class SequenceVisualizer:
             # Total layer width is sum of all segment widths
             total_width = sum(seg['width'] for seg in segments)
             
+            # Check if all segments share the same height variable
+            height_variables = [seg.get('height_variable') for seg in segments if seg.get('height_variable')]
+            layer_height_variable = None
+            if height_variables and all(v == height_variables[0] for v in height_variables):
+                layer_height_variable = height_variables[0]
+            
             layer_info[layer_id] = {
                 'height': max_height,
                 'total_width': total_width,
-                'segments': segments
+                'segments': segments,
+                'height_variable': layer_height_variable
             }
         
         return layer_info
@@ -262,6 +281,27 @@ class SequenceVisualizer:
                         fontsize=8, fontweight='bold'
                     )
                 
+                # Add variable name annotations for single-variable dimensions
+                # Show width variable at bottom edge
+                if segment.get('width_variable'):
+                    ax.text(
+                        current_x + width/2, current_y - 2,
+                        segment['width_variable'], 
+                        ha='center', va='top',
+                        fontsize=6, style='italic',
+                        color='blue', bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.7)
+                    )
+                
+                # Show height variable at left edge
+                if segment.get('height_variable') and width > 10:  # Only show if segment is wide enough
+                    ax.text(
+                        current_x + 2, current_y + height/2,
+                        segment['height_variable'], 
+                        ha='left', va='center',
+                        fontsize=6, style='italic', rotation=90,
+                        color='darkgreen', bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.7)
+                    )
+                
                 current_x += width
         
         # Set axis properties
@@ -279,18 +319,21 @@ class SequenceVisualizer:
         ax.set_ylabel(ylabel, fontsize=12)
         ax.set_aspect('equal')
         
-        # Add layer labels on the right (show original heights in parentheses)
+        # Add layer labels on the right (show original heights and variable names)
         current_y = total_height
         for layer_id, info in sorted_layers:
             scaled_height = info['scaled_height']
             original_height = info['height']
+            height_var = info.get('height_variable')
             current_y -= scaled_height
             
-            # Show layer ID and original height
+            # Build layer label with height info and variable name
+            label_parts = [f'Layer {layer_id}']
             if height_scale != 'linear':
-                label_text = f'Layer {layer_id}\n(h={original_height:.1f})'
-            else:
-                label_text = f'Layer {layer_id}'
+                label_parts.append(f'(h={original_height:.1f})')
+            if height_var:
+                label_parts.append(f'[{height_var}]')
+            label_text = '\n'.join(label_parts)
             
             ax.text(
                 max_width * 1.02, current_y + scaled_height/2,
@@ -309,7 +352,20 @@ class SequenceVisualizer:
             legend_elements.append(
                 patches.Patch(color=color, label=self.type_names[type_key])
             )
-        ax.legend(handles=legend_elements, loc='upper right', bbox_to_anchor=(1, 1))
+        
+        # Add legend entries for variable annotations
+        from matplotlib.lines import Line2D
+        legend_elements.append(Line2D([0], [0], marker='None', color='w', 
+                                     label='', markersize=0))  # Spacer
+        legend_elements.append(Line2D([0], [0], marker='None', color='blue', 
+                                     label='Width var (blue)', markersize=0, linestyle=''))
+        legend_elements.append(Line2D([0], [0], marker='None', color='darkgreen', 
+                                     label='Height var (green)', markersize=0, linestyle=''))
+        legend_elements.append(Line2D([0], [0], marker='None', color='w', 
+                                     label='[var] = layer height', markersize=0, linestyle=''))
+        
+        ax.legend(handles=legend_elements, loc='upper right', bbox_to_anchor=(1, 1), 
+                 fontsize=9, framealpha=0.9)
         
         # Add grid
         ax.grid(True, alpha=0.3)
