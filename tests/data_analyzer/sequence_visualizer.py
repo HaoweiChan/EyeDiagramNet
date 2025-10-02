@@ -147,11 +147,57 @@ class SequenceVisualizer:
         
         return layer_info
     
+    def _apply_height_scaling(self, layer_info: Dict[int, Dict], scale_mode: str) -> Dict[int, Dict]:
+        """Apply height scaling transformation to layer dimensions.
+        
+        Args:
+            layer_info: Dictionary mapping layer IDs to layer information
+            scale_mode: Scaling mode - 'linear', 'log', or 'sqrt'
+        
+        Returns:
+            Updated layer_info with 'scaled_height' field added
+        """
+        import numpy as np
+        
+        scaled_info = {}
+        
+        for layer_id, info in layer_info.items():
+            original_height = info['height']
+            
+            # Apply scaling transformation
+            if scale_mode == 'log':
+                # Use log1p to handle small values gracefully
+                # Add small offset to avoid log(0)
+                scaled_height = np.log1p(original_height)
+            elif scale_mode == 'sqrt':
+                # Square root scaling
+                scaled_height = np.sqrt(max(original_height, 0))
+            else:  # 'linear' or any other value
+                scaled_height = original_height
+            
+            # Copy all original info and add scaled height
+            scaled_info[layer_id] = {
+                **info,
+                'scaled_height': scaled_height
+            }
+        
+        return scaled_info
+    
     def visualize_sequence(self, data_dir: Path, case_id: int = 0, 
                           figsize: Tuple[float, float] = (12, 8),
                           save_path: Optional[Path] = None,
-                          show_labels: bool = True) -> plt.Figure:
-        """Create 2D visualization of the sequence."""
+                          show_labels: bool = True,
+                          height_scale: str = 'log') -> plt.Figure:
+        """Create 2D visualization of the sequence.
+        
+        Args:
+            data_dir: Directory containing sequence and variation files
+            case_id: Which case to visualize
+            figsize: Figure size in inches
+            save_path: Path to save the figure
+            show_labels: Whether to show segment labels
+            height_scale: Height scaling mode - 'linear', 'log', or 'sqrt'
+        """
         
         # Load data
         sequence_df, variation_df = self.load_data(data_dir)
@@ -168,20 +214,23 @@ class SequenceVisualizer:
         layers = self.organize_layers(segments_info)
         layer_info = self.calculate_layer_dimensions(layers)
         
+        # Apply height scaling transformation
+        scaled_layer_info = self._apply_height_scaling(layer_info, height_scale)
+        
         # Create figure
         fig, ax = plt.subplots(figsize=figsize)
         
         # Calculate total height and max width for layout
-        total_height = sum(info['height'] for info in layer_info.values())
-        max_width = max(info['total_width'] for info in layer_info.values()) if layer_info else 10
+        total_height = sum(info['scaled_height'] for info in scaled_layer_info.values())
+        max_width = max(info['total_width'] for info in scaled_layer_info.values()) if scaled_layer_info else 10
         
         # Draw layers from top to bottom (layer 0 at top)
         current_y = total_height
         
-        sorted_layers = sorted(layer_info.items())  # Sort by layer ID
+        sorted_layers = sorted(scaled_layer_info.items())  # Sort by layer ID
         
         for layer_id, info in sorted_layers:
-            layer_height = info['height']
+            layer_height = info['scaled_height']
             current_y -= layer_height  # Move to bottom of current layer
             
             # Draw segments in this layer from left to right
@@ -219,17 +268,33 @@ class SequenceVisualizer:
         ax.set_xlim(0, max_width * 1.1)
         ax.set_ylim(0, total_height * 1.1)
         ax.set_xlabel('Width', fontsize=12)
-        ax.set_ylabel('Height (Layer 0 at top)', fontsize=12)
+        
+        # Update Y-axis label based on scaling mode
+        if height_scale == 'log':
+            ylabel = 'Height (log scale, Layer 0 at top)'
+        elif height_scale == 'sqrt':
+            ylabel = 'Height (sqrt scale, Layer 0 at top)'
+        else:
+            ylabel = 'Height (Layer 0 at top)'
+        ax.set_ylabel(ylabel, fontsize=12)
         ax.set_aspect('equal')
         
-        # Add layer labels on the right
+        # Add layer labels on the right (show original heights in parentheses)
         current_y = total_height
         for layer_id, info in sorted_layers:
-            layer_height = info['height']
-            current_y -= layer_height
+            scaled_height = info['scaled_height']
+            original_height = info['height']
+            current_y -= scaled_height
+            
+            # Show layer ID and original height
+            if height_scale != 'linear':
+                label_text = f'Layer {layer_id}\n(h={original_height:.1f})'
+            else:
+                label_text = f'Layer {layer_id}'
+            
             ax.text(
-                max_width * 1.02, current_y + layer_height/2,
-                f'Layer {layer_id}', ha='left', va='center',
+                max_width * 1.02, current_y + scaled_height/2,
+                label_text, ha='left', va='center',
                 fontsize=10, fontweight='bold'
             )
         
@@ -258,8 +323,15 @@ class SequenceVisualizer:
         
         return fig
     
-    def visualize_all_cases(self, data_dir: Path, save_dir: Optional[Path] = None) -> List[plt.Figure]:
-        """Visualize all cases in the dataset."""
+    def visualize_all_cases(self, data_dir: Path, save_dir: Optional[Path] = None, 
+                           height_scale: str = 'log') -> List[plt.Figure]:
+        """Visualize all cases in the dataset.
+        
+        Args:
+            data_dir: Directory containing sequence and variation files
+            save_dir: Directory to save visualizations
+            height_scale: Height scaling mode - 'linear', 'log', or 'sqrt'
+        """
         sequence_df, variation_df = self.load_data(data_dir)
         
         figures = []
@@ -275,14 +347,22 @@ class SequenceVisualizer:
             
             fig = self.visualize_sequence(
                 data_dir, case_id=case_id, 
-                save_path=save_path, show_labels=True
+                save_path=save_path, show_labels=True,
+                height_scale=height_scale
             )
             figures.append(fig)
         
         return figures
 
-    def demo_visualizations(self, base_dir: Optional[Path] = None, save_dir: Optional[Path] = None) -> None:
-        """Generate demo visualizations from available test contour data."""
+    def demo_visualizations(self, base_dir: Optional[Path] = None, save_dir: Optional[Path] = None,
+                           height_scale: str = 'log') -> None:
+        """Generate demo visualizations from available test contour data.
+        
+        Args:
+            base_dir: Base directory containing test contour data
+            save_dir: Directory to save visualizations
+            height_scale: Height scaling mode - 'linear', 'log', or 'sqrt'
+        """
         if base_dir is None:
             # Default to project's contour test data
             project_root = Path(__file__).parent.parent.parent
@@ -340,7 +420,8 @@ class SequenceVisualizer:
                     case_id=case_id,
                     figsize=(10, 6),
                     save_path=output_file,
-                    show_labels=True
+                    show_labels=True,
+                    height_scale=height_scale
                 )
                 
                 plt.close(fig)  # Close to save memory
@@ -359,14 +440,15 @@ class SequenceVisualizer:
     def _print_usage_examples(self) -> None:
         """Print usage examples."""
         print("\nUsage examples:")
-        print("   # Single case visualization:")
+        print("   # Single case visualization (log scale - default):")
         print("   python tests/data_analyzer/sequence_visualizer.py tests/data_generation/contour/small_contour --case 0 --save output.png")
-        print("\n   # All cases:")
-        print("   python tests/data_analyzer/sequence_visualizer.py tests/data_generation/contour/small_contour --all-cases --save-dir output/")
-        print("\n   # Interactive (no save):")
-        print("   python tests/data_analyzer/sequence_visualizer.py tests/data_generation/contour/small_contour --case 0")
+        print("\n   # All cases with linear (physical) scale:")
+        print("   python tests/data_analyzer/sequence_visualizer.py tests/data_generation/contour/small_contour --all-cases --save-dir output/ --height-scale linear")
+        print("\n   # Interactive with sqrt scale:")
+        print("   python tests/data_analyzer/sequence_visualizer.py tests/data_generation/contour/small_contour --case 0 --height-scale sqrt")
         print("\n   # Generate demo visualizations:")
         print("   python tests/data_analyzer/sequence_visualizer.py --demo --save-dir demo_output/")
+        print("\n   # Height scale options: linear (physical), log (default), sqrt")
 
 
 def main():
@@ -406,6 +488,11 @@ def main():
         "--figsize", nargs=2, type=float, default=[12, 8],
         help="Figure size in inches (width height)"
     )
+    parser.add_argument(
+        "--height-scale", type=str, default='log', 
+        choices=['linear', 'log', 'sqrt'],
+        help="Height scaling mode: 'linear' (physical), 'log' (logarithmic), or 'sqrt' (square root). Default: 'log'"
+    )
     
     args = parser.parse_args()
     
@@ -415,7 +502,7 @@ def main():
         if args.demo:
             # Demo mode - process all available test data
             save_dir = Path(args.save_dir) if args.save_dir else None
-            visualizer.demo_visualizations(save_dir=save_dir)
+            visualizer.demo_visualizations(save_dir=save_dir, height_scale=args.height_scale)
         else:
             # Regular mode - need data_dir
             if not args.data_dir:
@@ -430,7 +517,9 @@ def main():
             
             if args.all_cases:
                 save_dir = Path(args.save_dir) if args.save_dir else None
-                figures = visualizer.visualize_all_cases(data_dir, save_dir=save_dir)
+                figures = visualizer.visualize_all_cases(
+                    data_dir, save_dir=save_dir, height_scale=args.height_scale
+                )
                 print(f"Generated {len(figures)} visualizations")
                 
                 if not args.save_dir:
@@ -441,7 +530,8 @@ def main():
                     data_dir, case_id=args.case,
                     figsize=tuple(args.figsize),
                     save_path=save_path,
-                    show_labels=not args.no_labels
+                    show_labels=not args.no_labels,
+                    height_scale=args.height_scale
                 )
                 
                 if not args.save:

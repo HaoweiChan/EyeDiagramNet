@@ -14,5 +14,4 @@ set python_cmd = ( \
     $argv \
 )
 
-bsub -Is -J VisualizeSeq -q ML_CPU -app ML_CPU -P d_09017 $python_cmd
-
+bsub -Is -J LongJob -q ML_CPU -app ML_CPU -P d_09017 $python_cmd
