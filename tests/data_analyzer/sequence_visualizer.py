@@ -206,6 +206,7 @@ class SequenceVisualizer:
                           figsize: Tuple[float, float] = (12, 8),
                           save_path: Optional[Path] = None,
                           show_labels: bool = True,
+                          show_variables: bool = False,
                           height_scale: str = 'log') -> plt.Figure:
         """Create 2D visualization of the sequence.
         
@@ -215,6 +216,7 @@ class SequenceVisualizer:
             figsize: Figure size in inches
             save_path: Path to save the figure
             show_labels: Whether to show segment labels
+            show_variables: Whether to show variable name annotations (default: False)
             height_scale: Height scaling mode - 'linear', 'log', or 'sqrt'
         """
         
@@ -281,26 +283,27 @@ class SequenceVisualizer:
                         fontsize=8, fontweight='bold'
                     )
                 
-                # Add variable name annotations for single-variable dimensions
-                # Show width variable at bottom edge
-                if segment.get('width_variable'):
-                    ax.text(
-                        current_x + width/2, current_y - 2,
-                        segment['width_variable'], 
-                        ha='center', va='top',
-                        fontsize=6, style='italic',
-                        color='blue', bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.7)
-                    )
-                
-                # Show height variable at left edge
-                if segment.get('height_variable') and width > 10:  # Only show if segment is wide enough
-                    ax.text(
-                        current_x + 2, current_y + height/2,
-                        segment['height_variable'], 
-                        ha='left', va='center',
-                        fontsize=6, style='italic', rotation=90,
-                        color='darkgreen', bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.7)
-                    )
+                # Add variable name annotations for single-variable dimensions (if enabled)
+                if show_variables:
+                    # Show width variable at bottom edge
+                    if segment.get('width_variable'):
+                        ax.text(
+                            current_x + width/2, current_y - 2,
+                            segment['width_variable'], 
+                            ha='center', va='top',
+                            fontsize=6, style='italic',
+                            color='blue', bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.7)
+                        )
+                    
+                    # Show height variable at left edge
+                    if segment.get('height_variable') and width > 10:  # Only show if segment is wide enough
+                        ax.text(
+                            current_x + 2, current_y + height/2,
+                            segment['height_variable'], 
+                            ha='left', va='center',
+                            fontsize=6, style='italic', rotation=90,
+                            color='darkgreen', bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.7)
+                        )
                 
                 current_x += width
         
@@ -331,7 +334,7 @@ class SequenceVisualizer:
             label_parts = [f'Layer {layer_id}']
             if height_scale != 'linear':
                 label_parts.append(f'(h={original_height:.1f})')
-            if height_var:
+            if show_variables and height_var:
                 label_parts.append(f'[{height_var}]')
             label_text = '\n'.join(label_parts)
             
@@ -353,16 +356,17 @@ class SequenceVisualizer:
                 patches.Patch(color=color, label=self.type_names[type_key])
             )
         
-        # Add legend entries for variable annotations
-        from matplotlib.lines import Line2D
-        legend_elements.append(Line2D([0], [0], marker='None', color='w', 
-                                     label='', markersize=0))  # Spacer
-        legend_elements.append(Line2D([0], [0], marker='None', color='blue', 
-                                     label='Width var (blue)', markersize=0, linestyle=''))
-        legend_elements.append(Line2D([0], [0], marker='None', color='darkgreen', 
-                                     label='Height var (green)', markersize=0, linestyle=''))
-        legend_elements.append(Line2D([0], [0], marker='None', color='w', 
-                                     label='[var] = layer height', markersize=0, linestyle=''))
+        # Add legend entries for variable annotations (if enabled)
+        if show_variables:
+            from matplotlib.lines import Line2D
+            legend_elements.append(Line2D([0], [0], marker='None', color='w', 
+                                         label='', markersize=0))  # Spacer
+            legend_elements.append(Line2D([0], [0], marker='None', color='blue', 
+                                         label='Width var (blue)', markersize=0, linestyle=''))
+            legend_elements.append(Line2D([0], [0], marker='None', color='darkgreen', 
+                                         label='Height var (green)', markersize=0, linestyle=''))
+            legend_elements.append(Line2D([0], [0], marker='None', color='w', 
+                                         label='[var] = layer height', markersize=0, linestyle=''))
         
         ax.legend(handles=legend_elements, loc='upper right', bbox_to_anchor=(1, 1), 
                  fontsize=9, framealpha=0.9)
@@ -380,13 +384,14 @@ class SequenceVisualizer:
         return fig
     
     def visualize_all_cases(self, data_dir: Path, save_dir: Optional[Path] = None, 
-                           height_scale: str = 'log') -> List[plt.Figure]:
+                           height_scale: str = 'log', show_variables: bool = False) -> List[plt.Figure]:
         """Visualize all cases in the dataset.
         
         Args:
             data_dir: Directory containing sequence and variation files
             save_dir: Directory to save visualizations
             height_scale: Height scaling mode - 'linear', 'log', or 'sqrt'
+            show_variables: Whether to show variable name annotations
         """
         sequence_df, variation_df = self.load_data(data_dir)
         
@@ -404,6 +409,7 @@ class SequenceVisualizer:
             fig = self.visualize_sequence(
                 data_dir, case_id=case_id, 
                 save_path=save_path, show_labels=True,
+                show_variables=show_variables,
                 height_scale=height_scale
             )
             figures.append(fig)
@@ -411,13 +417,14 @@ class SequenceVisualizer:
         return figures
 
     def demo_visualizations(self, base_dir: Optional[Path] = None, save_dir: Optional[Path] = None,
-                           height_scale: str = 'log') -> None:
+                           height_scale: str = 'log', show_variables: bool = False) -> None:
         """Generate demo visualizations from available test contour data.
         
         Args:
             base_dir: Base directory containing test contour data
             save_dir: Directory to save visualizations
             height_scale: Height scaling mode - 'linear', 'log', or 'sqrt'
+            show_variables: Whether to show variable name annotations
         """
         if base_dir is None:
             # Default to project's contour test data
@@ -477,6 +484,7 @@ class SequenceVisualizer:
                     figsize=(10, 6),
                     save_path=output_file,
                     show_labels=True,
+                    show_variables=show_variables,
                     height_scale=height_scale
                 )
                 
@@ -496,15 +504,17 @@ class SequenceVisualizer:
     def _print_usage_examples(self) -> None:
         """Print usage examples."""
         print("\nUsage examples:")
-        print("   # Single case visualization (log scale - default):")
+        print("   # Single case visualization (log scale - default, no variable annotations):")
         print("   python tests/data_analyzer/sequence_visualizer.py tests/data_generation/contour/small_contour --case 0 --save output.png")
+        print("\n   # With variable annotations (shows parameter names on dimensions):")
+        print("   python tests/data_analyzer/sequence_visualizer.py tests/data_generation/contour/small_contour --case 0 --show-variables")
         print("\n   # All cases with linear (physical) scale:")
         print("   python tests/data_analyzer/sequence_visualizer.py tests/data_generation/contour/small_contour --all-cases --save-dir output/ --height-scale linear")
         print("\n   # Interactive with sqrt scale:")
         print("   python tests/data_analyzer/sequence_visualizer.py tests/data_generation/contour/small_contour --case 0 --height-scale sqrt")
         print("\n   # Generate demo visualizations:")
         print("   python tests/data_analyzer/sequence_visualizer.py --demo --save-dir demo_output/")
-        print("\n   # Height scale options: linear (physical), log (default), sqrt")
+        print("\n   # Options: --height-scale {linear,log,sqrt}  --show-variables")
 
 
 def main():
@@ -549,6 +559,10 @@ def main():
         choices=['linear', 'log', 'sqrt'],
         help="Height scaling mode: 'linear' (physical), 'log' (logarithmic), or 'sqrt' (square root). Default: 'log'"
     )
+    parser.add_argument(
+        "--show-variables", action="store_true",
+        help="Show variable name annotations for single-variable dimensions (can make plot more complex)"
+    )
     
     args = parser.parse_args()
     
@@ -558,7 +572,11 @@ def main():
         if args.demo:
             # Demo mode - process all available test data
             save_dir = Path(args.save_dir) if args.save_dir else None
-            visualizer.demo_visualizations(save_dir=save_dir, height_scale=args.height_scale)
+            visualizer.demo_visualizations(
+                save_dir=save_dir, 
+                height_scale=args.height_scale,
+                show_variables=args.show_variables
+            )
         else:
             # Regular mode - need data_dir
             if not args.data_dir:
@@ -574,7 +592,10 @@ def main():
             if args.all_cases:
                 save_dir = Path(args.save_dir) if args.save_dir else None
                 figures = visualizer.visualize_all_cases(
-                    data_dir, save_dir=save_dir, height_scale=args.height_scale
+                    data_dir, 
+                    save_dir=save_dir, 
+                    height_scale=args.height_scale,
+                    show_variables=args.show_variables
                 )
                 print(f"Generated {len(figures)} visualizations")
                 
@@ -587,6 +608,7 @@ def main():
                     figsize=tuple(args.figsize),
                     save_path=save_path,
                     show_labels=not args.no_labels,
+                    show_variables=args.show_variables,
                     height_scale=args.height_scale
                 )
                 
