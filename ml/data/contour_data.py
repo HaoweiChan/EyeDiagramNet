@@ -415,6 +415,19 @@ class ContourDataset(Dataset):
         else:
             target = self.eye_widths[seq_index]
         
+        # DEBUG: Only print for first few indices to avoid spam
+        if index < 3:
+            print(f"\nDEBUG __getitem__ (index={index}):")
+            print(f"  seq_index={seq_index}, bnd_index={bnd_index}")
+            print(f"  eye_widths.shape={self.eye_widths.shape}")
+            print(f"  target type: {type(target)}")
+            if isinstance(target, torch.Tensor):
+                print(f"  target.shape={target.shape}, target.dtype={target.dtype}")
+                print(f"  target.min()={target.min()}, target.max()={target.max()}")
+                print(f"  target contains NaN: {torch.isnan(target).sum()}")
+            else:
+                print(f"  target value: {target}")
+        
         # Apply random subspace perturbations if training
         active_variables = list(variables.keys())
         if self.enable_random_subspace:
@@ -423,7 +436,7 @@ class ContourDataset(Dataset):
         return {
             'variables': variables,
             'sequence_tokens': sequence_tokens,
-            'targets': target.unsqueeze(0),  # Ensure shape [1]
+            'targets': target.unsqueeze(0) if isinstance(target, torch.Tensor) and target.dim() == 0 else target,  # Ensure shape [1] only if scalar
             'case_id': self.case_ids[seq_index],
             'active_variables': active_variables
         }
@@ -612,6 +625,13 @@ class ContourDataModule(LightningDataModule):
                 directions, eye_widths = map(np.array, (directions_list, eye_widths_list))
                 eye_widths[eye_widths < 0] = 0
                 
+                # DEBUG: Check eye_widths shape and content
+                rank_zero_info(f"DEBUG - Eye widths shape: {eye_widths.shape}, dtype: {eye_widths.dtype}")
+                rank_zero_info(f"DEBUG - Eye widths min: {eye_widths.min()}, max: {eye_widths.max()}")
+                rank_zero_info(f"DEBUG - Eye widths mean: {eye_widths.mean()}, std: {eye_widths.std()}")
+                rank_zero_info(f"DEBUG - Eye widths contains NaN: {np.isnan(eye_widths).sum()}")
+                rank_zero_info(f"DEBUG - Eye widths contains Inf: {np.isinf(eye_widths).sum()}")
+                
                 # Convert contour data to variable-token format
                 variable_data, sequence_data = self._convert_to_variable_format(
                     contour_data_filtered, boundaries, processor
@@ -715,9 +735,22 @@ class ContourDataModule(LightningDataModule):
         n_cases, n_segments, n_features = contour_data.shape
         sequence_data = contour_data[:, :, 2].astype(int)  # Type column as sequence tokens
         
+        # DEBUG: Check sequence token distribution
+        unique_tokens, counts = np.unique(sequence_data, return_counts=True)
+        rank_zero_info(f"DEBUG - Sequence token distribution: {dict(zip(unique_tokens, counts))}")
+        rank_zero_info(f"DEBUG - Sequence data shape: {sequence_data.shape}, dtype: {sequence_data.dtype}")
+        rank_zero_info(f"DEBUG - First case sequence tokens: {sequence_data[0]}")
+        
         # Extract variable data from boundaries (these are the parameters we want to vary)
         # This assumes boundaries contain the variable values we want to treat as tokens
         variable_data = {}
+        
+        # DEBUG: Check boundaries shape and content
+        rank_zero_info(f"DEBUG - Boundaries shape: {boundaries.shape}, dtype: {boundaries.dtype}")
+        rank_zero_info(f"DEBUG - Boundaries min: {boundaries.min()}, max: {boundaries.max()}")
+        rank_zero_info(f"DEBUG - Boundaries contains zeros: {(boundaries == 0).sum()} / {boundaries.size}")
+        rank_zero_info(f"DEBUG - Boundaries contains NaN: {np.isnan(boundaries).sum()}")
+        rank_zero_info(f"DEBUG - Boundaries contains Inf: {np.isinf(boundaries).sum()}")
         
         # Create variable names based on boundary structure
         # This is simplified - in practice would map to actual parameter names
@@ -727,6 +760,11 @@ class ContourDataModule(LightningDataModule):
                 variable_data[var_name] = boundaries[:, :, i]
             else:  # [cases, params]
                 variable_data[var_name] = boundaries[:, i]
+            
+            # DEBUG: Check individual variable statistics
+            var_values = variable_data[var_name].flatten()
+            rank_zero_info(f"DEBUG - {var_name}: min={var_values.min():.6e}, max={var_values.max():.6e}, "
+                          f"mean={var_values.mean():.6e}, zeros={( var_values == 0).sum()}/{var_values.size}")
         
         # Register variables in the registry if not already present
         for var_name in variable_data.keys():
@@ -752,6 +790,17 @@ class ContourDataModule(LightningDataModule):
         case_ids = []
         active_variables_list = []
         
+        # DEBUG: Print first item in batch
+        if len(batch) > 0:
+            first_item = batch[0]
+            print(f"\nDEBUG collate_fn (batch_size={len(batch)}):")
+            print(f"  First item keys: {first_item.keys()}")
+            print(f"  First item sequence_tokens.shape: {first_item['sequence_tokens'].shape}")
+            print(f"  First item targets type: {type(first_item['targets'])}")
+            if isinstance(first_item['targets'], torch.Tensor):
+                print(f"  First item targets.shape: {first_item['targets'].shape}")
+            print(f"  First item variables: {list(first_item['variables'].keys())}")
+        
         for item in batch:
             # Collect variables
             for var_name, var_value in item['variables'].items():
@@ -764,6 +813,12 @@ class ContourDataModule(LightningDataModule):
             case_ids.append(item['case_id'])
             active_variables_list.append(item['active_variables'])
         
+        # DEBUG: Check target shapes before stacking
+        print(f"DEBUG collate_fn - Target shapes before stacking:")
+        for i, t in enumerate(targets[:3]):  # Only first 3
+            if isinstance(t, torch.Tensor):
+                print(f"  targets[{i}].shape={t.shape}")
+        
         # Stack variables
         batched_variables = {}
         for var_name, var_list in all_variables.items():
@@ -772,6 +827,10 @@ class ContourDataModule(LightningDataModule):
         # Stack other tensors
         batched_sequence_tokens = torch.stack(sequence_tokens, dim=0)
         batched_targets = torch.stack(targets, dim=0)
+        
+        print(f"DEBUG collate_fn - After stacking:")
+        print(f"  batched_sequence_tokens.shape={batched_sequence_tokens.shape}")
+        print(f"  batched_targets.shape={batched_targets.shape}")
         
         return {
             'variables': batched_variables,

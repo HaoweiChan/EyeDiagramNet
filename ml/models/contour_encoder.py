@@ -243,19 +243,35 @@ class VariableTokenEncoder(nn.Module):
         """Apply scaling transformation to tensor values."""
         variable = self.registry.get_variable(name)
         
+        # DEBUG: Check input value
+        if torch.isnan(value).any() or torch.isinf(value).any():
+            print(f"WARNING: {name} has NaN/Inf before scaling!")
+            print(f"  value stats: min={value.min()}, max={value.max()}, mean={value.mean()}")
+        
         if variable.scale.value == "linear":
-            return value
+            scaled = value
         elif variable.scale.value == "log":
-            return torch.log(torch.clamp(value, min=1e-10))
+            # Check for zeros or negatives
+            if (value <= 0).any():
+                print(f"WARNING: {name} has zero/negative values before log scaling!")
+                print(f"  value min={value.min()}, values <= 0: {(value <= 0).sum().item()}")
+            scaled = torch.log(torch.clamp(value, min=1e-10))
+            # Check result
+            if torch.isnan(scaled).any() or torch.isinf(scaled).any():
+                print(f"WARNING: {name} produced NaN/Inf after log scaling!")
+                print(f"  scaled stats: min={scaled.min()}, max={scaled.max()}")
         elif variable.scale.value == "zscore":
             if 'mean' not in variable.scale_params or 'std' not in variable.scale_params:
                 # Use default scaling if not fitted
-                return value
-            mean = variable.scale_params['mean']
-            std = variable.scale_params['std']
-            return (value - mean) / (std + 1e-8)
+                scaled = value
+            else:
+                mean = variable.scale_params['mean']
+                std = variable.scale_params['std']
+                scaled = (value - mean) / (std + 1e-8)
         else:
-            return value
+            scaled = value
+            
+        return scaled
 
 
 class DeepSetsEncoder(nn.Module):
