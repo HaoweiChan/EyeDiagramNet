@@ -7,15 +7,6 @@ from typing import List
 from common.pickle_utils import DataWriter, load_pickle_data
 from common.parameters import SampleResult as SimulationResult
 
-# Try to import direction_utils, handle potential ImportError
-try:
-    from simulation.io.direction_utils import get_valid_block_sizes
-except ImportError:
-    print("Warning: Could not import get_valid_block_sizes from simulation.io.direction_utils.")
-    print("Direction validation might not work as expected.")
-    def get_valid_block_sizes(n_lines):
-        # Fallback function if import fails
-        return {1} # Default to a safe value
 
 def estimate_block_size(direction_array: np.ndarray) -> int:
     """Estimate the smallest consecutive run length (block size) in a 0/1 array."""
@@ -40,8 +31,7 @@ def detect_block_size_1_patterns(directions: list) -> bool:
     block_lengths = np.diff(all_indices)
     return np.any(block_lengths == 1)
 
-
-def remove_duplicate_configs(results: List[SimulationResult]) -> List[SimulationResult]:
+def remove_duplicate_configs(results: List[SimulationResult], precision: int = 8) -> List[SimulationResult]:
     """Remove samples with duplicate configuration values, keeping only the first occurrence."""
     if not results:
         return results
@@ -50,13 +40,19 @@ def remove_duplicate_configs(results: List[SimulationResult]) -> List[Simulation
     unique_results = []
     
     for result in results:
-        # Create a tuple of config values for comparison
-        config_tuple = tuple(result.config_values)
-        
-        if config_tuple not in seen_configs:
-            seen_configs.add(config_tuple)
+        try:
+            # Round float values to handle precision issues
+            rounded_values = [round(v, precision) if isinstance(v, float) else v for v in result.config_values]
+            config_tuple = tuple(rounded_values)
+            
+            if config_tuple not in seen_configs:
+                seen_configs.add(config_tuple)
+                unique_results.append(result)
+        except (TypeError, ValueError) as e:
+            # If config values aren't hashable, keep the result (safer than dropping it)
+            print(f"Warning: Could not hash config values for duplicate checking: {e}")
             unique_results.append(result)
-    
+            
     return unique_results
 
 def clean_pickle_file_inplace(pfile: Path, block_size: int = None, remove_block_size_1: bool = False, remove_duplicates: bool = False) -> tuple[int, int]:
@@ -90,10 +86,23 @@ def clean_pickle_file_inplace(pfile: Path, block_size: int = None, remove_block_
 
     if n_samples_before == 0:
         return 0, 0
+    
+    if block_size is not None:
+        print(f"  Will filter for block_size = {block_size}")
+    if remove_block_size_1:
+        print(f"  Will remove block_size_1 patterns")
+    if remove_duplicates:
+        print(f"  Will remove duplicate configurations")
 
     # Apply duplicate removal first if requested
     if remove_duplicates:
+        print(f"  Before duplicate removal: {len(results)} samples")
+        # Debug: check how many duplicates we detect
+        from .analysis import detect_duplicate_configs
+        dup_stats = detect_duplicate_configs(results)
+        print(f"  Detected duplicates: {dup_stats['duplicate_count']} samples in {len(dup_stats['duplicate_groups'])} groups")
         results = remove_duplicate_configs(results)
+        print(f"  After duplicate removal: {len(results)} samples")
     
     # Filter the list of dataclasses
     valid_results: List[SimulationResult] = []

@@ -1,13 +1,9 @@
-import pickle
-import traceback
 import random
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 from pathlib import Path
 
 from common.pickle_utils import load_pickle_data
-from common.parameters import SampleResult as SimulationResult
 
 # Try to import simulation functions for comparison
 try:

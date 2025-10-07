@@ -27,23 +27,25 @@ except ImportError:
 from .cleaning import estimate_block_size
 
 
-def detect_duplicate_configs(results: List[SimulationResult]) -> dict:
+def detect_duplicate_configs(results: List[SimulationResult], precision: int = 8) -> dict:
     """Detect duplicate configuration values within a list of simulation results."""
     if not results:
         return {'total_samples': 0, 'unique_configs': 0, 'duplicate_count': 0, 'duplicate_groups': []}
     
-    # Create config signatures for comparison
-    config_signatures = []
     config_to_indices = {}
     
     for i, result in enumerate(results):
-        # Create a tuple of config values for hashing/comparison
-        config_tuple = tuple(result.config_values)
-        config_signatures.append(config_tuple)
-        
-        if config_tuple not in config_to_indices:
-            config_to_indices[config_tuple] = []
-        config_to_indices[config_tuple].append(i)
+        try:
+            # Round float values to handle precision issues before creating the tuple
+            rounded_values = [round(v, precision) if isinstance(v, float) else v for v in result.config_values]
+            config_tuple = tuple(rounded_values)
+            
+            if config_tuple not in config_to_indices:
+                config_to_indices[config_tuple] = []
+            config_to_indices[config_tuple].append(i)
+        except (TypeError, ValueError):
+            # If a config is not hashable, we can't check it for duplication. Treat as unique by giving it a unique key.
+            config_to_indices[f"unhashable_{i}"] = [i]
     
     # Find duplicates
     duplicate_groups = []
@@ -64,7 +66,6 @@ def detect_duplicate_configs(results: List[SimulationResult]) -> dict:
         'duplicate_count': duplicate_count,
         'duplicate_groups': duplicate_groups
     }
-
 
 def analyze_duplications_across_files(pickle_files_list: list[Path]) -> dict:
     """Analyze duplications in config values across all pickle files."""
@@ -336,7 +337,27 @@ def generate_summary_report(pickle_dir: Path, pickle_files: list, all_results: L
             for j, key in enumerate(config_keys):
                 values = [result.config_values[j] for result in all_results]
                 values_array = np.array(values)
-                report.append(f"    {key}: [{np.min(values_array):.6f}, {np.max(values_array):.6f}]")
+                
+                # Check if values are numeric or string
+                if values_array.dtype.kind in ['U', 'S', 'O']:  # Unicode, byte string, or object
+                    # For string values, show unique values or range
+                    unique_values = np.unique(values_array)
+                    if len(unique_values) <= 5:
+                        report.append(f"    {key}: {list(unique_values)}")
+                    else:
+                        report.append(f"    {key}: {len(unique_values)} unique values")
+                else:
+                    # For numeric values, show min/max range
+                    try:
+                        numeric_values = values_array.astype(float)
+                        report.append(f"    {key}: [{np.min(numeric_values):.6f}, {np.max(numeric_values):.6f}]")
+                    except (ValueError, TypeError):
+                        # Fallback for mixed types
+                        unique_values = np.unique(values_array)
+                        if len(unique_values) <= 5:
+                            report.append(f"    {key}: {list(unique_values)}")
+                        else:
+                            report.append(f"    {key}: {len(unique_values)} unique values")
         
         report.append("")
 
