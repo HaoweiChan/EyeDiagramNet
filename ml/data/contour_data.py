@@ -1,4 +1,5 @@
 import random
+import traceback
 import numpy as np
 import pandas as pd
 from pathlib import Path
@@ -680,6 +681,7 @@ class ContourDataModule(LightningDataModule):
                 
             except Exception as e:
                 rank_zero_info(f"Failed to process {name}: {e}")
+                rank_zero_info(f"Full traceback:\n{traceback.format_exc()}")
                 continue
     
     def _convert_to_variable_format(
