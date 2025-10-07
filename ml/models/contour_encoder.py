@@ -56,10 +56,12 @@ class VariableTokenEncoder(nn.Module):
         )
         
         # Instance embeddings to distinguish variables with same role
-        max_instances = max(self.registry.get_max_instances_per_role(), 8)  # At least 8 for safety
+        # Use a much larger size since variables are auto-registered during forward pass
+        max_instances = max(self.registry.get_max_instances_per_role(), 64)  # At least 64 for safety
         self.instance_embeddings = nn.Embedding(
             max_instances, instance_embed_dim
         )
+        self.max_instances = max_instances  # Store for validation
         
         # Type embeddings for circuit element types
         self.circuit_types = self.registry.get_circuit_types()
@@ -190,6 +192,9 @@ class VariableTokenEncoder(nn.Module):
             circuit_type = self.registry.infer_circuit_type(name)
             type_idx = self.type_to_idx[circuit_type]
             instance_idx = self.registry.get_instance_index(name)
+            
+            # Clamp instance_idx to prevent out-of-bounds errors
+            instance_idx = min(instance_idx, self.max_instances - 1)
             
             # Create embedding tensors
             if device is None:

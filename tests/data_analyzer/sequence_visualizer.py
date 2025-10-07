@@ -13,6 +13,7 @@ Visualizes 2D cross-section of sequence.csv and variation.csv data showing:
 
 import sys
 import argparse
+import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
@@ -168,16 +169,14 @@ class SequenceVisualizer:
     
     def _apply_height_scaling(self, layer_info: Dict[int, Dict], scale_mode: str) -> Dict[int, Dict]:
         """Apply height scaling transformation to layer dimensions.
-        
+
         Args:
             layer_info: Dictionary mapping layer IDs to layer information
             scale_mode: Scaling mode - 'linear', 'log', or 'sqrt'
-        
+
         Returns:
             Updated layer_info with 'scaled_height' field added
         """
-        import numpy as np
-        
         scaled_info = {}
         
         for layer_id, info in layer_info.items():
