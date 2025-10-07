@@ -803,7 +803,7 @@ Metadata Error: {meta_error}
 def collect_trace_simulation_data(trace_snp_file, vertical_pairs_with_counts, combined_params, 
                                 pickle_dir, param_type_names, enable_direction=True, 
                                 batch_size=10, debug=False, use_optimized=False,
-                                simulator_type='sbr', block_size=None):
+                                simulator_type='sbr', block_size=None, fixed_configs=None):
     """
     Collect eye width simulation data for a single trace SNP with multiple vertical pairs.
     This is the new coarse-grained task that processes all samples for one trace file.
@@ -820,6 +820,7 @@ def collect_trace_simulation_data(trace_snp_file, vertical_pairs_with_counts, co
         use_optimized: Whether to use optimized Phase 1 functions (default: False)
         simulator_type: Type of simulator to use ('sbr' or 'der')
         block_size: Optional fixed block size for direction generation.
+        fixed_configs: List of pre-sampled configurations to use (None for random sampling)
     """
     task_start_time = time.time()
     worker_id = os.getpid()
@@ -864,9 +865,14 @@ def collect_trace_simulation_data(trace_snp_file, vertical_pairs_with_counts, co
     # Initialize buffered writer
     writer = BufferedPickleWriter(pickle_file, batch_size)
     
+    # Track fixed config index for this worker
+    fixed_config_index = 0
+    
     if debug:
         print(f"Processing {len(vertical_pairs_with_counts)} vertical pairs for {trace_snp_path.name}")
         print(f"Detected {n_ports} ports ({n_lines} lines)")
+        if fixed_configs:
+            print(f"Using {len(fixed_configs)} pre-sampled fixed configurations")
     
     # profile_print(f"Starting {trace_snp_path.name}: {total_simulations} simulations")
     
@@ -908,8 +914,16 @@ def collect_trace_simulation_data(trace_snp_file, vertical_pairs_with_counts, co
             simulation_successful = False
             
             while not simulation_successful and retry_count <= max_retries:
-                # Sample parameters (get new config for retries)
-                combined_config = combined_params.sample()
+                # Get config: either from fixed list or sample randomly
+                if fixed_configs:
+                    if fixed_config_index >= len(fixed_configs):
+                        profile_print(f"Worker {worker_id} exhausted all fixed configs, stopping collection")
+                        break
+                    combined_config = fixed_configs[fixed_config_index]
+                    fixed_config_index += 1
+                else:
+                    # Sample parameters (get new config for retries)
+                    combined_config = combined_params.sample()
                 
                 # Performance monitoring for simulation
                 sim_start_time = time.time()
@@ -1104,7 +1118,7 @@ def get_multiprocessing_start_method():
 
 def run_with_executor(trace_tasks, combined_params, trace_specific_output_dir, param_types, 
                      enable_direction, num_workers, batch_size, vertical_cache_info=None, use_optimized=False,
-                     simulator_type='sbr', block_size=None):
+                     simulator_type='sbr', block_size=None, fixed_configs=None):
     """
     Run simulations using ProcessPoolExecutor with optimized task distribution and graceful shutdown.
     This version uses a bounded queue to avoid overwhelming the executor with too many initial tasks.
@@ -1121,6 +1135,7 @@ def run_with_executor(trace_tasks, combined_params, trace_specific_output_dir, p
         use_optimized: Whether to use optimized Phase 1 functions (default: False)
         simulator_type: Type of simulator to use ('sbr' or 'der')
         block_size: Optional fixed block size for direction generation.
+        fixed_configs: List of pre-sampled configurations (None for random sampling)
     """
     global _executor, _progress_thread
     
@@ -1175,7 +1190,7 @@ def run_with_executor(trace_tasks, combined_params, trace_specific_output_dir, p
                     collect_trace_simulation_data,
                     str(trace_snp_file), vertical_pairs, combined_params, 
                     str(trace_specific_output_dir), param_types, enable_direction, batch_size, False, use_optimized,
-                    simulator_type, block_size
+                    simulator_type, block_size, fixed_configs
                 )
                 active_futures[future] = (trace_snp_file, vertical_pairs)
                 return True
@@ -1366,12 +1381,8 @@ def main():
     start_background_monitoring(interval=600)
     print("Started system monitoring...")
     
-    args = build_argparser().parse_args()
-    
-    # Add simulator type argument
+    # Parse arguments using centralized argparser
     parser = build_argparser()
-    parser.add_argument('--simulator-type', type=str, default='sbr', choices=['sbr', 'der'],
-                        help='Type of simulator to use for data collection.')
     args = parser.parse_args()
 
     # Load configuration
@@ -1427,6 +1438,9 @@ def main():
     # Handle use_optimized logic (default to False)
     use_optimized = config.get('runner', {}).get('use_optimized', False)
     
+    # Handle fixed-config logic
+    fixed_config = args.fixed_config or config['boundary'].get('fixed_config', False)
+    
     debug = args.debug if args.debug else config.get('debug', False)
     
     # Determine number of workers: Command-line -> Environment -> Config file -> Optimal calculation
@@ -1465,6 +1479,7 @@ def main():
     print(f"  Max samples: {max_samples}")
     print(f"  Enable direction: {enable_direction}")
     print(f"  Enable inductance: {enable_inductance}")
+    print(f"  Fixed config: {fixed_config}")
     print(f"  Use optimized: {use_optimized}")
     print(f"  Debug mode: {debug}")
     print(f"  Max workers: {max_workers}")
@@ -1519,6 +1534,19 @@ def main():
     
     # Apply inductance modification if needed
     combined_params = modify_params_for_inductance(combined_params, enable_inductance)
+    
+    # Pre-sample fixed configurations if requested
+    fixed_configs = None
+    if fixed_config:
+        print(f"\n[FIXED CONFIG] Pre-sampling {max_samples} configurations...")
+        fixed_configs = []
+        for i in range(max_samples):
+            config_sample = combined_params.sample()
+            fixed_configs.append(config_sample)
+            if debug and (i + 1) % 10 == 0:
+                print(f"[FIXED CONFIG] Sampled {i + 1}/{max_samples} configs")
+        print(f"[FIXED CONFIG] Pre-sampled {len(fixed_configs)} fixed configurations")
+        print(f"[FIXED CONFIG] All trace files will use these same {len(fixed_configs)} configs")
     
     # Save the collection config to pickle directory for reference
     config_save_path = trace_specific_output_dir / 'collection_config.yaml'
@@ -1642,7 +1670,7 @@ def main():
         if not debug:
             run_with_executor(trace_tasks, combined_params, trace_specific_output_dir, param_types, 
                              enable_direction, max_workers, batch_size, vertical_cache_info, use_optimized,
-                             simulator_type, block_size)
+                             simulator_type, block_size, fixed_configs)
         else:
             # Debug mode - run sequentially
             global _vertical_cache_info, _progress_queue
@@ -1670,7 +1698,7 @@ def main():
                 collect_trace_simulation_data(
                     trace_snp_file, vertical_pairs_with_counts, combined_params, 
                     trace_specific_output_dir, param_types, enable_direction, batch_size, True, use_optimized,
-                    simulator_type, block_size
+                    simulator_type, block_size, fixed_configs
                 )
             
             # Print overall debug mode performance summary
