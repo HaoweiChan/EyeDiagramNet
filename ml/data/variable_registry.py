@@ -32,6 +32,7 @@ class Variable:
     """Metadata for a single design/material parameter."""
     name: str                           # e.g., "W_wg1", "H_ubm", "M_1_cond"
     role: VariableRole                  # Semantic category
+    bounds: Optional[Tuple[float, float]] = None  # Value range (min, max)
     group: Optional[str] = None         # Material group e.g., "D_1", "M_1"
     scale: ScaleType = ScaleType.LINEAR # Transformation type
     
@@ -158,23 +159,61 @@ class VariableRegistry:
         self.register_variable(variable)
         return variable
 
-    def register_variable(self, variable: Variable):
-        """Register a new variable in the system."""
+    def register_variable(self, variable: Union[Variable, str], **kwargs):
+        """
+        Register a new variable in the system.
+        
+        Args:
+            variable: Either a Variable object or a variable name string
+            **kwargs: If variable is a string, these become Variable attributes
+                     (bounds, role, group, scale, etc.)
+        """
+        # Handle both Variable objects and string names with kwargs
+        if isinstance(variable, str):
+            # Create Variable from name and kwargs
+            name = variable
+            bounds = kwargs.get('bounds', None)
+            role = kwargs.get('role', None)
+            group = kwargs.get('group', None)
+            scale = kwargs.get('scale', ScaleType.LINEAR)
+            
+            # Parse role from string if needed
+            if isinstance(role, str):
+                role = VariableRole(role.lower())
+            elif role is None:
+                # Auto-detect role from name
+                role, auto_group, auto_scale = self._parse_variable_name(name)
+                if group is None:
+                    group = auto_group
+                if scale == ScaleType.LINEAR:  # Only override if default
+                    scale = auto_scale
+            
+            variable = Variable(
+                name=name,
+                role=role,
+                bounds=bounds,
+                group=group,
+                scale=scale
+            )
+        
         self.variables[variable.name] = variable
         
         # Update indices
-        self._name_to_idx[variable.name] = len(self._name_to_idx)
+        if variable.name not in self._name_to_idx:
+            self._name_to_idx[variable.name] = len(self._name_to_idx)
         
         # Update role mapping
         if variable.role not in self._role_to_names:
             self._role_to_names[variable.role] = []
-        self._role_to_names[variable.role].append(variable.name)
+        if variable.name not in self._role_to_names[variable.role]:
+            self._role_to_names[variable.role].append(variable.name)
         
         # Update group mapping
         if variable.group:
             if variable.group not in self._group_to_names:
                 self._group_to_names[variable.group] = []
-            self._group_to_names[variable.group].append(variable.name)
+            if variable.name not in self._group_to_names[variable.group]:
+                self._group_to_names[variable.group].append(variable.name)
 
     def get_variable(self, name: str) -> Variable:
         """Get variable metadata by name, auto-registering if not found."""
@@ -182,6 +221,21 @@ class VariableRegistry:
             # Auto-register the variable based on naming pattern
             return self.auto_register_variable(name)
         return self.variables[name]
+    
+    def update_variable_bounds(self, name: str, bounds: Tuple[float, float]):
+        """
+        Update bounds for an existing variable or create new variable with bounds.
+        
+        Args:
+            name: Variable name
+            bounds: (min, max) value range
+        """
+        if name in self.variables:
+            # Update existing variable
+            self.variables[name].bounds = bounds
+        else:
+            # Register new variable with bounds
+            self.register_variable(name, bounds=bounds)
     
     def get_variables_by_role(self, role: VariableRole) -> List[str]:
         """Get all variable names with a specific role."""

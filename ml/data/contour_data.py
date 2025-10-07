@@ -313,7 +313,7 @@ class ContourProcessor:
         case_ids = []
         
         for _, var_row in variation_df.iterrows():
-            case_id = int(var_row['Case'])
+            case_id = int(var_row['case_id'])
             resolved_case = self.resolve_case(sequence_df, var_row)
             resolved_cases.append(resolved_case)
             case_ids.append(case_id)
@@ -448,21 +448,39 @@ class ContourDataset(Dataset):
         perturbed_variables = {}
         for name, value in variables.items():
             if name in active_variables and name in self.registry:
-                # Get variable bounds and apply perturbation
+                # Get variable info
                 var_info = self.registry.get_variable(name)
-                var_range = var_info.bounds[1] - var_info.bounds[0]
-                noise_std = self.perturbation_scale * var_range
+                
+                # Check if bounds are available, otherwise compute from data
+                if var_info.bounds is not None:
+                    var_range = var_info.bounds[1] - var_info.bounds[0]
+                    noise_std = self.perturbation_scale * var_range
+                    min_bound, max_bound = var_info.bounds
+                else:
+                    # Compute bounds from current variable data
+                    if name in self.variable_data:
+                        all_values = self.variable_data[name].flatten()
+                        min_bound = float(all_values.min())
+                        max_bound = float(all_values.max())
+                        var_range = max_bound - min_bound
+                        noise_std = self.perturbation_scale * var_range if var_range > 0 else 0.01
+                    else:
+                        # Fallback: use small perturbation relative to value
+                        var_range = float(value.abs().mean()) if value.numel() > 0 else 1.0
+                        noise_std = self.perturbation_scale * var_range
+                        min_bound, max_bound = None, None
                 
                 # Add Gaussian noise
                 noise = torch.randn_like(value) * noise_std
                 perturbed_value = value + noise
                 
-                # Clamp to bounds
-                perturbed_value = torch.clamp(
-                    perturbed_value,
-                    var_info.bounds[0],
-                    var_info.bounds[1]
-                )
+                # Clamp to bounds if available
+                if min_bound is not None and max_bound is not None:
+                    perturbed_value = torch.clamp(
+                        perturbed_value,
+                        min_bound,
+                        max_bound
+                    )
                 
                 perturbed_variables[name] = perturbed_value
             else:
