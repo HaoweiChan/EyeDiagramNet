@@ -410,10 +410,14 @@ class ContourDataset(Dataset):
                 variables[name] = values[seq_index]
         
         # Get target eye width
-        if len(self.eye_widths.shape) == 2:
-            target = self.eye_widths[seq_index, bnd_index]
-        else:
-            target = self.eye_widths[seq_index]
+        # eye_widths shape: [samples, boundaries, signal_lines] or [samples, boundaries]
+        # After indexing [seq_index, bnd_index], we get [signal_lines] or scalar
+        target = self.eye_widths[seq_index, bnd_index]
+        
+        # If target is multi-dimensional (e.g., [signal_lines]), take MIN
+        # For contour prediction, we want the minimum eye width across signal lines
+        if isinstance(target, torch.Tensor) and target.dim() > 0:
+            target = target.min()
         
         # DEBUG: Only print for first few indices to avoid spam
         if index < 3:
@@ -422,9 +426,11 @@ class ContourDataset(Dataset):
             print(f"  eye_widths.shape={self.eye_widths.shape}")
             print(f"  target type: {type(target)}")
             if isinstance(target, torch.Tensor):
-                print(f"  target.shape={target.shape}, target.dtype={target.dtype}")
-                print(f"  target.min()={target.min()}, target.max()={target.max()}")
-                print(f"  target contains NaN: {torch.isnan(target).sum()}")
+                print(f"  target.shape={target.shape if target.dim() > 0 else 'scalar'}, target.dtype={target.dtype}")
+                print(f"  target value={target.item() if target.dim() == 0 else target}")
+                if target.dim() > 0:
+                    print(f"  target.min()={target.min()}, target.max()={target.max()}")
+                    print(f"  target contains NaN: {torch.isnan(target).sum()}")
             else:
                 print(f"  target value: {target}")
         
@@ -433,10 +439,23 @@ class ContourDataset(Dataset):
         if self.enable_random_subspace:
             variables, active_variables = self._apply_random_subspace_perturbation(variables)
         
+        # Ensure target is a 1D tensor of shape [1]
+        if isinstance(target, torch.Tensor):
+            if target.dim() == 0:
+                # Scalar tensor - unsqueeze to [1]
+                target = target.unsqueeze(0)
+            elif target.dim() > 1:
+                # Multi-dimensional - take mean and unsqueeze
+                target = target.mean().unsqueeze(0)
+            # else: already 1D, keep as is
+        else:
+            # Convert to tensor
+            target = torch.tensor([target], dtype=torch.float32)
+        
         return {
             'variables': variables,
             'sequence_tokens': sequence_tokens,
-            'targets': target.unsqueeze(0) if isinstance(target, torch.Tensor) and target.dim() == 0 else target,  # Ensure shape [1] only if scalar
+            'targets': target,
             'case_id': self.case_ids[seq_index],
             'active_variables': active_variables
         }
