@@ -363,11 +363,7 @@ class ContourModule(LightningModule):
         sequence_tokens: torch.Tensor
     ):
         """Plot contours periodically during validation steps."""
-        if not self.save_contour_plots or not self.logger:
-            return
-        
-        # Only plot during validation epochs (controlled by check_val_every_n_epoch)
-        if self.current_epoch % self.trainer.check_val_every_n_epoch != 0:
+        if not self.save_contour_plots or not self.logger or stage != "val":
             return
         
         # Only plot once per epoch (on batch_idx 0)
