@@ -124,7 +124,7 @@ class ContourModule(LightningModule):
     
     def training_step(self, batch: Dict, batch_idx: int) -> torch.Tensor:
         """Training step with random subspace perturbations."""
-        return self._step(batch, batch_idx, "train")
+        return self._step(batch, batch_idx, "train_")
     
     def validation_step(self, batch: Dict, batch_idx: int) -> torch.Tensor:
         """Validation step."""
@@ -140,7 +140,7 @@ class ContourModule(LightningModule):
         active_vars = batch.get('active_variables', list(variables.keys()))
         
         # Apply perturbations only during training
-        if stage == "train":
+        if stage == "train_":
             # Apply random subspace perturbations
             variables, active_vars = self._apply_random_subspace_perturbation(variables)
             
@@ -156,7 +156,7 @@ class ContourModule(LightningModule):
             uncertainties = None
         
         # Compute loss
-        if stage == "train":
+        if stage == "train_":
             # Use comprehensive loss with smoothness constraints
             loss = self.main_loss(
                 self.model, variables, sequence_tokens, targets,
@@ -345,7 +345,7 @@ class ContourModule(LightningModule):
                 'active_variables': active_vars
             }
             
-            if stage == "train":
+            if stage == "train_":
                 self.training_step_outputs.append(step_output)
             elif stage == "val":
                 # Include additional info for validation (used for contour plots)
