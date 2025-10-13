@@ -10,7 +10,7 @@ trainer:
       static_graph: true
   devices: -1
   num_nodes: 1  # Start with single node for contour training
-  precision: 16-mixed
+  precision: 32-true
   fast_dev_run: false
   max_epochs: 1000
   min_epochs: null
@@ -108,6 +108,11 @@ model:
     eval_resolution: 25
     spec_threshold: 0.5  # Eye width specification threshold for highlighting
     
+    # Contour plotting configuration
+    eval_contour_pairs:
+      - ["W_wg", "W_ws"]  # Waveguide width vs waveguide spacing
+      - ["M_1_cond", "W_wg"]  # Metal conductivity vs waveguide width
+      - ["H_h_ubm", "W_wg"]  # Under bump metal height vs waveguide width
     # Specific contour variables to plot (null means use eval_contour_pairs)
     var1_name: null  # e.g., "W_wg1" or null to use from eval_contour_pairs
     var2_name: null  # e.g., "W_ws" or null to use from eval_contour_pairs
