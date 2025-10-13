@@ -56,16 +56,16 @@ trainer:
         logging_interval: epoch
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
-        filename: 'contour-xfmr-epoch{epoch}-loss{train_loss:.4f}'
+        filename: 'contour-xfmr-epoch{epoch}-loss{val/mse_loss:.4f}'
         auto_insert_metric_name: false
-        monitor: val_loss
+        monitor: val/mse_loss
         mode: min
         save_last: true
         save_top_k: 3
         enable_version_counter: true
     - class_path: lightning.pytorch.callbacks.EarlyStopping
       init_args:
-        monitor: val_loss
+        monitor: val/mse_loss
         mode: min
         patience: 20
         min_delta: 1e-4
