@@ -47,7 +47,9 @@ class ContourModule(LightningModule):
         spec_threshold: Optional[float] = None,
         # Specific contour variables (null means use random from eval_contour_pairs)
         var1_name: Optional[str] = None,
-        var2_name: Optional[str] = None
+        var2_name: Optional[str] = None,
+        # Variable range overrides for contour plotting
+        var_range: Optional[Dict[str, Tuple[float, float]]] = None
     ):
         super().__init__()
         
@@ -56,6 +58,15 @@ class ContourModule(LightningModule):
         
         self.registry = variable_registry or VariableRegistry()
         self.spec_threshold = spec_threshold
+        
+        # Apply variable range overrides if provided
+        if var_range:
+            for var_name, bounds in var_range.items():
+                if isinstance(bounds, (list, tuple)) and len(bounds) == 2:
+                    self.registry.update_variable_bounds(var_name, tuple(bounds))
+                    rank_zero_info(f"Applied var_range override for {var_name}: {bounds}")
+                else:
+                    rank_zero_info(f"Warning: Invalid var_range format for {var_name}: {bounds}, expected [min, max]")
         
         # Initialize model
         model_config = model_config or {}
@@ -242,14 +253,32 @@ class ContourModule(LightningModule):
                     return pair
             rank_zero_info(f"Warning: Could not find pair containing {target_var} in eval_contour_pairs")
         
-        # Otherwise, randomly select from eval_contour_pairs
-        valid_pairs = [
-            pair for pair in self.eval_contour_pairs 
-            if all(v in self.registry for v in pair)
-        ]
-        
-        if valid_pairs:
-            return random.choice(valid_pairs)
+        # If eval_contour_pairs is provided, use it
+        if self.eval_contour_pairs:
+            # Filter pairs where both variables exist in registry and have bounds
+            valid_pairs = [
+                pair for pair in self.eval_contour_pairs 
+                if all(v in self.registry and self.registry.get_bounds(v) is not None for v in pair)
+            ]
+            
+            if valid_pairs:
+                return random.choice(valid_pairs)
+            else:
+                rank_zero_info("Warning: No valid pairs with bounds found in eval_contour_pairs")
+        else:
+            # If eval_contour_pairs is not provided, randomly sample from all variables with bounds
+            variables_with_bounds = [
+                name for name in self.registry.variable_names
+                if self.registry.get_bounds(name) is not None
+            ]
+            
+            if len(variables_with_bounds) >= 2:
+                # Randomly select two different variables
+                var1_name, var2_name = random.sample(variables_with_bounds, 2)
+                rank_zero_info(f"Auto-selected contour pair: {var1_name} vs {var2_name}")
+                return (var1_name, var2_name)
+            else:
+                rank_zero_info(f"Warning: Not enough variables with bounds ({len(variables_with_bounds)}) for contour plotting")
         
         return None
     
@@ -427,6 +456,12 @@ class ContourModule(LightningModule):
             # Get variable bounds
             var1_bounds = self.registry.get_bounds(var1_name)
             var2_bounds = self.registry.get_bounds(var2_name)
+            
+            # Skip plotting if either variable has no bounds (constant variable)
+            if var1_bounds is None or var2_bounds is None:
+                rank_zero_info(f"Skipping contour plot for {var1_name} vs {var2_name}: "
+                              f"{var1_name} bounds={var1_bounds}, {var2_name} bounds={var2_bounds}")
+                return None
             
             # Generate contour using model's predict_contour_2d method
             self.model.eval()

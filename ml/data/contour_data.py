@@ -789,7 +789,23 @@ class ContourDataModule(LightningDataModule):
         for var_name in variable_data.keys():
             if var_name not in self.registry:
                 values = variable_data[var_name].flatten()
-                bounds = (float(values.min()), float(values.max()))
+                var_min = float(values.min())
+                var_max = float(values.max())
+                var_range = var_max - var_min
+                
+                # Set bounds to None if variable has only one value (no variation)
+                # Otherwise, set bounds to 2x the observed range for contour plotting
+                if var_range < 1e-10:  # Effectively constant
+                    bounds = None
+                    rank_zero_info(f"Variable {var_name} has no variation (range={var_range:.2e}), bounds set to None")
+                else:
+                    # Expand range by 2x for contour plotting (centered on original range)
+                    range_center = (var_min + var_max) / 2
+                    expanded_range = var_range * 2
+                    bounds = (range_center - expanded_range / 2, range_center + expanded_range / 2)
+                    rank_zero_info(f"Variable {var_name}: original range=[{var_min:.6e}, {var_max:.6e}], "
+                                  f"expanded bounds={bounds}")
+                
                 self.registry.register_variable(
                     name=var_name,
                     bounds=bounds,

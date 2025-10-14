@@ -116,6 +116,15 @@ model:
     # Specific contour variables to plot (null means use eval_contour_pairs)
     var1_name: null  # e.g., "W_wg1" or null to use from eval_contour_pairs
     var2_name: null  # e.g., "W_ws" or null to use from eval_contour_pairs
+    
+    # Variable range overrides for contour plotting (optional)
+    # Use this to specify custom bounds for specific variables
+    # Format: variable_name: [min, max]
+    var_range:
+      # Example overrides (uncomment and adjust as needed):
+      # W_wg: [1.0e-6, 100.0e-6]  # 1um to 100um
+      # M_1_cond: [1.0e6, 1.0e8]  # 1e6 to 1e8 S/m
+      null  # No overrides by default
 
 data:
   class_path: ml.data.contour_data.ContourDataModule
