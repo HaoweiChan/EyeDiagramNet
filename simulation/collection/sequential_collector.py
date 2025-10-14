@@ -428,7 +428,8 @@ Metadata Error: {meta_error}
                 if self.debug and (i + 1) % 10 == 0:
                     print(f"[FIXED CONFIG] Sampled {i + 1}/{max_samples} configs")
             print(f"[FIXED CONFIG] Pre-sampled {len(self.fixed_configs)} fixed configurations")
-            print(f"[FIXED CONFIG] All trace files will use these same {len(self.fixed_configs)} configs")
+            print(f"[FIXED CONFIG] Each trace file will be simulated with ALL {len(self.fixed_configs)} fixed configs")
+            print(f"[FIXED CONFIG] Total simulations = {len(trace_snps)} trace files × {len(self.fixed_configs)} configs = {len(trace_snps) * len(self.fixed_configs)} simulations")
             # Reset index for this collection run
             self.fixed_config_index = 0
         
@@ -533,6 +534,12 @@ Metadata Error: {meta_error}
                            enable_direction: bool, pbar: tqdm, param_types: List[str], max_samples: int,
                            simulator_type: str, use_optimized: bool, block_size: int = None):
         """Process a single trace file with optimized sequential processing"""
+        
+        # Reset fixed config index for this trace file (so all files use the same fixed configs)
+        if self.fixed_configs:
+            self.fixed_config_index = 0
+            if self.debug:
+                print(f"[FIXED CONFIG] Reset index to 0 for {trace_snp.name} - will use all {len(self.fixed_configs)} fixed configs")
         
         # INITIAL RACE CONDITION CHECK: Verify quota not already filled by other parallel jobs
         try:
