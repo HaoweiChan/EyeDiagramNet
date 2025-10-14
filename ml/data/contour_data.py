@@ -95,8 +95,10 @@ class ContourProcessor:
                 df[col] = df[col].fillna(0.0)
         
         rank_zero_info(f"Parsed sequence file: {df.shape[0]} segments")
-        rank_zero_info(f"Found geometric features - Heights: {len(self.height_cols)}, "
-                      f"Widths: {len(self.width_cols)}, Lengths: {len(self.length_cols)}")
+        rank_zero_info(f"Found geometric features:")
+        rank_zero_info(f"  Heights ({len(self.height_cols)}): {self.height_cols}")
+        rank_zero_info(f"  Widths ({len(self.width_cols)}): {self.width_cols}")
+        rank_zero_info(f"  Lengths ({len(self.length_cols)}): {self.length_cols}")
         return df
 
     def parse_variation(self, variation_path: Path) -> pd.DataFrame:
