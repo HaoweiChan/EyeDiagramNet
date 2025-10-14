@@ -237,6 +237,23 @@ class VariableRegistry:
             # Register new variable with bounds
             self.register_variable(name, bounds=bounds)
     
+    def get_bounds(self, name: str) -> Optional[Tuple[float, float]]:
+        """
+        Get bounds for a variable.
+        
+        Args:
+            name: Variable name
+            
+        Returns:
+            (min, max) bounds tuple if available, None otherwise
+        """
+        if name not in self.variables:
+            # Auto-register if needed
+            self.get_variable(name)
+        
+        variable = self.variables[name]
+        return variable.bounds
+    
     def get_variables_by_role(self, role: VariableRole) -> List[str]:
         """Get all variable names with a specific role."""
         return self._role_to_names.get(role, [])
