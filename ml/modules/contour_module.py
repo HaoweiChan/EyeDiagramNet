@@ -602,7 +602,6 @@ class ContourModule(LightningModule):
         except Exception as e:
             rank_zero_info(f"Failed to generate contour evaluation plot for {var1_name} vs {var2_name}: {e}")
     
-    
     def predict_contour(
         self,
         var1_name: str,
