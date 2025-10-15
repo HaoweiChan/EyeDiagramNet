@@ -764,14 +764,22 @@ class ContourDataModule(LightningDataModule):
                 var_range = var_max - var_min
                 
                 # Set bounds to None if variable has only one value (no variation)
-                # For boundary parameters, use ACTUAL bounds (not expanded)
-                if var_range < 1e-10:  # Effectively constant
+                # For boundary parameters, use RELATIVE range check (since values can be very small like 1e-13)
+                # Calculate relative variation as range / mean
+                var_mean = float(values.mean())
+                if abs(var_mean) > 1e-20:  # Avoid division by zero
+                    relative_range = var_range / abs(var_mean)
+                else:
+                    # If mean is essentially zero, check if max is non-zero
+                    relative_range = var_range / max(abs(var_max), 1e-20)
+                
+                if relative_range < 0.01:  # Less than 1% variation → effectively constant
                     bounds = None
-                    rank_zero_info(f"Boundary parameter {var_name} has no variation (range={var_range:.2e}), bounds set to None")
+                    rank_zero_info(f"Boundary parameter {var_name} has no variation (rel_range={relative_range:.2%}), bounds set to None")
                 else:
                     # Use actual observed range for boundary parameters (NOT expanded)
                     bounds = (var_min, var_max)
-                    rank_zero_info(f"Boundary parameter {var_name}: bounds=[{var_min:.6e}, {var_max:.6e}]")
+                    rank_zero_info(f"Boundary parameter {var_name}: bounds=[{var_min:.6e}, {var_max:.6e}], rel_range={relative_range:.2%}")
                 
                 self.registry.register_variable(
                     name=var_name,
@@ -804,6 +812,10 @@ class ContourDataModule(LightningDataModule):
                 # Let registry auto-detect role from name (H_* → HEIGHT, W_* → WIDTH, L_* → LENGTH)
                 # Don't explicitly set role - registry will parse it correctly
                 self.registry.update_variable_bounds(geom_name, bounds)
+        
+        # Add geometric features to variable_data so they're actually used in training!
+        for geom_name, geom_values in geometric_features.items():
+            variable_data[geom_name] = geom_values
         
         return variable_data, sequence_data
     
