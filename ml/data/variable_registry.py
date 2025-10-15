@@ -761,22 +761,41 @@ class VariableRegistry:
                 # Update geometric_features with clipped values
                 geometric_features[geom_name] = geom_values_clipped
                 
-                var_min = float(geom_values_clipped.min())
-                var_max = float(geom_values_clipped.max())
-                var_range = var_max - var_min
+                # For geometric parameters, compute bounds from NON-ZERO values only
+                # Many segments have zero for unused geometric features (sparse representation)
+                non_zero_mask = geom_values_clipped > min_positive * 10  # Use 10x threshold to exclude clipped zeros
+                non_zero_values = geom_values_clipped[non_zero_mask]
                 
-                if var_range < 1e-10:  # Effectively constant
+                if len(non_zero_values) == 0:
+                    # All values are effectively zero - this parameter is unused
                     bounds = None
-                    rank_zero_info(f"Geometric parameter {geom_name} has no variation (range={var_range:.2e}), bounds set to None")
+                    rank_zero_info(f"Geometric parameter {geom_name} has all zero values, bounds set to None")
                 else:
-                    # Expand range by 2x for GEOMETRIC parameters only (for contour plotting)
-                    range_center = (var_min + var_max) / 2
-                    expanded_range = var_range * 2
-                    bounds = (range_center - expanded_range / 2, range_center + expanded_range / 2)
-                    # Ensure expanded bounds are still positive
-                    bounds = (max(bounds[0], min_positive), bounds[1])
-                    rank_zero_info(f"Geometric parameter {geom_name}: original range=[{var_min:.6e}, {var_max:.6e}], "
-                                  f"expanded bounds={bounds}")
+                    var_min = float(non_zero_values.min())
+                    var_max = float(non_zero_values.max())
+                    var_range = var_max - var_min
+                    
+                    # Check relative range of non-zero values
+                    var_mean = float(non_zero_values.mean())
+                    if abs(var_mean) > min_positive:
+                        relative_range = var_range / abs(var_mean)
+                    else:
+                        relative_range = var_range / max(abs(var_max), min_positive)
+                    
+                    if relative_range < 0.01:  # Less than 1% variation
+                        bounds = None
+                        rank_zero_info(f"Geometric parameter {geom_name} has no variation in non-zero values "
+                                      f"(rel_range={relative_range:.2%}), bounds set to None")
+                    else:
+                        # Expand range by 2x for GEOMETRIC parameters only (for contour plotting)
+                        range_center = (var_min + var_max) / 2
+                        expanded_range = var_range * 2
+                        bounds = (range_center - expanded_range / 2, range_center + expanded_range / 2)
+                        # Ensure expanded bounds are still positive
+                        bounds = (max(bounds[0], min_positive), bounds[1])
+                        rank_zero_info(f"Geometric parameter {geom_name}: "
+                                      f"{len(non_zero_values)}/{geom_values_clipped.size} non-zero values, "
+                                      f"range=[{var_min:.6e}, {var_max:.6e}], expanded bounds={bounds}")
                 
                 # Let registry auto-detect role from name (H_* → HEIGHT, W_* → WIDTH, L_* → LENGTH)
                 registry.update_variable_bounds(geom_name, bounds)

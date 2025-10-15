@@ -438,10 +438,33 @@ class ContourDataModule(LightningDataModule):
         
         # Extract and register GEOMETRIC parameters from contour_data (heights, widths, lengths)
         geometric_features = self._extract_geometric_features(contour_data, processor)
-        geometric_features = VariableRegistry.register_geometric_parameters(geometric_features, self.registry)
         
-        # Add geometric features to variable_data so they're actually used in training!
+        # Aggregate geometric features per case (max across segments)
+        # Geometric features are [n_cases, n_segments], but we need [n_cases] or [n_cases, n_repetitions]
+        # Use max to represent the maximum extent of each geometric parameter in the structure
+        aggregated_geometric_features = {}
         for geom_name, geom_values in geometric_features.items():
+            # Take max across segments (axis=1) to get [n_cases] 
+            # Then expand to match boundaries shape if needed
+            geom_max_per_case = np.max(geom_values, axis=1)  # [n_cases]
+            
+            # Match the shape of boundary parameters for consistency
+            if boundaries.ndim == 3:  # [n_cases, n_repetitions, n_params]
+                # Expand to [n_cases, n_repetitions] by broadcasting
+                n_repetitions = boundaries.shape[1]
+                geom_expanded = np.tile(geom_max_per_case[:, np.newaxis], (1, n_repetitions))
+                aggregated_geometric_features[geom_name] = geom_expanded
+            else:  # [n_cases, n_params]
+                # Keep as [n_cases]
+                aggregated_geometric_features[geom_name] = geom_max_per_case
+        
+        # Register geometric parameters with proper bounds
+        aggregated_geometric_features = VariableRegistry.register_geometric_parameters(
+            aggregated_geometric_features, self.registry
+        )
+        
+        # Add aggregated geometric features to variable_data
+        for geom_name, geom_values in aggregated_geometric_features.items():
             variable_data[geom_name] = geom_values
         
         return variable_data, sequence_data
