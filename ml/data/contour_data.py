@@ -755,6 +755,7 @@ class ContourDataModule(LightningDataModule):
                 variable_data[var_name] = boundaries[:, i]
         
         # Register variables in the registry if not already present
+        # These are BOUNDARY parameters (electrical: R_drv, C_odt, L_drv, etc.), not geometric
         for var_name in variable_data.keys():
             if var_name not in self.registry:
                 values = variable_data[var_name].flatten()
@@ -763,26 +764,101 @@ class ContourDataModule(LightningDataModule):
                 var_range = var_max - var_min
                 
                 # Set bounds to None if variable has only one value (no variation)
-                # Otherwise, set bounds to 2x the observed range for contour plotting
+                # For boundary parameters, use ACTUAL bounds (not expanded)
                 if var_range < 1e-10:  # Effectively constant
                     bounds = None
-                    rank_zero_info(f"Variable {var_name} has no variation (range={var_range:.2e}), bounds set to None")
+                    rank_zero_info(f"Boundary parameter {var_name} has no variation (range={var_range:.2e}), bounds set to None")
                 else:
-                    # Expand range by 2x for contour plotting (centered on original range)
-                    range_center = (var_min + var_max) / 2
-                    expanded_range = var_range * 2
-                    bounds = (range_center - expanded_range / 2, range_center + expanded_range / 2)
-                    rank_zero_info(f"Variable {var_name}: original range=[{var_min:.6e}, {var_max:.6e}], "
-                                  f"expanded bounds={bounds}")
+                    # Use actual observed range for boundary parameters (NOT expanded)
+                    bounds = (var_min, var_max)
+                    rank_zero_info(f"Boundary parameter {var_name}: bounds=[{var_min:.6e}, {var_max:.6e}]")
                 
                 self.registry.register_variable(
                     name=var_name,
                     bounds=bounds,
-                    role="geometry",  # Default role
-                    description=f"Auto-generated variable {var_name}"
+                    role="boundary",  # Electrical/boundary parameters
+                    description=f"Boundary parameter {var_name}"
                 )
         
+        # Extract and register GEOMETRIC parameters from contour_data (heights, widths, lengths)
+        # Get the actual geometric values from resolved contour data
+        geometric_features = self._extract_geometric_features(contour_data, processor)
+        
+        for geom_name, geom_values in geometric_features.items():
+            if geom_name not in self.registry:
+                var_min = float(geom_values.min())
+                var_max = float(geom_values.max())
+                var_range = var_max - var_min
+                
+                if var_range < 1e-10:  # Effectively constant
+                    bounds = None
+                    rank_zero_info(f"Geometric parameter {geom_name} has no variation (range={var_range:.2e}), bounds set to None")
+                else:
+                    # Expand range by 2x for GEOMETRIC parameters only (for contour plotting)
+                    range_center = (var_min + var_max) / 2
+                    expanded_range = var_range * 2
+                    bounds = (range_center - expanded_range / 2, range_center + expanded_range / 2)
+                    rank_zero_info(f"Geometric parameter {geom_name}: original range=[{var_min:.6e}, {var_max:.6e}], "
+                                  f"expanded bounds={bounds}")
+                
+                # Let registry auto-detect role from name (H_* → HEIGHT, W_* → WIDTH, L_* → LENGTH)
+                # Don't explicitly set role - registry will parse it correctly
+                self.registry.update_variable_bounds(geom_name, bounds)
+        
         return variable_data, sequence_data
+    
+    def _extract_geometric_features(
+        self,
+        contour_data: np.ndarray,
+        processor: ContourProcessor
+    ) -> Dict[str, np.ndarray]:
+        """
+        Extract geometric parameter values from resolved contour data.
+        
+        Args:
+            contour_data: Resolved contour data [cases, segments, features]
+            processor: ContourProcessor with geometric feature info
+            
+        Returns:
+            Dict mapping geometric parameter names to their values across all cases
+        """
+        geometric_features = {}
+        feature_info = processor.get_feature_info()
+        
+        # The contour data structure is:
+        # [segment, layer, type, resolved_heights, resolved_widths, resolved_length, material_props]
+        # Features start at index 3
+        
+        n_heights = feature_info['n_heights']
+        n_widths = feature_info['n_widths']
+        n_lengths = feature_info['n_lengths']
+        
+        # Extract heights
+        height_start = 3
+        for i, height_name in enumerate(processor.height_cols):
+            height_idx = height_start + i
+            if height_idx < contour_data.shape[2]:
+                # Get all values across cases and segments
+                height_values = contour_data[:, :, height_idx]
+                geometric_features[height_name] = height_values
+        
+        # Extract widths
+        width_start = height_start + n_heights
+        for i, width_name in enumerate(processor.width_cols):
+            width_idx = width_start + i
+            if width_idx < contour_data.shape[2]:
+                width_values = contour_data[:, :, width_idx]
+                geometric_features[width_name] = width_values
+        
+        # Extract lengths
+        length_start = width_start + n_widths
+        for i, length_name in enumerate(processor.length_cols):
+            length_idx = length_start + i
+            if length_idx < contour_data.shape[2]:
+                length_values = contour_data[:, :, length_idx]
+                geometric_features[length_name] = length_values
+        
+        return geometric_features
 
     def collate_fn(self, batch: List[Dict]) -> Dict[str, torch.Tensor]:
         """Custom collate function for variable batches."""

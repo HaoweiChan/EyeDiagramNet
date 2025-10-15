@@ -12,14 +12,23 @@ import torch
 from enum import Enum
 
 class VariableRole(Enum):
-    """Semantic roles for design variables."""
-    HEIGHT = "height"
-    WIDTH = "width" 
-    LENGTH = "length"
-    METAL_COND = "metal_cond"
-    DIEL_DK = "diel_dk"
-    DIEL_DF = "diel_df"
-    DIEL_COND = "diel_cond"
+    """
+    Semantic roles for design variables.
+    
+    Specific geometry roles: HEIGHT, WIDTH, LENGTH
+    Material roles: METAL_COND, DIEL_DK, DIEL_DF, DIEL_COND
+    Electrical: BOUNDARY (R, C, L parameters with _drv/_odt suffix)
+    Fallback: GEOMETRY (unknown variables)
+    """
+    HEIGHT = "height"       # H_* geometric parameters
+    WIDTH = "width"         # W_* geometric parameters
+    LENGTH = "length"       # L_* geometric parameters (without _drv/_odt suffix)
+    METAL_COND = "metal_cond"   # M_*_cond metal conductivity
+    DIEL_DK = "diel_dk"         # D_*_dk dielectric constant
+    DIEL_DF = "diel_df"         # D_*_df dielectric dissipation factor
+    DIEL_COND = "diel_cond"     # D_*_cond dielectric conductivity
+    BOUNDARY = "boundary"       # R_drv, R_odt, C_drv, C_odt, L_drv, L_odt (electrical)
+    GEOMETRY = "geometry"       # Fallback for unrecognized patterns only
 
 class ScaleType(Enum):
     """Scaling/transformation types for variables."""
@@ -53,7 +62,8 @@ class VariableRegistry:
         Parse variable name to determine role, group, and scaling.
         
         Naming patterns:
-        - H_*, W_*, L_* -> HEIGHT, WIDTH, LENGTH (geometric)
+        - H_*, W_*, L_* (without _drv/_odt) -> HEIGHT, WIDTH, LENGTH (geometric)
+        - R_drv, R_odt, C_drv, C_odt, L_drv, L_odt -> BOUNDARY (electrical parameters)
         - M_N_cond -> METAL_COND (metal conductivity, group M_N)
         - D_N_dk, D_N_df, D_N_cond -> DIEL_DK, DIEL_DF, DIEL_COND (dielectric properties, group D_N)
         - S_*, G_* -> Could be signal/ground related parameters
@@ -63,6 +73,13 @@ class VariableRegistry:
         """
         name_upper = name.upper()
         
+        # Boundary parameters (electrical) - always have _drv or _odt suffix
+        # R_drv, R_odt, C_drv, C_odt, L_drv, L_odt
+        if name_upper.endswith('_DRV') or name_upper.endswith('_ODT'):
+            # Check if it's R, C, or L
+            if name_upper.startswith('R_') or name_upper.startswith('C_') or name_upper.startswith('L_'):
+                return (VariableRole.BOUNDARY, None, ScaleType.LINEAR)
+        
         # Height variables (H_*)
         if name_upper.startswith('H_'):
             return (VariableRole.HEIGHT, None, ScaleType.LOG)
@@ -71,7 +88,8 @@ class VariableRegistry:
         elif name_upper.startswith('W_'):
             return (VariableRole.WIDTH, None, ScaleType.LOG)
         
-        # Length variables (L_*)
+        # Length variables (L_*) - only geometric lengths, not inductance
+        # Inductance (L_drv, L_odt) already handled above
         elif name_upper.startswith('L_'):
             return (VariableRole.LENGTH, None, ScaleType.LOG)
         
@@ -129,8 +147,8 @@ class VariableRegistry:
                 # Ground-related - treat as width
                 return (VariableRole.WIDTH, None, ScaleType.LOG)
             else:
-                # Complete unknown - default to linear width
-                return (VariableRole.WIDTH, None, ScaleType.LINEAR)
+                # Complete unknown - default to generic geometry role
+                return (VariableRole.GEOMETRY, None, ScaleType.LINEAR)
 
     def auto_register_variable(self, name: str) -> Variable:
         """
