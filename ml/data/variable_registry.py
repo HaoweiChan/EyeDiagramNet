@@ -666,6 +666,122 @@ class VariableRegistry:
             values.append(material_props_dict.get(prop_name, 0.0))
         
         return values
+    
+    @staticmethod
+    def register_boundary_parameters(
+        variable_data: Dict[str, np.ndarray],
+        registry: 'VariableRegistry'
+    ) -> Dict[str, np.ndarray]:
+        """
+        Register boundary parameters (R, C, L) with proper bounds and clipping.
+        
+        Args:
+            variable_data: Dictionary of variable names to value arrays
+            registry: VariableRegistry to register variables in
+            
+        Returns:
+            Updated variable_data with clipped values
+        """
+        from lightning.pytorch.utilities.rank_zero import rank_zero_info
+        
+        min_positive = 1e-20
+        
+        for var_name in list(variable_data.keys()):
+            if var_name not in registry:
+                values = variable_data[var_name].flatten()
+                
+                # Clip to positive values to avoid numerical errors
+                # Physical parameters (R, L, C) should always be non-negative
+                values_clipped = np.maximum(values, min_positive)
+                n_clipped = np.sum(values <= 0)
+                if n_clipped > 0:
+                    rank_zero_info(f"Boundary parameter {var_name}: clipped {n_clipped} non-positive values to {min_positive:.2e}")
+                
+                # Update variable_data with clipped values
+                variable_data[var_name] = values_clipped.reshape(variable_data[var_name].shape)
+                
+                var_min = float(values_clipped.min())
+                var_max = float(values_clipped.max())
+                var_range = var_max - var_min
+                
+                # Set bounds to None if variable has only one value (no variation)
+                # For boundary parameters, use RELATIVE range check (since values can be very small like 1e-13)
+                var_mean = float(values_clipped.mean())
+                if abs(var_mean) > 1e-20:
+                    relative_range = var_range / abs(var_mean)
+                else:
+                    # If mean is essentially zero, check if max is non-zero
+                    relative_range = var_range / max(abs(var_max), 1e-20)
+                
+                if relative_range < 0.01:  # Less than 1% variation → effectively constant
+                    bounds = None
+                    rank_zero_info(f"Boundary parameter {var_name} has no variation (rel_range={relative_range:.2%}), bounds set to None")
+                else:
+                    # Use actual observed range for boundary parameters (NOT expanded)
+                    bounds = (var_min, var_max)
+                    rank_zero_info(f"Boundary parameter {var_name}: bounds=[{var_min:.6e}, {var_max:.6e}], rel_range={relative_range:.2%}")
+                
+                registry.register_variable(
+                    name=var_name,
+                    bounds=bounds,
+                    role="boundary",
+                    description=f"Boundary parameter {var_name}"
+                )
+        
+        return variable_data
+    
+    @staticmethod
+    def register_geometric_parameters(
+        geometric_features: Dict[str, np.ndarray],
+        registry: 'VariableRegistry'
+    ) -> Dict[str, np.ndarray]:
+        """
+        Register geometric parameters (H, W, L) with expanded bounds and clipping.
+        
+        Args:
+            geometric_features: Dictionary of geometric parameter names to value arrays
+            registry: VariableRegistry to register variables in
+            
+        Returns:
+            Updated geometric_features with clipped values
+        """
+        from lightning.pytorch.utilities.rank_zero import rank_zero_info
+        
+        min_positive = 1e-20
+        
+        for geom_name, geom_values in list(geometric_features.items()):
+            if geom_name not in registry:
+                # Clip to positive values to avoid numerical errors
+                # Geometric parameters (heights, widths, lengths) should always be non-negative
+                geom_values_clipped = np.maximum(geom_values, min_positive)
+                n_clipped = np.sum(geom_values <= 0)
+                if n_clipped > 0:
+                    rank_zero_info(f"Geometric parameter {geom_name}: clipped {n_clipped} non-positive values to {min_positive:.2e}")
+                
+                # Update geometric_features with clipped values
+                geometric_features[geom_name] = geom_values_clipped
+                
+                var_min = float(geom_values_clipped.min())
+                var_max = float(geom_values_clipped.max())
+                var_range = var_max - var_min
+                
+                if var_range < 1e-10:  # Effectively constant
+                    bounds = None
+                    rank_zero_info(f"Geometric parameter {geom_name} has no variation (range={var_range:.2e}), bounds set to None")
+                else:
+                    # Expand range by 2x for GEOMETRIC parameters only (for contour plotting)
+                    range_center = (var_min + var_max) / 2
+                    expanded_range = var_range * 2
+                    bounds = (range_center - expanded_range / 2, range_center + expanded_range / 2)
+                    # Ensure expanded bounds are still positive
+                    bounds = (max(bounds[0], min_positive), bounds[1])
+                    rank_zero_info(f"Geometric parameter {geom_name}: original range=[{var_min:.6e}, {var_max:.6e}], "
+                                  f"expanded bounds={bounds}")
+                
+                # Let registry auto-detect role from name (H_* → HEIGHT, W_* → WIDTH, L_* → LENGTH)
+                registry.update_variable_bounds(geom_name, bounds)
+        
+        return geometric_features
 
 
 # No default global registry instance - users should create their own VariableRegistry
