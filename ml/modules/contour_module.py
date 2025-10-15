@@ -3,20 +3,24 @@ Lightning Module for Variable-Agnostic Contour Training
 
 Implements training loop with random subspace perturbations, multi-component losses,
 and evaluation metrics for contour quality assessment.
+
+Also includes Gaussian Process module for hyperspace eye width prediction.
 """
 
+import random
+import numpy as np
+import matplotlib.pyplot as plt
+from typing import Dict, List, Optional, Tuple
+
 import torch
+import gpytorch
 import torch.nn as nn
 import torchmetrics as tm
 from lightning import LightningModule
 from lightning.pytorch.utilities.rank_zero import rank_zero_info
-from typing import Dict, List, Optional, Tuple, Any
-import numpy as np
-import random
-import matplotlib.pyplot as plt
-from pathlib import Path
 
 from ..models.contour_model import ContourPredictor
+from ..models.gp_model import ExactGPModel
 from ..utils.contour_losses import ContourLossFunction, AdversarialSmoothingLoss, MonotonicityLoss
 from ..data.variable_registry import VariableRegistry
 from ..utils.visualization import image_to_buffer, plot_contour_2d
@@ -768,6 +772,474 @@ class ContourModule(LightningModule):
             self.logger.log_metrics(log_metrics, self.current_epoch)
         
         # Log validation metrics to progress bar
+        if stage == "val":
+            self.log(
+                'hp_metric', log_metrics[f'{stage}/mae'],
+                prog_bar=True, on_epoch=True, on_step=False, sync_dist=True
+            )
+        
+        return log_metrics
+
+class GaussianProcessModule(LightningModule):
+    """
+    Lightning module for Gaussian Process regression on eye width prediction.
+    
+    Predicts minimum eye width across parameter hyperspace with uncertainty quantification.
+    This module is designed to work with the same data structure as ContourModule.
+    """
+    
+    def __init__(
+        self,
+        # Model parameters
+        variable_registry: Optional[VariableRegistry] = None,
+        use_ard: bool = True,
+        noise_constraint: float = 1e-4,
+        # Evaluation
+        eval_contour_pairs: Optional[List[Tuple[str, str]]] = None,
+        eval_resolution: int = 25,
+        save_contour_plots: bool = True,
+        spec_threshold: Optional[float] = None,
+        # Specific contour variables
+        var1_name: Optional[str] = None,
+        var2_name: Optional[str] = None,
+        # Variable range overrides
+        var_range: Optional[Dict[str, Tuple[float, float]]] = None
+    ):
+        super().__init__()
+        
+        # Store hyperparameters
+        self.save_hyperparameters()
+        
+        # Use manual optimization since GP model is initialized after first batch
+        self.automatic_optimization = False
+        
+        self.registry = variable_registry or VariableRegistry()
+        self.spec_threshold = spec_threshold
+        self.use_ard = use_ard
+        
+        # Apply variable range overrides if provided
+        if var_range:
+            for var_name, bounds in var_range.items():
+                if isinstance(bounds, (list, tuple)) and len(bounds) == 2:
+                    self.registry.update_variable_bounds(var_name, tuple(bounds))
+                    rank_zero_info(f"Applied var_range override for {var_name}: {bounds}")
+        
+        # GP model and likelihood will be initialized in setup()
+        self.gp_model = None
+        self.likelihood = None
+        self.input_dim = None
+        
+        # Store variable names for consistent ordering
+        self.variable_names = None
+        
+        # Evaluation parameters
+        self.eval_contour_pairs = eval_contour_pairs or []
+        self.eval_resolution = eval_resolution
+        self.save_contour_plots = save_contour_plots
+        self.var1_name = var1_name
+        self.var2_name = var2_name
+        
+        # Initialize metrics
+        self.metrics = nn.ModuleDict({
+            "train_": self.metrics_factory(),
+            "val": self.metrics_factory(),
+        })
+        
+        # Step outputs for plotting
+        self.validation_step_outputs = []
+    
+    def setup(self, stage: Optional[str] = None):
+        """Initialize GP model with first batch of data."""
+        # Model will be initialized on first batch in training_step
+        pass
+    
+    def _initialize_gp_model(self, x: torch.Tensor, y: torch.Tensor):
+        """Initialize GP model with first batch of data."""
+        if self.gp_model is not None:
+            return  # Already initialized
+        
+        self.input_dim = x.shape[1]
+        
+        # Create likelihood with noise constraint
+        self.likelihood = gpytorch.likelihoods.GaussianLikelihood(
+            noise_constraint=gpytorch.constraints.GreaterThan(self.hparams.noise_constraint)
+        )
+        
+        # Create GP model
+        self.gp_model = ExactGPModel(
+            train_x=x,
+            train_y=y,
+            likelihood=self.likelihood,
+            input_dim=self.input_dim,
+            use_ard=self.use_ard
+        )
+        
+        # Move to correct device
+        self.gp_model = self.gp_model.to(self.device)
+        self.likelihood = self.likelihood.to(self.device)
+        
+        rank_zero_info(f"Initialized GP model with input_dim={self.input_dim}, ARD={self.use_ard}")
+        
+        # Replace optimizer with real parameters
+        opt = self.optimizers()
+        opt.param_groups.clear()
+        # Collect all unique parameters from model and likelihood
+        all_params = list(self.gp_model.parameters()) + list(self.likelihood.parameters())
+        opt.add_param_group({'params': all_params})
+    
+    def _variables_dict_to_tensor(self, variables: Dict[str, torch.Tensor]) -> torch.Tensor:
+        """
+        Convert variables dictionary to tensor with consistent ordering.
+        
+        Args:
+            variables: Dict of variable_name -> tensor [batch_size]
+            
+        Returns:
+            Tensor of shape [batch_size, n_variables]
+        """
+        if self.variable_names is None:
+            # Establish variable ordering on first call
+            self.variable_names = sorted(variables.keys())
+            rank_zero_info(f"Established variable ordering: {self.variable_names}")
+        
+        # Stack variables in consistent order
+        var_tensors = [variables[name] for name in self.variable_names]
+        return torch.stack(var_tensors, dim=1)  # [batch_size, n_variables]
+    
+    def forward(self, x: torch.Tensor):
+        """
+        Forward pass through GP.
+        
+        Args:
+            x: Input features [batch_size, n_features]
+            
+        Returns:
+            Predictive distribution
+        """
+        if self.gp_model is None:
+            raise RuntimeError("GP model not initialized. Call training_step first.")
+        
+        return self.gp_model(x)
+    
+    def training_step(self, batch: Dict, batch_idx: int) -> torch.Tensor:
+        """Training step - optimize marginal log likelihood."""
+        return self._step(batch, batch_idx, "train_")
+    
+    def validation_step(self, batch: Dict, batch_idx: int) -> torch.Tensor:
+        """Validation step."""
+        return self._step(batch, batch_idx, "val")
+    
+    def _step(self, batch: Dict, batch_idx: int, stage: str) -> torch.Tensor:
+        """Shared step function for training and validation."""
+        # Unpack batch
+        variables = batch['variables']
+        targets = batch['targets'].squeeze()  # [batch_size]
+        
+        # Convert variables dict to tensor
+        x = self._variables_dict_to_tensor(variables)  # [batch_size, n_variables]
+        y = targets
+        
+        # Initialize GP on first training batch
+        if stage == "train_" and self.gp_model is None:
+            self._initialize_gp_model(x, y)
+        
+        if self.gp_model is None:
+            # Skip if not initialized yet (shouldn't happen in normal training)
+            return torch.tensor(0.0, device=self.device)
+        
+        if stage == "train_":
+            # Get optimizer for manual optimization
+            opt = self.optimizers()
+            
+            # Training mode: optimize marginal log likelihood
+            self.gp_model.train()
+            self.likelihood.train()
+            
+            # Update training data for this epoch (required for Exact GP)
+            self.gp_model.set_train_data(inputs=x, targets=y, strict=False)
+            
+            # Forward pass
+            output = self.gp_model(x)
+            
+            # Compute negative marginal log likelihood
+            loss = -gpytorch.mlls.ExactMarginalLogLikelihood(self.likelihood, self.gp_model)(output, y)
+            
+            # Manual optimization
+            opt.zero_grad()
+            self.manual_backward(loss)
+            opt.step()
+            
+            # Log loss
+            self.log('train/mll_loss', loss, on_step=True, on_epoch=True)
+            
+            # Log GP hyperparameters to show training progression
+            if hasattr(self.gp_model.covar_module, 'outputscale'):
+                self.log('gp_params/outputscale', self.gp_model.covar_module.outputscale.item(), on_step=False, on_epoch=True)
+            if hasattr(self.gp_model.covar_module, 'base_kernel') and hasattr(self.gp_model.covar_module.base_kernel, 'kernels'):
+                # Log RBF lengthscale (first kernel in sum)
+                rbf_kernel = self.gp_model.covar_module.base_kernel.kernels[0]
+                if hasattr(rbf_kernel, 'lengthscale'):
+                    lengthscales = rbf_kernel.lengthscale.squeeze()
+                    if lengthscales.numel() > 1:  # ARD
+                        for i, ls in enumerate(lengthscales):
+                            self.log(f'gp_params/lengthscale_{i}', ls.item(), on_step=False, on_epoch=True)
+                    else:
+                        self.log('gp_params/lengthscale', lengthscales.item(), on_step=False, on_epoch=True)
+            self.log('gp_params/noise', self.likelihood.noise.item(), on_step=False, on_epoch=True)
+            
+        else:
+            # Validation mode: compute predictive performance
+            self.gp_model.eval()
+            self.likelihood.eval()
+            
+            with torch.no_grad(), gpytorch.settings.fast_pred_var():
+                output = self.likelihood(self.gp_model(x))
+                predictions = output.mean
+                uncertainties = output.variance.sqrt()
+                
+                # Compute MSE loss
+                loss = nn.functional.mse_loss(predictions, y)
+                
+                # Log metrics
+                self.log('val/mse_loss', loss, on_step=False, on_epoch=True, prog_bar=True)
+                self.log('val/mean_uncertainty', uncertainties.mean(), on_step=False, on_epoch=True)
+                
+                # Update metrics
+                self.update_metrics(stage, loss, predictions, y, uncertainties)
+                
+                # Store outputs for plotting
+                self._collect_step_outputs(predictions, y, uncertainties, variables)
+        
+        # Plot contours periodically during validation
+        if stage == "val" and batch_idx == 0 and self.save_contour_plots:
+            self._plot_contours_if_needed(variables)
+        
+        return loss
+    
+    def on_validation_epoch_end(self):
+        """Compute epoch-level validation metrics and generate contour plots."""
+        log_metrics = self.compute_metrics("val")
+        
+        # Clear outputs
+        self.validation_step_outputs.clear()
+    
+    def _collect_step_outputs(
+        self,
+        predictions: torch.Tensor,
+        targets: torch.Tensor,
+        uncertainties: torch.Tensor,
+        variables: Dict[str, torch.Tensor]
+    ):
+        """Collect outputs for epoch-end processing."""
+        step_output = {
+            'predictions': predictions.detach().cpu(),
+            'targets': targets.detach().cpu(),
+            'uncertainties': uncertainties.detach().cpu(),
+            'variables': {k: v.detach().cpu() for k, v in variables.items()}
+        }
+        self.validation_step_outputs.append(step_output)
+    
+    def _plot_contours_if_needed(self, variables: Dict[str, torch.Tensor]):
+        """Plot contours during validation."""
+        if not self.logger:
+            return
+        
+        try:
+            # Get contour pair (reuse ContourModule logic)
+            contour_pair = self._get_contour_pair_for_plotting()
+            if contour_pair is None:
+                return
+            
+            var1_name, var2_name = contour_pair
+            
+            # Get fixed values (use first sample from batch)
+            fixed_vars = {}
+            for name, tensor in variables.items():
+                if name in self.registry:
+                    fixed_vars[name] = tensor[0].item() if tensor.dim() > 0 else tensor.item()
+            
+            # Generate contour plot
+            fig = self._plot_contour(var1_name, var2_name, fixed_vars)
+            
+            if fig is not None:
+                plot_name = f'contours_gp/{var1_name}_vs_{var2_name}'
+                self.logger.experiment.add_image(plot_name, image_to_buffer(fig), self.current_epoch)
+                plt.close(fig)
+                
+        except Exception as e:
+            rank_zero_info(f"Error in GP contour plotting: {e}")
+    
+    def _get_contour_pair_for_plotting(self) -> Optional[Tuple[str, str]]:
+        """Get contour pair for plotting (same logic as ContourModule)."""
+        # If both var1_name and var2_name are specified, use them
+        if self.var1_name is not None and self.var2_name is not None:
+            if self.var1_name in self.registry and self.var2_name in self.registry:
+                return (self.var1_name, self.var2_name)
+        
+        # If eval_contour_pairs is provided, use it
+        if self.eval_contour_pairs:
+            valid_pairs = [
+                pair for pair in self.eval_contour_pairs 
+                if all(v in self.registry and self.registry.get_bounds(v) is not None for v in pair)
+            ]
+            
+            if valid_pairs:
+                return random.choice(valid_pairs)
+        else:
+            # Randomly sample from all variables with bounds
+            variables_with_bounds = [
+                name for name in self.registry.variable_names
+                if self.registry.get_bounds(name) is not None
+            ]
+            
+            if len(variables_with_bounds) >= 2:
+                var1_name, var2_name = random.sample(variables_with_bounds, 2)
+                rank_zero_info(f"GP auto-selected contour pair: {var1_name} vs {var2_name}")
+                return (var1_name, var2_name)
+        
+        return None
+    
+    def _plot_contour(
+        self,
+        var1_name: str,
+        var2_name: str,
+        fixed_variables: Dict[str, float],
+        resolution: int = 20
+    ) -> Optional[plt.Figure]:
+        """Generate contour plot using GP predictions."""
+        try:
+            # Get variable bounds
+            var1_bounds = self.registry.get_bounds(var1_name)
+            var2_bounds = self.registry.get_bounds(var2_name)
+            
+            if var1_bounds is None or var2_bounds is None:
+                return None
+            
+            # Generate 2D grid
+            var1_grid = np.linspace(var1_bounds[0], var1_bounds[1], resolution)
+            var2_grid = np.linspace(var2_bounds[0], var2_bounds[1], resolution)
+            var1_mesh, var2_mesh = np.meshgrid(var1_grid, var2_grid)
+            
+            # Prepare input tensor
+            n_points = resolution * resolution
+            x_test = torch.zeros(n_points, len(self.variable_names), device=self.device)
+            
+            # Fill in fixed variables
+            for i, var_name in enumerate(self.variable_names):
+                if var_name == var1_name:
+                    x_test[:, i] = torch.from_numpy(var1_mesh.flatten()).float()
+                elif var_name == var2_name:
+                    x_test[:, i] = torch.from_numpy(var2_mesh.flatten()).float()
+                else:
+                    x_test[:, i] = fixed_variables.get(var_name, 0.0)
+            
+            # Predict
+            self.gp_model.eval()
+            self.likelihood.eval()
+            
+            with torch.no_grad(), gpytorch.settings.fast_pred_var():
+                output = self.likelihood(self.gp_model(x_test))
+                predictions = output.mean.cpu().numpy().reshape(resolution, resolution)
+                uncertainties = output.variance.sqrt().cpu().numpy().reshape(resolution, resolution)
+            
+            # Create plot using visualization module
+            fig = plot_contour_2d(
+                var1_name=var1_name,
+                var2_name=var2_name,
+                var1_grid=torch.from_numpy(var1_mesh),
+                var2_grid=torch.from_numpy(var2_mesh),
+                predictions=torch.from_numpy(predictions),
+                spec_threshold=self.spec_threshold,
+                error_data=None  # GP doesn't have validation error data like ContourModule
+            )
+            
+            return fig
+            
+        except Exception as e:
+            rank_zero_info(f"Error generating GP contour plot: {e}")
+            return None
+    
+    def predict(
+        self,
+        variables: Dict[str, torch.Tensor]
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Make predictions with uncertainty.
+        
+        Args:
+            variables: Dict of variable_name -> tensor
+            
+        Returns:
+            Tuple of (predictions, uncertainties)
+        """
+        x = self._variables_dict_to_tensor(variables)
+        
+        self.gp_model.eval()
+        self.likelihood.eval()
+        
+        with torch.no_grad(), gpytorch.settings.fast_pred_var():
+            output = self.likelihood(self.gp_model(x))
+            predictions = output.mean
+            uncertainties = output.variance.sqrt()
+        
+        return predictions, uncertainties
+    
+    def configure_optimizers(self):
+        """
+        Configure optimizer for GP hyperparameters.
+        
+        Note: When using Lightning CLI with optimizer config in YAML, that config
+        won't be automatically used because we override configure_optimizers.
+        The learning rate is taken from init_args in the YAML or defaults to Adam(lr=0.1).
+        """
+        # For now, use Adam with a default learning rate
+        # In _initialize_gp_model, we'll replace the param_groups with actual GP params
+        dummy_param = torch.nn.Parameter(torch.zeros(1, device=self.device))
+        optimizer = torch.optim.Adam([dummy_param], lr=0.1)
+        return optimizer
+
+    def metrics_factory(self):
+        """Create metrics for GP prediction."""
+        metrics = {
+            'loss': tm.MeanMetric,
+            'mae': tm.MeanAbsoluteError,
+            'mse': tm.MeanSquaredError,
+            'rmse': lambda: tm.MeanSquaredError(squared=False),
+            'r2': tm.R2Score,
+        }
+        metrics_dict = nn.ModuleDict()
+        for k, metric in metrics.items():
+            metrics_dict[k] = metric()
+        return metrics_dict
+    
+    def update_metrics(
+        self,
+        stage: str,
+        loss: torch.Tensor,
+        predictions: torch.Tensor,
+        targets: torch.Tensor,
+        uncertainties: Optional[torch.Tensor] = None
+    ):
+        """Update metrics for the given stage."""
+        pred_flat = predictions.flatten()
+        target_flat = targets.flatten()
+        
+        for key, metric in self.metrics[stage].items():
+            if 'loss' in key:
+                metric.update(loss)
+            else:
+                metric.update(pred_flat, target_flat)
+    
+    def compute_metrics(self, stage: str):
+        """Compute and log metrics for the given stage."""
+        log_metrics = {}
+        for key, metric in self.metrics[stage].items():
+            log_metrics[f'{stage}/{key}'] = metric.compute()
+            metric.reset()
+        
+        if self.logger is not None:
+            self.logger.log_metrics(log_metrics, self.current_epoch)
+        
         if stage == "val":
             self.log(
                 'hp_metric', log_metrics[f'{stage}/mae'],
