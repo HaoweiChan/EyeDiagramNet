@@ -104,18 +104,12 @@ data:
     test_size: 0.2
     scaler_path: null
 
-optimizer:
-  class_path: torch.optim.Adam
-  init_args:
-    lr: 0.1  # Higher LR for GP hyperparameter optimization
-    betas: [0.9, 0.999]
-    eps: 1e-8
-
-lr_scheduler:
-  class_path: torch.optim.lr_scheduler.ReduceLROnPlateau
-  init_args:
-    mode: min
-    factor: 0.5
-    patience: 10
-    min_lr: 1e-4
+# Note: optimizer/lr_scheduler CANNOT be configured here for GPs due to:
+# 1. Manual optimization (automatic_optimization = False)
+# 2. Dynamic parameter initialization (GP model created on first batch)
+# 3. Lightning CLI tries to instantiate optimizer before GP has parameters
+# 
+# The optimizer is configured in GaussianProcessModule.configure_optimizers()
+# using Adam(lr=0.1) by default. To change learning rate or optimizer type,
+# modify the configure_optimizers() method directly.
 

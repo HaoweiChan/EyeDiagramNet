@@ -5,7 +5,7 @@
 export PYTHONPATH="${PYTHONPATH}:$(pwd)"
 
 # The configuration file for this specific training task
-CONFIG_FILE="configs/training/train_contour_gp.yaml"
+CONFIG_FILE="configs/training/_train_contour_gp.yaml"
 
 # Pass all command line arguments after the script name to the trainer
 # Example: ./scripts/macos/train_contour_gp.sh fit --trainer.max_epochs 1
