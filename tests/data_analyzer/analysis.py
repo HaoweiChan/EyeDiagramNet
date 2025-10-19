@@ -27,6 +27,56 @@ except ImportError:
 from .cleaning import estimate_block_size
 
 
+def detect_contaminated_configs(results: List[SimulationResult]) -> dict:
+    """
+    Detect samples where config values are actually parameter names (strings).
+    This happens when to_list(return_keys=True) return order was swapped.
+    """
+    if not results:
+        return {
+            'total_samples': 0,
+            'contaminated_count': 0,
+            'contaminated_indices': [],
+            'contamination_details': []
+        }
+    
+    contaminated_indices = []
+    contamination_details = []
+    
+    for i, result in enumerate(results):
+        is_contaminated = False
+        issue_desc = []
+        
+        # Check if config_values contains strings (should be numeric)
+        if result.config_values and isinstance(result.config_values[0], str):
+            is_contaminated = True
+            issue_desc.append("config_values contains strings instead of numbers")
+        
+        # Check if config_values match config_keys (indicating they're swapped)
+        if result.config_keys and result.config_values:
+            if len(result.config_keys) == len(result.config_values):
+                # Check if the values are actually the keys
+                if all(isinstance(v, str) and v in result.config_keys for v in result.config_values):
+                    is_contaminated = True
+                    issue_desc.append("config_values match config_keys (likely swapped)")
+        
+        if is_contaminated:
+            contaminated_indices.append(i)
+            contamination_details.append({
+                'sample_index': i,
+                'issues': issue_desc,
+                'config_keys': result.config_keys[:3] if result.config_keys else [],
+                'config_values': result.config_values[:3] if result.config_values else [],
+            })
+    
+    return {
+        'total_samples': len(results),
+        'contaminated_count': len(contaminated_indices),
+        'contaminated_indices': contaminated_indices,
+        'contamination_details': contamination_details[:5]  # Show first 5 examples
+    }
+
+
 def detect_duplicate_configs(results: List[SimulationResult]) -> dict:
     """Detect duplicate configuration values within a list of simulation results."""
     if not results:
@@ -63,6 +113,50 @@ def detect_duplicate_configs(results: List[SimulationResult]) -> dict:
         'unique_configs': len(config_to_indices),
         'duplicate_count': duplicate_count,
         'duplicate_groups': duplicate_groups
+    }
+
+
+def analyze_contamination_across_files(pickle_files_list: list[Path]) -> dict:
+    """Analyze contaminated config values across all pickle files."""
+    file_contamination_stats = {}
+    total_contaminated = 0
+    total_samples = 0
+    contaminated_files = []
+    
+    from common.pickle_utils import load_pickle_data
+    
+    for pfile in pickle_files_list:
+        try:
+            results = load_pickle_data(pfile)
+            if results:
+                file_stats = detect_contaminated_configs(results)
+                file_contamination_stats[str(pfile)] = file_stats
+                total_contaminated += file_stats['contaminated_count']
+                total_samples += file_stats['total_samples']
+                
+                if file_stats['contaminated_count'] > 0:
+                    contaminated_files.append({
+                        'file': pfile.name,
+                        'path': str(pfile),
+                        'contaminated_count': file_stats['contaminated_count'],
+                        'total_samples': file_stats['total_samples'],
+                        'contamination_rate': file_stats['contaminated_count'] / file_stats['total_samples'] * 100
+                    })
+        except Exception as e:
+            file_contamination_stats[str(pfile)] = {
+                'error': str(e),
+                'total_samples': 0,
+                'contaminated_count': 0,
+                'contaminated_indices': [],
+                'contamination_details': []
+            }
+    
+    return {
+        'file_stats': file_contamination_stats,
+        'total_samples_across_files': total_samples,
+        'total_contaminated_across_files': total_contaminated,
+        'contaminated_files': contaminated_files,
+        'files_with_contamination_count': len(contaminated_files)
     }
 
 
@@ -283,6 +377,31 @@ def generate_summary_report(pickle_dir: Path, pickle_files: list, all_results: L
         report.append(f"  Max samples per file: {summary_df['samples'].max()}")
         report.append("")
 
+    # Contamination analysis (CRITICAL)
+    if analysis_results.get('contamination_stats'):
+        cont_stats = analysis_results['contamination_stats']
+        report.append("⚠️  CONTAMINATION ANALYSIS (CRITICAL):")
+        report.append(f"  Files with contaminated configs: {cont_stats['files_with_contamination_count']}/{len(pickle_files)}")
+        report.append(f"  Total contaminated samples: {cont_stats['total_contaminated_across_files']}")
+        
+        if cont_stats['total_samples_across_files'] > 0:
+            cont_percentage = (cont_stats['total_contaminated_across_files'] / 
+                             cont_stats['total_samples_across_files'] * 100)
+            report.append(f"  Contamination rate: {cont_percentage:.2f}%")
+        
+        # Report contaminated files
+        if cont_stats['contaminated_files']:
+            report.append(f"\n  ⚠️  CONTAMINATED FILES (config values are parameter names):")
+            for file_info in cont_stats['contaminated_files'][:10]:
+                report.append(f"    - {file_info['file']}: {file_info['contaminated_count']}/{file_info['total_samples']} "
+                            f"samples ({file_info['contamination_rate']:.1f}%)")
+            if len(cont_stats['contaminated_files']) > 10:
+                report.append(f"    ... and {len(cont_stats['contaminated_files']) - 10} more contaminated files")
+            
+            report.append(f"\n  ⚠️  RECOMMENDED ACTION: Delete these contaminated files and regenerate data!")
+        
+        report.append("")
+    
     # Duplication analysis
     if analysis_results.get('duplication_stats'):
         dup_stats = analysis_results['duplication_stats']

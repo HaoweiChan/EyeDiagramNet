@@ -188,7 +188,7 @@ class SequentialCollector:
             return False
         
         # Convert config to tuple for comparison
-        config_values, _ = config.to_list(return_keys=True)
+        config_keys, config_values = config.to_list(return_keys=True)
         config_tuple = tuple(config_values)
         
         return config_tuple in existing_configs
@@ -274,7 +274,7 @@ class SequentialCollector:
         """
         try:
             # Get config values and keys for display
-            config_values, config_keys = combined_config.to_list(return_keys=True)
+            config_keys, config_values = combined_config.to_list(return_keys=True)
             config_dict = dict(zip(config_keys, config_values))
             
             # Format the comprehensive error report
@@ -742,7 +742,7 @@ Metadata Error: {meta_error}
             line_ew[line_ew >= 99.9] = -0.1
             
             # Create a structured dataclass instance for the result
-            config_values, config_keys = combined_config.to_list(return_keys=True)
+            config_keys, config_values = combined_config.to_list(return_keys=True)
             result = SimulationResult(
                 config_values=config_values,
                 config_keys=config_keys,

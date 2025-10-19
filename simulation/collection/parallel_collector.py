@@ -737,7 +737,7 @@ def format_error_metadata(trace_snp_path, snp_drv_path, snp_odt_path, combined_c
     """
     try:
         # Get config values and keys for display
-        config_values, config_keys = combined_config.to_list(return_keys=True)
+        config_keys, config_values = combined_config.to_list(return_keys=True)
         config_dict = dict(zip(config_keys, config_values))
         
         # Format the comprehensive error report
@@ -1011,7 +1011,7 @@ def collect_trace_simulation_data(trace_snp_file, vertical_pairs_with_counts, co
             line_ew[line_ew >= 99.9] = -0.1
             
             # Create a structured dataclass instance for the result
-            config_values, config_keys = combined_config.to_list(return_keys=True)
+            config_keys, config_values = combined_config.to_list(return_keys=True)
             result = SimulationResult(
                 config_values=config_values,
                 config_keys=config_keys,

@@ -20,6 +20,12 @@ def main():
     parser_clean.add_argument("--block_size", type=int, help="Only keep samples with this block size.")
     parser_clean.add_argument("--remove-block-size-1", action="store_true", help="Remove samples with block size 1 direction patterns.")
     parser_clean.add_argument("--remove-duplicates", action="store_true", help="Remove samples with duplicate configuration values (keeps first occurrence).")
+    parser_clean.add_argument("--keep-contaminated", action="store_true", help="Keep contaminated samples (default: remove them).")
+    
+    # --- Delete Contaminated Files Command ---
+    parser_delete = subparsers.add_parser("delete-contaminated", help="Delete pickle files that contain contaminated config data.")
+    parser_delete.add_argument("--dry-run", action="store_true", default=True, help="Only report what would be deleted (default).")
+    parser_delete.add_argument("--force", action="store_true", help="Actually delete contaminated files (overrides --dry-run).")
 
     # --- Validate Command ---
     parser_validate = subparsers.add_parser("validate", help="Validate pickle data against simulation.")
@@ -53,12 +59,17 @@ def main():
                 all_results.extend(results)
                 file_stats.append({'file': pfile.name, 'samples': len(results)})
         
+        # Analyze contamination across all files (CRITICAL)
+        print("Analyzing contaminated configs...")
+        contamination_stats = analysis.analyze_contamination_across_files(pickle_files)
+        
         # Analyze duplications across all files
         print("Analyzing duplications...")
         duplication_stats = analysis.analyze_duplications_across_files(pickle_files)
         
         analysis_results = {
             'file_stats': file_stats,
+            'contamination_stats': contamination_stats,
             'duplication_stats': duplication_stats
         }
         analysis.plot_eye_width_distributions(all_results, output_dir)
@@ -67,13 +78,16 @@ def main():
     elif args.command == "clean":
         print("\nCleaning pickle files...")
         total_before, total_removed = 0, 0
+        remove_contaminated = not args.keep_contaminated  # Default is to remove contaminated
+        
         for pfile in pickle_files:
             try:
                 n_before, n_removed = cleaning.clean_pickle_file_inplace(
                     pfile, 
                     block_size=args.block_size, 
                     remove_block_size_1=args.remove_block_size_1,
-                    remove_duplicates=args.remove_duplicates
+                    remove_duplicates=args.remove_duplicates,
+                    remove_contaminated=remove_contaminated
                 )
                 total_before += n_before
                 total_removed += n_removed
@@ -82,6 +96,20 @@ def main():
             except Exception as e:
                 print(f"Error cleaning {pfile.name}: {e}")
         print(f"\nCleaning complete. Total rows before: {total_before}, total removed: {total_removed}")
+    
+    elif args.command == "delete-contaminated":
+        dry_run = args.dry_run and not args.force  # Dry run unless --force is specified
+        deletion_stats = cleaning.delete_contaminated_files(pickle_files, dry_run=dry_run)
+        
+        print(f"\n=== Deletion Summary ===")
+        print(f"Total files checked: {deletion_stats['total_files_checked']}")
+        print(f"Contaminated files found: {deletion_stats['contaminated_files_found']}")
+        print(f"Total samples affected: {deletion_stats['total_samples_affected']}")
+        print(f"Files deleted: {deletion_stats['files_deleted']}")
+        if deletion_stats['errors']:
+            print(f"\nErrors encountered: {len(deletion_stats['errors'])}")
+            for error in deletion_stats['errors'][:5]:
+                print(f"  - {error}")
 
     elif args.command == "validate":
         validation.run_validation(pickle_files, args.max_files, args.max_samples, output_dir)
