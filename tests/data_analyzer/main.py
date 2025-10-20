@@ -8,32 +8,20 @@ from common.pickle_utils import load_pickle_data
 
 def main():
     parser = argparse.ArgumentParser(description="A comprehensive tool to analyze, clean, and validate training pickle data.")
+    parser.add_argument("command", type=str, choices=["analyze", "clean", "delete-contaminated", "validate"], help="Available commands")
     parser.add_argument("pickle_dir", type=str, help="Path to the directory containing pickle files.")
-    
-    subparsers = parser.add_subparsers(dest="command", required=True, help="Available commands")
 
-    # --- Analyze Command ---
-    parser_analyze = subparsers.add_parser("analyze", help="Perform a full analysis of the pickle data.")
-    
-    # --- Clean Command ---
-    parser_clean = subparsers.add_parser("clean", help="Clean the pickle files in-place.")
-    parser_clean.add_argument("--block_size", type=int, help="Only keep samples with this block size.")
-    parser_clean.add_argument("--remove-block-size-1", action="store_true", help="Remove samples with block size 1 direction patterns.")
-    parser_clean.add_argument("--remove-duplicates", action="store_true", help="Remove samples with duplicate configuration values (keeps first occurrence).")
-    parser_clean.add_argument("--keep-contaminated", action="store_true", help="Keep contaminated samples (default: remove them).")
-    
-    # --- Delete Contaminated Files Command ---
-    parser_delete = subparsers.add_parser("delete-contaminated", help="Delete pickle files that contain contaminated config data.")
-    parser_delete.add_argument("--dry-run", action="store_true", default=True, help="Only report what would be deleted (default).")
-    parser_delete.add_argument("--force", action="store_true", help="Actually delete contaminated files (overrides --dry-run).")
-
-    # --- Validate Command ---
-    parser_validate = subparsers.add_parser("validate", help="Validate pickle data against simulation.")
-    parser_validate.add_argument("--max_files", type=int, default=3, help="Max number of files to validate.")
-    parser_validate.add_argument("--max_samples", type=int, default=5, help="Max number of samples per file.")
+    parser.add_argument("--block_size", type=int, help="Only keep samples with this block size (clean command only).")
+    parser.add_argument("--remove-block-size-1", action="store_true", help="Remove samples with block size 1 direction patterns (clean command only).")
+    parser.add_argument("--remove-duplicates", action="store_true", help="Remove samples with duplicate configuration values (clean command only).")
+    parser.add_argument("--keep-contaminated", action="store_true", help="Keep contaminated samples (clean command only).")
+    parser.add_argument("--dry-run", action="store_true", default=True, help="Only report what would be deleted (delete-contaminated command only).")
+    parser.add_argument("--force", action="store_true", help="Actually delete contaminated files (delete-contaminated command only).")
+    parser.add_argument("--max_files", type=int, help="Max number of files to process (analyze/validate commands only).")
+    parser.add_argument("--max_samples", type=int, help="Max number of samples per file (analyze/validate commands only).")
 
     args = parser.parse_args()
-    
+
     pickle_dir = Path(args.pickle_dir).expanduser()
     if not pickle_dir.is_dir():
         print(f"Error: Provided path '{pickle_dir}' is not a valid directory.")
@@ -48,6 +36,10 @@ def main():
     print(f"Found {len(pickle_files)} pickle files in {pickle_dir}")
     if not pickle_files:
         return
+
+    # Set defaults based on command
+    max_files = getattr(args, 'max_files', 3) or 3
+    max_samples = getattr(args, 'max_samples', 5) or 5
 
     if args.command == "analyze":
         # Load all data for analysis using the new dataclass loader
@@ -112,7 +104,7 @@ def main():
                 print(f"  - {error}")
 
     elif args.command == "validate":
-        validation.run_validation(pickle_files, args.max_files, args.max_samples, output_dir)
+        validation.run_validation(pickle_files, max_files, max_samples, output_dir)
 
 if __name__ == '__main__':
     main()

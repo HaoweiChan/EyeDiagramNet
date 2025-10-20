@@ -77,7 +77,7 @@ python -m tests.data_analyzer.main clean /path/to/your/pickle_data [options]
     -   Use this flag to keep contaminated samples if you want to inspect them manually.
     -   **Example:**
         ```bash
-        python tests/analyze_pickle_data.py ./data clean --keep-contaminated
+        python -m tests.data_analyzer.main clean ./data --keep-contaminated
         ```
 
 You can combine these options. For example, to only keep samples with block size 2, remove block size 1 patterns, remove duplicates, and remove contaminated samples:
@@ -95,16 +95,16 @@ This command **deletes entire pickle files** that contain contaminated config da
 
 **Usage (Dry Run - Safe):**
 ```bash
-python tests/analyze_pickle_data.py /path/to/your/pickle_data delete-contaminated
+python -m tests.data_analyzer.main delete-contaminated /path/to/your/pickle_data
 ```
 or
 ```bash
-python tests/analyze_pickle_data.py /path/to/your/pickle_data delete-contaminated --dry-run
+python -m tests.data_analyzer.main delete-contaminated /path/to/your/pickle_data --dry-run
 ```
 
 **Usage (Actually Delete Files):**
 ```bash
-python tests/analyze_pickle_data.py /path/to/your/pickle_data delete-contaminated --force
+python -m tests.data_analyzer.main delete-contaminated /path/to/your/pickle_data --force
 ```
 
 **What it does:**
