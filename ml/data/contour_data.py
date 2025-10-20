@@ -319,10 +319,17 @@ class ContourDataModule(LightningDataModule):
                     contour_data_filtered, boundaries, processor, config_keys
                 )
                 
-                # Perform data sanity checks
-                self._validate_data_quality(variable_data, eye_widths, name)
+                # Perform data sanity checks and get list of valid variables
+                valid_variables = self._validate_data_quality(variable_data, eye_widths, name)
                 
-                rank_zero_info(f"{name}| sequences {sequence_data.shape} | variables {len(variable_data)} | eye_width {eye_widths.shape}")
+                # Filter out constant/zero-variance variables for GP training
+                if len(valid_variables) < len(variable_data):
+                    rank_zero_info(f"Filtering variables for GP: keeping {len(valid_variables)}/{len(variable_data)} non-constant variables")
+                    variable_data_filtered = {k: v for k, v in variable_data.items() if k in valid_variables}
+                else:
+                    variable_data_filtered = variable_data
+                
+                rank_zero_info(f"{name}| sequences {sequence_data.shape} | variables {len(variable_data_filtered)} | eye_width {eye_widths.shape}")
                 
                 # Create train/val/test splits
                 indices = np.arange(len(sequence_data))
@@ -330,7 +337,7 @@ class ContourDataModule(LightningDataModule):
                 if stage == "test":
                     test_idx = indices
                     seq_test = sequence_data[test_idx]
-                    var_test = {k: v[test_idx] for k, v in variable_data.items()}
+                    var_test = {k: v[test_idx] for k, v in variable_data_filtered.items()}
                     y_test = eye_widths[test_idx]
                     case_ids_test = [case_ids_filtered[i] for i in test_idx]
                     
@@ -354,8 +361,8 @@ class ContourDataModule(LightningDataModule):
                     # Small dataset - use all for training
                     rank_zero_info(f"Dataset '{name}' too small for validation, using all {total_size} samples for training")
                     seq_tr, seq_val = sequence_data, np.array([])
-                    var_tr = variable_data
-                    var_val = {k: np.array([]) for k in variable_data.keys()}
+                    var_tr = variable_data_filtered
+                    var_val = {k: np.array([]) for k in variable_data_filtered.keys()}
                     y_tr, y_val = eye_widths, np.array([])
                     case_ids_tr = case_ids_filtered
                     case_ids_val = []
@@ -366,8 +373,8 @@ class ContourDataModule(LightningDataModule):
                     )
                     
                     seq_tr, seq_val = sequence_data[train_idx], sequence_data[val_idx]
-                    var_tr = {k: v[train_idx] for k, v in variable_data.items()}
-                    var_val = {k: v[val_idx] for k, v in variable_data.items()}
+                    var_tr = {k: v[train_idx] for k, v in variable_data_filtered.items()}
+                    var_val = {k: v[val_idx] for k, v in variable_data_filtered.items()}
                     y_tr, y_val = eye_widths[train_idx], eye_widths[val_idx]
                     case_ids_tr = [case_ids_filtered[i] for i in train_idx]
                     case_ids_val = [case_ids_filtered[i] for i in val_idx]
@@ -609,7 +616,7 @@ class ContourDataModule(LightningDataModule):
         variable_data: Dict[str, np.ndarray],
         eye_widths: np.ndarray,
         dataset_name: str
-    ):
+    ) -> List[str]:
         """
         Perform comprehensive data quality checks to identify issues that could cause GP training failures.
         
@@ -618,12 +625,16 @@ class ContourDataModule(LightningDataModule):
         - Duplicate samples
         - Zero variance in variables or targets
         - Extremely small ranges that could cause numerical issues
+        
+        Returns:
+            List of valid (non-constant, non-problematic) variable names suitable for GP training
         """
         rank_zero_info(f"\n{'='*60}")
         rank_zero_info(f"DATA QUALITY CHECKS for '{dataset_name}'")
         rank_zero_info(f"{'='*60}")
         
         issues_found = []
+        valid_variables = []
         
         # Check eye widths (targets)
         rank_zero_info(f"\n[Target Data] Eye Widths:")
@@ -659,6 +670,7 @@ class ContourDataModule(LightningDataModule):
         for var_name, var_values in variable_data.items():
             var_flat = var_values.flatten()
             var_issues = []
+            is_valid = True
             
             # Check for NaN/Inf
             n_nan = np.sum(np.isnan(var_flat))
@@ -667,10 +679,12 @@ class ContourDataModule(LightningDataModule):
             if n_nan > 0:
                 var_issues.append(f"{n_nan} NaN")
                 issues_found.append(f"Variable '{var_name}' has {n_nan} NaN values")
+                is_valid = False
             
             if n_inf > 0:
                 var_issues.append(f"{n_inf} Inf")
                 issues_found.append(f"Variable '{var_name}' has {n_inf} Inf values")
+                is_valid = False
             
             # Get valid values
             valid_values = var_flat[~np.isnan(var_flat) & ~np.isinf(var_flat)]
@@ -682,38 +696,51 @@ class ContourDataModule(LightningDataModule):
                 var_max = np.max(valid_values)
                 var_range = var_max - var_min
                 
-                # Check for zero/near-zero variance
+                # Check for zero/near-zero variance (threshold: 1e-10 for zero, 1e-8 for near-zero)
                 if var_std < 1e-10:
-                    var_issues.append("ZERO VARIANCE")
+                    var_issues.append("ZERO VARIANCE - EXCLUDED")
                     issues_found.append(f"Variable '{var_name}' has zero variance - all values are {var_mean:.6f}")
+                    is_valid = False
+                elif var_std < 1e-8:
+                    var_issues.append(f"Very low variance (std={var_std:.2e}) - EXCLUDED")
+                    issues_found.append(f"Variable '{var_name}' has near-zero variance (std={var_std:.2e})")
+                    is_valid = False
                 elif var_std < 1e-6:
                     var_issues.append(f"Low variance (std={var_std:.2e})")
                 
                 # Check for very small range
                 if var_range < 1e-10:
                     var_issues.append("Zero range")
+                    is_valid = False
                 
                 # Report statistics
-                issue_str = f" [{', '.join(var_issues)}]" if var_issues else ""
+                status = "✓ VALID" if is_valid else "✗ EXCLUDED"
+                issue_str = f" [{', '.join(var_issues)}]" if var_issues else f" [{status}]"
                 rank_zero_info(f"  {var_name}: mean={var_mean:.6f}, std={var_std:.6f}, range=[{var_min:.6f}, {var_max:.6f}]{issue_str}")
+                
+                # Add to valid variables list if it passes all checks
+                if is_valid:
+                    valid_variables.append(var_name)
             else:
-                rank_zero_info(f"  {var_name}: ⚠️  NO VALID VALUES (all NaN/Inf)")
+                rank_zero_info(f"  {var_name}: ⚠️  NO VALID VALUES (all NaN/Inf) - EXCLUDED")
                 issues_found.append(f"Variable '{var_name}' has no valid values")
+                is_valid = False
         
-        # Check for duplicate samples (combining all variable values)
-        rank_zero_info(f"\n[Duplicate Detection]:")
+        # Check for duplicate samples (combining ONLY valid variable values)
+        rank_zero_info(f"\n[Duplicate Detection] (using {len(valid_variables)} valid variables):")
         
-        # Stack all variables into a feature matrix
+        # Stack only valid variables into a feature matrix
         feature_list = []
-        for var_name in sorted(variable_data.keys()):
-            var_values = variable_data[var_name]
-            # Flatten to [n_samples]
-            if var_values.ndim > 1:
-                # Take first dimension as samples, flatten rest
-                var_flat = var_values.reshape(var_values.shape[0], -1).mean(axis=1)
-            else:
-                var_flat = var_values
-            feature_list.append(var_flat)
+        for var_name in sorted(valid_variables):
+            if var_name in variable_data:
+                var_values = variable_data[var_name]
+                # Flatten to [n_samples]
+                if var_values.ndim > 1:
+                    # Take first dimension as samples, flatten rest
+                    var_flat = var_values.reshape(var_values.shape[0], -1).mean(axis=1)
+                else:
+                    var_flat = var_values
+                feature_list.append(var_flat)
         
         if feature_list:
             features = np.column_stack(feature_list)
@@ -731,7 +758,7 @@ class ContourDataModule(LightningDataModule):
             
             if n_duplicates > 0:
                 rank_zero_info(f"  ⚠️  WARNING: Found {n_duplicates} duplicate sample groups ({n_total_duplicate_rows} total duplicates)")
-                issues_found.append(f"Found {n_duplicates} groups of duplicate samples")
+                issues_found.append(f"Found {n_duplicates} groups of duplicate samples (after filtering constant variables)")
                 
                 # Show first few duplicate groups
                 dup_groups = counts[counts > 1][:3]
@@ -741,19 +768,29 @@ class ContourDataModule(LightningDataModule):
         
         # Final summary
         rank_zero_info(f"\n{'='*60}")
+        rank_zero_info(f"VALIDATION SUMMARY:")
+        rank_zero_info(f"  Valid variables for GP: {len(valid_variables)}/{len(variable_data)}")
+        rank_zero_info(f"  Excluded variables: {len(variable_data) - len(valid_variables)}")
+        
+        if len(variable_data) > len(valid_variables):
+            excluded = [v for v in variable_data.keys() if v not in valid_variables]
+            rank_zero_info(f"  Excluded list: {excluded}")
+        
         if issues_found:
-            rank_zero_info(f"⚠️  FOUND {len(issues_found)} POTENTIAL ISSUES:")
+            rank_zero_info(f"\n⚠️  FOUND {len(issues_found)} ISSUES (auto-filtered):")
             for i, issue in enumerate(issues_found, 1):
                 rank_zero_info(f"  {i}. {issue}")
-            rank_zero_info(f"\n💡 These issues may cause 'Matrix not positive definite' errors in GP training!")
-            rank_zero_info(f"   Recommendations:")
-            rank_zero_info(f"   - Remove duplicate samples")
-            rank_zero_info(f"   - Remove constant/near-constant variables")
-            rank_zero_info(f"   - Handle NaN/Inf values")
-            rank_zero_info(f"   - Consider data normalization if variance is very high/low")
+            rank_zero_info(f"\n💡 Problematic variables have been automatically excluded from GP training.")
         else:
-            rank_zero_info(f"✓ No critical data quality issues detected")
+            rank_zero_info(f"\n✓ No critical data quality issues detected")
+        
+        if len(valid_variables) == 0:
+            rank_zero_info(f"\n❌ ERROR: No valid variables remaining after filtering!")
+            rank_zero_info(f"   Cannot proceed with GP training.")
+        
         rank_zero_info(f"{'='*60}\n")
+        
+        return valid_variables
     
     def _combine_datasets(self, dataset_dict: Dict[str, ContourDataset]) -> Dataset:
         """Combine multiple datasets into one."""
