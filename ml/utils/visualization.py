@@ -255,7 +255,6 @@ def image_to_tensor(image: Image.Image) -> torch.Tensor:
     """Converts a PIL Image to a PyTorch tensor for TensorBoard."""
     return torch.tensor(np.array(image)).permute(2, 0, 1)
 
-
 def plot_contour_2d(
     var1_name: str,
     var2_name: str,

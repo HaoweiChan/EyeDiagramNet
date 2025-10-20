@@ -1,0 +1,115 @@
+# lightning.pytorch==2.5.1.post0
+# Gaussian Process contour prediction training configuration
+seed_everything: true
+trainer:
+  accelerator: cpu  # GP training is CPU-based
+  devices: 1
+  num_nodes: 1
+  precision: 32-true
+  fast_dev_run: false
+  max_epochs: 500  # Set high, will stop early via EarlyStopping callback
+  min_epochs: null
+  max_steps: -1
+  min_steps: null
+  max_time: null
+  limit_train_batches: null
+  limit_val_batches: null
+  limit_test_batches: null
+  limit_predict_batches: null
+  overfit_batches: 0.
+  val_check_interval: null
+  check_val_every_n_epoch: 1
+  num_sanity_val_steps: 0
+  log_every_n_steps: 1
+  enable_checkpointing: null
+  enable_progress_bar: null
+  enable_model_summary: null
+  accumulate_grad_batches: 1
+  gradient_clip_val: null
+  gradient_clip_algorithm: norm
+  deterministic: null
+  benchmark: null
+  inference_mode: true
+  use_distributed_sampler: false  # No distributed training for GP
+  detect_anomaly: false
+  barebones: false
+  plugins: null
+  sync_batchnorm: false
+  reload_dataloaders_every_n_epochs: 0
+  default_root_dir: null
+  logger:
+    - class_path: lightning.pytorch.loggers.TensorBoardLogger
+      init_args:
+        save_dir: ./saved
+        name: contour_gp
+  callbacks:
+    - class_path: lightning.pytorch.callbacks.ModelSummary
+      init_args:
+        max_depth: 3
+    - class_path: lightning.pytorch.callbacks.LearningRateMonitor
+      init_args:
+        logging_interval: epoch
+    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+      init_args:
+        filename: 'contour-gp-epoch{epoch}-loss{val/mse_loss:.4f}'
+        auto_insert_metric_name: false
+        monitor: val/mse_loss
+        mode: min
+        save_last: true
+        save_top_k: 3
+        enable_version_counter: true
+    - class_path: lightning.pytorch.callbacks.EarlyStopping
+      init_args:
+        monitor: val/mse_loss
+        mode: min
+        patience: 30  # GP hyperparams converge slower than NNs
+        min_delta: 1e-4
+        verbose: true
+
+model:
+  class_path: ml.modules.contour_module.GaussianProcessModule
+  init_args:
+    # GP model configuration
+    use_ard: true  # Automatic Relevance Determination for feature importance
+    noise_constraint: 1.0e-4  # Minimum noise level
+    
+    # Contour plotting and evaluation
+    save_contour_plots: true
+    eval_resolution: 25
+    spec_threshold: 0.5  # Eye width specification threshold for highlighting
+    
+    # Contour plotting configuration
+    eval_contour_pairs:
+      - ["W_wg", "W_ws"]  # Waveguide width vs waveguide spacing
+      - ["M_1_cond", "W_wg"]  # Metal conductivity vs waveguide width
+      - ["H_h_ubm", "W_wg"]  # Under bump metal height vs waveguide width
+    # Specific contour variables to plot (null means use eval_contour_pairs)
+    var1_name: null  # e.g., "W_wg1" or null to use from eval_contour_pairs
+    var2_name: null  # e.g., "W_ws" or null to use from eval_contour_pairs
+    
+    # Variable range overrides for contour plotting (optional)
+    var_range:
+      null  # No overrides by default
+
+data:
+  class_path: ml.data.contour_data.ContourDataModule
+  init_args:
+    # Data directories - expects dict mapping names to directories
+    data_dirs:
+      test_contour: tests/data_generation/contour
+    label_dir: tests/data_generation/contour
+    
+    # Data processing
+    batch_size: 999999  # Full-batch training for Exact GP (set very high)
+    test_size: 0.2
+    scaler_path: null
+
+# Note: optimizer/lr_scheduler CANNOT be configured here for GPs due to:
+# 1. Manual optimization (automatic_optimization = False)
+# 2. Dynamic parameter initialization (GP model created on first batch)
+# 3. Lightning CLI tries to instantiate optimizer before GP has parameters
+# 
+# The optimizer is configured in GaussianProcessModule.configure_optimizers()
+# using Adam(lr=0.1) by default. To change learning rate or optimizer type,
+# modify the configure_optimizers() method directly.
+

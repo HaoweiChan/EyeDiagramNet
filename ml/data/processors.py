@@ -88,6 +88,326 @@ class CSVProcessor:
         
         return np.hstack([data_col, x_dim[:, None], z_dim[:, None]])
 
+class ContourProcessor:
+    """Processor for handling sequence.csv and variation.csv files.
+    
+    Combines structural sequence information with material properties and dimensions
+    to create resolved contour data for ML training.
+    """
+    
+    def __init__(self):
+        # Material type mappings
+        self.type_mapping = {'D': 0, 'S': 1, 'G': 2}  # Dielectric, Signal, Ground
+        
+        # Dynamic column groups - will be populated during parsing
+        self.height_cols = []
+        self.width_cols = []
+        self.length_cols = []
+        
+        # Dynamic variation file column mappings - will be created during sync
+        self.var_height_map = {}
+        self.var_width_map = {}
+        self.var_length_map = {}
+
+    def locate_files(self, data_dir: Union[str, Path]) -> Tuple[Path, Path]:
+        """Locate *_sequence_input.csv and *_variations_variable.csv files with matching prefix."""
+        data_path = Path(data_dir)
+        
+        # Find all sequence and variation files
+        sequence_files = list(data_path.glob("*_sequence_input.csv"))
+        variation_files = list(data_path.glob("*_variations_variable.csv"))
+        
+        if not sequence_files:
+            raise FileNotFoundError(f"No *_sequence_input.csv files found in {data_path}")
+        if not variation_files:
+            raise FileNotFoundError(f"No *_variations_variable.csv files found in {data_path}")
+        
+        # Extract prefixes
+        seq_prefixes = {f.name.replace("_sequence_input.csv", ""): f for f in sequence_files}
+        var_prefixes = {f.name.replace("_variations_variable.csv", ""): f for f in variation_files}
+        
+        # Find matching prefixes
+        common_prefixes = set(seq_prefixes.keys()) & set(var_prefixes.keys())
+        
+        if not common_prefixes:
+            raise FileNotFoundError(
+                f"No matching sequence/variation file pairs found in {data_path}. "
+                f"Sequence prefixes: {list(seq_prefixes.keys())}, "
+                f"Variation prefixes: {list(var_prefixes.keys())}"
+            )
+        
+        # Use the first matching prefix (or you could add logic to select a specific one)
+        prefix = sorted(common_prefixes)[0]
+        sequence_file = seq_prefixes[prefix]
+        variation_file = var_prefixes[prefix]
+        
+        if len(common_prefixes) > 1:
+            rank_zero_info(f"Multiple matching file pairs found. Using prefix: '{prefix}'")
+        
+        return sequence_file, variation_file
+
+    def parse_sequence(self, sequence_path: Path) -> pd.DataFrame:
+        """Parse sequence.csv file and discover geometric feature columns."""
+        df = pd.read_csv(sequence_path)
+        
+        # Store original Type strings and convert to numeric for compatibility
+        df['Type_Original'] = df['Type'].copy()  # Keep original strings like 'D_1', 'S_1', 'G_1'
+        df['Type'] = df['Type'].str.extract('([DSG])')[0].map(self.type_mapping)
+        
+        # Dynamically discover geometric feature columns
+        self._discover_geometric_features(df.columns)
+        
+        # Fill NaN values with 0 (for geometric multipliers)
+        geometric_cols = self.height_cols + self.width_cols + self.length_cols
+        for col in geometric_cols:
+            if col in df.columns:
+                df[col] = df[col].fillna(0.0)
+        
+        rank_zero_info(f"Parsed sequence file: {df.shape[0]} segments")
+        rank_zero_info(f"Found geometric features:")
+        rank_zero_info(f"  Heights ({len(self.height_cols)}): {self.height_cols}")
+        rank_zero_info(f"  Widths ({len(self.width_cols)}): {self.width_cols}")
+        rank_zero_info(f"  Lengths ({len(self.length_cols)}): {self.length_cols}")
+        return df
+
+    def parse_variation(self, variation_path: Path) -> pd.DataFrame:
+        """Parse variation.csv file."""
+        df = pd.read_csv(variation_path)
+        
+        # Remove empty rows
+        df = df.dropna(how='all')
+        
+        rank_zero_info(f"Parsed variation file: {df.shape[0]} cases")
+        return df
+
+    def _discover_geometric_features(self, columns: pd.Index) -> None:
+        """Discover H_, W_, L_ feature columns from sequence.csv."""
+        self.height_cols = [col for col in columns if col.startswith('H_')]
+        self.width_cols = [col for col in columns if col.startswith('W_')]
+        self.length_cols = [col for col in columns if col.startswith('L_')]
+        
+        # Sort for consistent ordering
+        self.height_cols.sort()
+        self.width_cols.sort() 
+        self.length_cols.sort()
+
+    def _sync_variation_features(self, variation_df: pd.DataFrame) -> None:
+        """Sync sequence features with variation file features and create mappings."""
+        var_columns = variation_df.columns.tolist()
+        
+        # Find matching variation columns for each sequence feature type
+        var_heights = [col for col in var_columns if col.startswith('H_')]
+        var_widths = [col for col in var_columns if col.startswith('W_')]
+        var_lengths = [col for col in var_columns if col.startswith('L_')]
+        
+        # Create mappings - try to match by similarity or order
+        self.var_height_map = self._create_feature_mapping(self.height_cols, var_heights, 'H_')
+        self.var_width_map = self._create_feature_mapping(self.width_cols, var_widths, 'W_')
+        self.var_length_map = self._create_feature_mapping(self.length_cols, var_lengths, 'L_')
+        
+        # Log only non-trivial mappings
+        non_trivial_mappings = {}
+        for prefix, mapping in [('Height', self.var_height_map), ('Width', self.var_width_map), ('Length', self.var_length_map)]:
+            non_trivial = {k: v for k, v in mapping.items() if k != v}
+            if non_trivial:
+                non_trivial_mappings[prefix] = non_trivial
+        
+        if non_trivial_mappings:
+            rank_zero_info(f"Feature mappings (non-identical only): {non_trivial_mappings}")
+
+    def _create_feature_mapping(self, seq_features: List[str], var_features: List[str], prefix: str) -> Dict[str, str]:
+        """Create mapping between sequence features and variation features."""
+        mapping = {}
+        
+        if not seq_features or not var_features:
+            return mapping
+            
+        # Sort both lists for consistent mapping
+        seq_sorted = sorted(seq_features)
+        var_sorted = sorted(var_features)
+        
+        # Strategy 1: Try exact name matching (after prefix)
+        for seq_feat in seq_sorted:
+            seq_suffix = seq_feat[2:]  # Remove 'H_', 'W_', or 'L_' prefix
+            
+            # Look for exact matches in variation features
+            exact_match = None
+            for var_feat in var_sorted:
+                var_suffix = var_feat[2:]  # Remove prefix
+                if seq_suffix == var_suffix:
+                    exact_match = var_feat
+                    break
+            
+            if exact_match:
+                mapping[seq_feat] = exact_match
+                continue
+        
+        # Strategy 2: For unmapped features, try partial matching or positional mapping
+        unmapped_seq = [f for f in seq_sorted if f not in mapping]
+        unmapped_var = [f for f in var_sorted if f not in mapping.values()]
+        
+        # Simple positional mapping for remaining features
+        for i, seq_feat in enumerate(unmapped_seq):
+            if i < len(unmapped_var):
+                mapping[seq_feat] = unmapped_var[i]
+                rank_zero_info(f"  Positional mapping: {seq_feat} -> {unmapped_var[i]}")
+        
+        # Warn about unmapped features
+        unmapped_seq_final = [f for f in seq_sorted if f not in mapping]
+        if unmapped_seq_final:
+            rank_zero_info(f"  WARNING: Unmapped sequence {prefix} features: {unmapped_seq_final}")
+            
+        unmapped_var_final = [f for f in var_sorted if f not in mapping.values()]
+        if unmapped_var_final:
+            rank_zero_info(f"  WARNING: Unused variation {prefix} features: {unmapped_var_final}")
+        
+        return mapping
+
+    def resolve_case(self, sequence_df: pd.DataFrame, variation_row: pd.Series) -> np.ndarray:
+        """Resolve a single case by combining sequence multipliers with variation values."""
+        n_segments = len(sequence_df)
+        
+        # Extract material properties for each dielectric type
+        material_props = self._extract_material_properties(variation_row)
+        
+        # Extract base dimensions
+        base_dims = self._extract_base_dimensions(variation_row)
+        
+        # Create resolved features array
+        # Structure: [segment, layer, type, resolved_heights, resolved_widths, resolved_length, material_props]
+        resolved_features = []
+        
+        for _, seg_row in sequence_df.iterrows():
+            features = []
+            
+            # Basic segment info
+            features.extend([seg_row['Segment'], seg_row['Layer'], seg_row['Type']])
+            
+            # Resolve heights (multiply multipliers with base values)
+            resolved_heights = []
+            for h_col in self.height_cols:
+                multiplier = seg_row.get(h_col, 0.0)
+                base_key = self.var_height_map.get(h_col)
+                base_value = base_dims.get(base_key, 0.0) if base_key else 0.0
+                resolved_heights.append(multiplier * base_value)
+            features.extend(resolved_heights)
+            
+            # Resolve widths
+            resolved_widths = []
+            for w_col in self.width_cols:
+                multiplier = seg_row.get(w_col, 0.0)
+                base_key = self.var_width_map.get(w_col)
+                base_value = base_dims.get(base_key, 0.0) if base_key else 0.0
+                resolved_widths.append(multiplier * base_value)
+            features.extend(resolved_widths)
+            
+            # Resolve length
+            resolved_length = []
+            for l_col in self.length_cols:
+                multiplier = seg_row.get(l_col, 0.0)
+                base_key = self.var_length_map.get(l_col)
+                base_value = base_dims.get(base_key, 0.0) if base_key else 0.0
+                resolved_length.append(multiplier * base_value)
+            features.extend(resolved_length)
+            
+            # Add material properties based on segment type
+            seg_type = seg_row['Type']
+            seg_type_original = seg_row['Type_Original']
+            type_material_props = self._get_material_props_for_type(material_props, seg_type, seg_type_original)
+            features.extend(type_material_props)
+            
+            resolved_features.append(features)
+        
+        return np.array(resolved_features, dtype=np.float32)
+
+    def _extract_material_properties(self, variation_row: pd.Series) -> Dict:
+        """Extract material properties from variation row."""
+        props = {}
+        
+        # Metal conductivity
+        props['metal_cond'] = variation_row.get('M_1_cond', 0.0)
+        
+        # Dielectric properties for each type
+        for i in range(1, 7):  # D_1 to D_6
+            props[f'D_{i}'] = {
+                'dk': variation_row.get(f'D_{i}_dk', 0.0),
+                'df': variation_row.get(f'D_{i}_df', 0.0), 
+                'cond': variation_row.get(f'D_{i}_cond', 0.0)
+            }
+        
+        return props
+
+    def _extract_base_dimensions(self, variation_row: pd.Series) -> Dict:
+        """Extract base dimensions from variation row using dynamic mappings."""
+        dims = {}
+        
+        # Heights - use discovered mappings
+        for var_height in self.var_height_map.values():
+            dims[var_height] = variation_row.get(var_height, 0.0)
+            
+        # Widths - use discovered mappings
+        for var_width in self.var_width_map.values():
+            dims[var_width] = variation_row.get(var_width, 0.0)
+            
+        # Lengths - use discovered mappings
+        for var_length in self.var_length_map.values():
+            dims[var_length] = variation_row.get(var_length, 0.0)
+        
+        return dims
+
+    def _get_material_props_for_type(self, material_props: Dict, seg_type: int, seg_type_original: str) -> List[float]:
+        """Get material properties for a specific segment type."""
+        if seg_type == 1 or seg_type == 2:  # Signal or Ground (metal)
+            return [material_props['metal_cond'], 0.0, 0.0]  # [conductivity, dk=0, df=0]
+        elif seg_type == 0:  # Dielectric
+            # Extract the specific dielectric type (e.g., 'D_1', 'D_2', etc.)
+            dielectric_type = seg_type_original  # e.g., 'D_1', 'D_2'
+            
+            # Use the specific dielectric properties - must exist
+            if dielectric_type in material_props:
+                d_props = material_props[dielectric_type]
+                return [d_props['cond'], d_props['dk'], d_props['df']]
+            else:
+                raise ValueError(f"Dielectric type '{dielectric_type}' found in sequence.csv but missing "
+                               f"material properties in variation.csv. Available dielectric types: "
+                               f"{[k for k in material_props.keys() if k.startswith('D_')]}")
+        else:
+            return [0.0, 0.0, 0.0]
+
+    def process(self, data_dir: Union[str, Path]) -> Tuple[np.ndarray, List[int]]:
+        """Process sequence and variation files to create resolved contour data."""
+        sequence_file, variation_file = self.locate_files(data_dir)
+        
+        sequence_df = self.parse_sequence(sequence_file)
+        variation_df = self.parse_variation(variation_file)
+        
+        # Sync features between sequence and variation files
+        self._sync_variation_features(variation_df)
+        
+        resolved_cases = []
+        case_ids = []
+        
+        for _, var_row in variation_df.iterrows():
+            case_id = int(var_row['case_id'])
+            resolved_case = self.resolve_case(sequence_df, var_row)
+            resolved_cases.append(resolved_case)
+            case_ids.append(case_id)
+        
+        # Stack all cases
+        resolved_data = np.stack(resolved_cases) if resolved_cases else np.array([])
+        
+        rank_zero_info(f"Processed {len(resolved_cases)} cases with shape: {resolved_data.shape}")
+        return resolved_data, case_ids
+    
+    def get_feature_info(self) -> Dict[str, int]:
+        """Get information about the number of each feature type."""
+        return {
+            'n_heights': len(self.height_cols),
+            'n_widths': len(self.width_cols),
+            'n_lengths': len(self.length_cols)
+        }
+
+
 class TraceSequenceProcessor:
     """Handles semantic parsing of trace sequence data for 3D cross-section analysis.
     

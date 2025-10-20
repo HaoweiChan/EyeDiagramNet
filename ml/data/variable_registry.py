@@ -12,14 +12,23 @@ import torch
 from enum import Enum
 
 class VariableRole(Enum):
-    """Semantic roles for design variables."""
-    HEIGHT = "height"
-    WIDTH = "width" 
-    LENGTH = "length"
-    METAL_COND = "metal_cond"
-    DIEL_DK = "diel_dk"
-    DIEL_DF = "diel_df"
-    DIEL_COND = "diel_cond"
+    """
+    Semantic roles for design variables.
+    
+    Specific geometry roles: HEIGHT, WIDTH, LENGTH
+    Material roles: METAL_COND, DIEL_DK, DIEL_DF, DIEL_COND
+    Electrical: BOUNDARY (R, C, L parameters with _drv/_odt suffix)
+    Fallback: GEOMETRY (unknown variables)
+    """
+    HEIGHT = "height"       # H_* geometric parameters
+    WIDTH = "width"         # W_* geometric parameters
+    LENGTH = "length"       # L_* geometric parameters (without _drv/_odt suffix)
+    METAL_COND = "metal_cond"   # M_*_cond metal conductivity
+    DIEL_DK = "diel_dk"         # D_*_dk dielectric constant
+    DIEL_DF = "diel_df"         # D_*_df dielectric dissipation factor
+    DIEL_COND = "diel_cond"     # D_*_cond dielectric conductivity
+    BOUNDARY = "boundary"       # R_drv, R_odt, C_drv, C_odt, L_drv, L_odt (electrical)
+    GEOMETRY = "geometry"       # Fallback for unrecognized patterns only
 
 class ScaleType(Enum):
     """Scaling/transformation types for variables."""
@@ -32,6 +41,7 @@ class Variable:
     """Metadata for a single design/material parameter."""
     name: str                           # e.g., "W_wg1", "H_ubm", "M_1_cond"
     role: VariableRole                  # Semantic category
+    bounds: Optional[Tuple[float, float]] = None  # Value range (min, max)
     group: Optional[str] = None         # Material group e.g., "D_1", "M_1"
     scale: ScaleType = ScaleType.LINEAR # Transformation type
     
@@ -52,7 +62,8 @@ class VariableRegistry:
         Parse variable name to determine role, group, and scaling.
         
         Naming patterns:
-        - H_*, W_*, L_* -> HEIGHT, WIDTH, LENGTH (geometric)
+        - H_*, W_*, L_* (without _drv/_odt) -> HEIGHT, WIDTH, LENGTH (geometric)
+        - R_drv, R_odt, C_drv, C_odt, L_drv, L_odt -> BOUNDARY (electrical parameters)
         - M_N_cond -> METAL_COND (metal conductivity, group M_N)
         - D_N_dk, D_N_df, D_N_cond -> DIEL_DK, DIEL_DF, DIEL_COND (dielectric properties, group D_N)
         - S_*, G_* -> Could be signal/ground related parameters
@@ -62,6 +73,13 @@ class VariableRegistry:
         """
         name_upper = name.upper()
         
+        # Boundary parameters (electrical) - always have _drv or _odt suffix
+        # R_drv, R_odt, C_drv, C_odt, L_drv, L_odt
+        if name_upper.endswith('_DRV') or name_upper.endswith('_ODT'):
+            # Check if it's R, C, or L
+            if name_upper.startswith('R_') or name_upper.startswith('C_') or name_upper.startswith('L_'):
+                return (VariableRole.BOUNDARY, None, ScaleType.LINEAR)
+        
         # Height variables (H_*)
         if name_upper.startswith('H_'):
             return (VariableRole.HEIGHT, None, ScaleType.LOG)
@@ -70,7 +88,8 @@ class VariableRegistry:
         elif name_upper.startswith('W_'):
             return (VariableRole.WIDTH, None, ScaleType.LOG)
         
-        # Length variables (L_*)
+        # Length variables (L_*) - only geometric lengths, not inductance
+        # Inductance (L_drv, L_odt) already handled above
         elif name_upper.startswith('L_'):
             return (VariableRole.LENGTH, None, ScaleType.LOG)
         
@@ -128,8 +147,8 @@ class VariableRegistry:
                 # Ground-related - treat as width
                 return (VariableRole.WIDTH, None, ScaleType.LOG)
             else:
-                # Complete unknown - default to linear width
-                return (VariableRole.WIDTH, None, ScaleType.LINEAR)
+                # Complete unknown - default to generic geometry role
+                return (VariableRole.GEOMETRY, None, ScaleType.LINEAR)
 
     def auto_register_variable(self, name: str) -> Variable:
         """
@@ -158,23 +177,61 @@ class VariableRegistry:
         self.register_variable(variable)
         return variable
 
-    def register_variable(self, variable: Variable):
-        """Register a new variable in the system."""
+    def register_variable(self, variable: Union[Variable, str], **kwargs):
+        """
+        Register a new variable in the system.
+        
+        Args:
+            variable: Either a Variable object or a variable name string
+            **kwargs: If variable is a string, these become Variable attributes
+                     (bounds, role, group, scale, etc.)
+        """
+        # Handle both Variable objects and string names with kwargs
+        if isinstance(variable, str):
+            # Create Variable from name and kwargs
+            name = variable
+            bounds = kwargs.get('bounds', None)
+            role = kwargs.get('role', None)
+            group = kwargs.get('group', None)
+            scale = kwargs.get('scale', ScaleType.LINEAR)
+            
+            # Parse role from string if needed
+            if isinstance(role, str):
+                role = VariableRole(role.lower())
+            elif role is None:
+                # Auto-detect role from name
+                role, auto_group, auto_scale = self._parse_variable_name(name)
+                if group is None:
+                    group = auto_group
+                if scale == ScaleType.LINEAR:  # Only override if default
+                    scale = auto_scale
+            
+            variable = Variable(
+                name=name,
+                role=role,
+                bounds=bounds,
+                group=group,
+                scale=scale
+            )
+        
         self.variables[variable.name] = variable
         
         # Update indices
-        self._name_to_idx[variable.name] = len(self._name_to_idx)
+        if variable.name not in self._name_to_idx:
+            self._name_to_idx[variable.name] = len(self._name_to_idx)
         
         # Update role mapping
         if variable.role not in self._role_to_names:
             self._role_to_names[variable.role] = []
-        self._role_to_names[variable.role].append(variable.name)
+        if variable.name not in self._role_to_names[variable.role]:
+            self._role_to_names[variable.role].append(variable.name)
         
         # Update group mapping
         if variable.group:
             if variable.group not in self._group_to_names:
                 self._group_to_names[variable.group] = []
-            self._group_to_names[variable.group].append(variable.name)
+            if variable.name not in self._group_to_names[variable.group]:
+                self._group_to_names[variable.group].append(variable.name)
 
     def get_variable(self, name: str) -> Variable:
         """Get variable metadata by name, auto-registering if not found."""
@@ -182,6 +239,38 @@ class VariableRegistry:
             # Auto-register the variable based on naming pattern
             return self.auto_register_variable(name)
         return self.variables[name]
+    
+    def update_variable_bounds(self, name: str, bounds: Tuple[float, float]):
+        """
+        Update bounds for an existing variable or create new variable with bounds.
+        
+        Args:
+            name: Variable name
+            bounds: (min, max) value range
+        """
+        if name in self.variables:
+            # Update existing variable
+            self.variables[name].bounds = bounds
+        else:
+            # Register new variable with bounds
+            self.register_variable(name, bounds=bounds)
+    
+    def get_bounds(self, name: str) -> Optional[Tuple[float, float]]:
+        """
+        Get bounds for a variable.
+        
+        Args:
+            name: Variable name
+            
+        Returns:
+            (min, max) bounds tuple if available, None otherwise
+        """
+        if name not in self.variables:
+            # Auto-register if needed
+            self.get_variable(name)
+        
+        variable = self.variables[name]
+        return variable.bounds
     
     def get_variables_by_role(self, role: VariableRole) -> List[str]:
         """Get all variable names with a specific role."""
@@ -577,6 +666,141 @@ class VariableRegistry:
             values.append(material_props_dict.get(prop_name, 0.0))
         
         return values
+    
+    @staticmethod
+    def register_boundary_parameters(
+        variable_data: Dict[str, np.ndarray],
+        registry: 'VariableRegistry'
+    ) -> Dict[str, np.ndarray]:
+        """
+        Register boundary parameters (R, C, L) with proper bounds and clipping.
+        
+        Args:
+            variable_data: Dictionary of variable names to value arrays
+            registry: VariableRegistry to register variables in
+            
+        Returns:
+            Updated variable_data with clipped values
+        """
+        from lightning.pytorch.utilities.rank_zero import rank_zero_info
+        
+        min_positive = 1e-20
+        
+        for var_name in list(variable_data.keys()):
+            if var_name not in registry:
+                values = variable_data[var_name].flatten()
+                
+                # Clip to positive values to avoid numerical errors
+                # Physical parameters (R, L, C) should always be non-negative
+                values_clipped = np.maximum(values, min_positive)
+                n_clipped = np.sum(values <= 0)
+                if n_clipped > 0:
+                    rank_zero_info(f"Boundary parameter {var_name}: clipped {n_clipped} non-positive values to {min_positive:.2e}")
+                
+                # Update variable_data with clipped values
+                variable_data[var_name] = values_clipped.reshape(variable_data[var_name].shape)
+                
+                var_min = float(values_clipped.min())
+                var_max = float(values_clipped.max())
+                var_range = var_max - var_min
+                
+                # Set bounds to None if variable has only one value (no variation)
+                # For boundary parameters, use RELATIVE range check (since values can be very small like 1e-13)
+                var_mean = float(values_clipped.mean())
+                if abs(var_mean) > 1e-20:
+                    relative_range = var_range / abs(var_mean)
+                else:
+                    # If mean is essentially zero, check if max is non-zero
+                    relative_range = var_range / max(abs(var_max), 1e-20)
+                
+                if relative_range < 0.01:  # Less than 1% variation → effectively constant
+                    bounds = None
+                    rank_zero_info(f"Boundary parameter {var_name} has no variation (rel_range={relative_range:.2%}), bounds set to None")
+                else:
+                    # Use actual observed range for boundary parameters (NOT expanded)
+                    bounds = (var_min, var_max)
+                    rank_zero_info(f"Boundary parameter {var_name}: bounds=[{var_min:.6e}, {var_max:.6e}], rel_range={relative_range:.2%}")
+                
+                registry.register_variable(
+                    name=var_name,
+                    bounds=bounds,
+                    role="boundary",
+                    description=f"Boundary parameter {var_name}"
+                )
+        
+        return variable_data
+    
+    @staticmethod
+    def register_geometric_parameters(
+        geometric_features: Dict[str, np.ndarray],
+        registry: 'VariableRegistry'
+    ) -> Dict[str, np.ndarray]:
+        """
+        Register geometric parameters (H, W, L) with expanded bounds and clipping.
+        
+        Args:
+            geometric_features: Dictionary of geometric parameter names to value arrays
+            registry: VariableRegistry to register variables in
+            
+        Returns:
+            Updated geometric_features with clipped values
+        """
+        from lightning.pytorch.utilities.rank_zero import rank_zero_info
+        
+        min_positive = 1e-20
+        
+        for geom_name, geom_values in list(geometric_features.items()):
+            if geom_name not in registry:
+                # Clip to positive values to avoid numerical errors
+                # Geometric parameters (heights, widths, lengths) should always be non-negative
+                geom_values_clipped = np.maximum(geom_values, min_positive)
+                n_clipped = np.sum(geom_values <= 0)
+                if n_clipped > 0:
+                    rank_zero_info(f"Geometric parameter {geom_name}: clipped {n_clipped} non-positive values to {min_positive:.2e}")
+                
+                # Update geometric_features with clipped values
+                geometric_features[geom_name] = geom_values_clipped
+                
+                # For geometric parameters, compute bounds from NON-ZERO values only
+                # Many segments have zero for unused geometric features (sparse representation)
+                non_zero_mask = geom_values_clipped > min_positive * 10  # Use 10x threshold to exclude clipped zeros
+                non_zero_values = geom_values_clipped[non_zero_mask]
+                
+                if len(non_zero_values) == 0:
+                    # All values are effectively zero - this parameter is unused
+                    bounds = None
+                    rank_zero_info(f"Geometric parameter {geom_name} has all zero values, bounds set to None")
+                else:
+                    var_min = float(non_zero_values.min())
+                    var_max = float(non_zero_values.max())
+                    var_range = var_max - var_min
+                    
+                    # Check relative range of non-zero values
+                    var_mean = float(non_zero_values.mean())
+                    if abs(var_mean) > min_positive:
+                        relative_range = var_range / abs(var_mean)
+                    else:
+                        relative_range = var_range / max(abs(var_max), min_positive)
+                    
+                    if relative_range < 0.01:  # Less than 1% variation
+                        bounds = None
+                        rank_zero_info(f"Geometric parameter {geom_name} has no variation in non-zero values "
+                                      f"(rel_range={relative_range:.2%}), bounds set to None")
+                    else:
+                        # Expand range by 2x for GEOMETRIC parameters only (for contour plotting)
+                        range_center = (var_min + var_max) / 2
+                        expanded_range = var_range * 2
+                        bounds = (range_center - expanded_range / 2, range_center + expanded_range / 2)
+                        # Ensure expanded bounds are still positive
+                        bounds = (max(bounds[0], min_positive), bounds[1])
+                        rank_zero_info(f"Geometric parameter {geom_name}: "
+                                      f"{len(non_zero_values)}/{geom_values_clipped.size} non-zero values, "
+                                      f"range=[{var_min:.6e}, {var_max:.6e}], expanded bounds={bounds}")
+                
+                # Let registry auto-detect role from name (H_* → HEIGHT, W_* → WIDTH, L_* → LENGTH)
+                registry.update_variable_bounds(geom_name, bounds)
+        
+        return geometric_features
 
 
 # No default global registry instance - users should create their own VariableRegistry
