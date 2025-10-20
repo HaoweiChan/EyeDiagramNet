@@ -190,6 +190,12 @@ def clean_pickle_file_inplace(pfile: Path, block_size: int = None, remove_block_
     # Track out-of-range and legacy statistics
     out_of_range_details = []
     legacy_count = 0
+    param_types_seen = set()
+    
+    # Collect param_types from samples
+    for result in results:
+        if hasattr(result, 'param_types') and result.param_types:
+            param_types_seen.update(result.param_types)
     
     # Apply contamination removal first (CRITICAL - these are invalid samples)
     if remove_contaminated:
@@ -250,7 +256,8 @@ def clean_pickle_file_inplace(pfile: Path, block_size: int = None, remove_block_
     stats = {
         'out_of_range_count': len(out_of_range_details),
         'out_of_range_details': out_of_range_details,
-        'legacy_count': legacy_count
+        'legacy_count': legacy_count,
+        'param_types_seen': param_types_seen
     }
 
     if num_removed == 0:

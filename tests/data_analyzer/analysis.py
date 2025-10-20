@@ -535,6 +535,10 @@ def generate_summary_report(pickle_dir: Path, pickle_files: list, all_results: L
         report.append(f"  Parameter count: {len(config_keys)}")
         report.append(f"  Parameter names: {', '.join(config_keys)}")
         
+        # Show param_types if available
+        if hasattr(all_results[0], 'param_types') and all_results[0].param_types:
+            report.append(f"  Param sets used: {', '.join(all_results[0].param_types)}")
+        
         # Show sample configuration values for first few samples
         report.append("\n  Sample configurations (first 3 samples):")
         for i, result in enumerate(all_results[:3]):

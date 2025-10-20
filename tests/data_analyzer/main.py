@@ -81,6 +81,7 @@ def main():
         total_before, total_removed, total_out_of_range = 0, 0, 0
         remove_contaminated = not args.keep_contaminated  # Default is to remove contaminated
         all_out_of_range_details = []
+        all_param_types = set()  # Track all param_types seen
         
         total_legacy = 0
         
@@ -99,8 +100,15 @@ def main():
                 total_out_of_range += stats['out_of_range_count']
                 total_legacy += stats['legacy_count']
                 
+                # Collect param_types for reporting
+                if 'param_types_seen' in stats:
+                    all_param_types.update(stats['param_types_seen'])
+                
                 if n_removed > 0:
                     print(f"Cleaned {pfile.name}: removed {n_removed}/{n_before} samples.")
+                    # Show param_types for this file if available
+                    if 'param_types_seen' in stats and stats['param_types_seen']:
+                        print(f"  └─ Param sets: {', '.join(sorted(stats['param_types_seen']))}")
                 
                 # Show out-of-range details if any
                 if stats['out_of_range_count'] > 0:
@@ -122,6 +130,8 @@ def main():
         total_in_range = total_before - total_out_of_range - total_legacy
         
         print(f"\n=== Cleaning Summary ===")
+        if all_param_types:
+            print(f"Param sets found across all files: {', '.join(sorted(all_param_types))}")
         print(f"Total samples before: {total_before}")
         print(f"Samples within param set ranges: {total_in_range}")
         print(f"Total samples removed: {total_removed}")
