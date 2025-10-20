@@ -60,20 +60,21 @@ class LinearParameter(Parameter):
             values = np.arange(self.low, self.high + self.step, step=self.step, dtype=np.float64)
         else:
             raise ValueError("Either 'step' or 'numbers' must be specified for LinearParameter.")
-            
-        if self.additional_values:
-            additional_array = np.array(self.additional_values, dtype=values.dtype)
-            values = np.concatenate([values, additional_array])
         
-        if self.scaler != 1:
-            values = values * self.scaler
-        
-        # Round to the appropriate number of decimal places
+        # Round BEFORE scaling to avoid precision issues
         decimal_places = max(_get_decimal_places(self.low), _get_decimal_places(self.high))
         if self.step is not None:
             decimal_places = max(decimal_places, _get_decimal_places(self.step))
         if decimal_places > 0:
             values = np.round(values, decimal_places)
+        
+        if self.additional_values:
+            additional_array = np.array(self.additional_values, dtype=values.dtype)
+            values = np.concatenate([values, additional_array])
+        
+        # Apply scaler AFTER rounding (to preserve scaled precision)
+        if self.scaler != 1:
+            values = values * self.scaler
         
         return np.random.choice(values)
 
@@ -95,11 +96,12 @@ class LogParameter(Parameter):
             values = 10 ** np.arange(log_low, log_high + log_step, step=log_step, dtype=np.float64)
         else:
             raise ValueError("Either 'step' or 'numbers' must be specified for LogParameter.")
-            
+        
         if self.additional_values:
             additional_array = np.array(self.additional_values, dtype=values.dtype)
             values = np.concatenate([values, additional_array])
         
+        # Apply scaler (no rounding for log parameters to preserve precision)
         if self.scaler != 1:
             values = values * self.scaler
         

@@ -105,11 +105,20 @@ def validate_boundary_parameters(result: SimulationResult, param_set_names: List
             continue
         
         param_set = PARAM_SETS_MAP[param_set_name]
-        # Collect parameter definitions from this set
-        if hasattr(param_set, 'params'):
+        
+        # Collect parameter definitions from this set based on type
+        if hasattr(param_set, 'params') and isinstance(param_set.params, dict):
+            # Regular ParameterSet or RandomToggledParameterSet
             combined_param_defs.update(param_set.params)
-        elif hasattr(param_set, '_params'):
-            combined_param_defs.update(param_set._params)
+        elif hasattr(param_set, 'parameter_sets'):
+            # CombinedParameterSet - recursively collect from all sub-sets
+            for sub_set in param_set.parameter_sets:
+                if hasattr(sub_set, 'params') and isinstance(sub_set.params, dict):
+                    combined_param_defs.update(sub_set.params)
+        elif hasattr(param_set, 'samples'):
+            # DiscreteParameterSet - cannot validate against ranges, skip
+            if debug:
+                print(f"[DEBUG] Skipping validation for DiscreteParameterSet '{param_set_name}'")
     
     if not combined_param_defs:
         if debug:
@@ -121,7 +130,8 @@ def validate_boundary_parameters(result: SimulationResult, param_set_names: List
     
     if debug:
         print(f"[DEBUG] Validating {len(config_dict)} parameters")
-        print(f"[DEBUG] Config dict: {config_dict}")
+        print(f"[DEBUG] Config dict keys: {list(config_dict.keys())}")
+        print(f"[DEBUG] Param defs keys: {list(combined_param_defs.keys())}")
     
     # For each parameter in the config, check if it's within the param_set bounds
     for param_name, param_value in config_dict.items():
@@ -139,8 +149,20 @@ def validate_boundary_parameters(result: SimulationResult, param_set_names: List
             # DiscreteParameter
             values = param_def.values
             if debug:
-                print(f"[DEBUG] Checking {param_name}: value={param_value}, allowed={values}")
-            if param_value not in values:
+                print(f"[DEBUG] Checking {param_name} (DiscreteParameter): value={param_value}, allowed={values}")
+            
+            # Use approximate comparison for floating point values
+            is_valid = False
+            for allowed_value in values:
+                if isinstance(param_value, (int, float)) and isinstance(allowed_value, (int, float)):
+                    if abs(param_value - allowed_value) < max(abs(allowed_value) * 1e-9, 1e-10):  # Relative tolerance
+                        is_valid = True
+                        break
+                elif param_value == allowed_value:
+                    is_valid = True
+                    break
+            
+            if not is_valid:
                 # For discrete parameters with large values (like 1e9), use scientific notation
                 if isinstance(param_value, (int, float)) and abs(param_value) >= 1e6:
                     out_of_range_params.append(f"{param_name}={param_value:.6e} (allowed: {[f'{v:.6e}' if isinstance(v, (int, float)) and abs(v) >= 1e6 else v for v in values]})")
@@ -159,12 +181,33 @@ def validate_boundary_parameters(result: SimulationResult, param_set_names: List
             low_scaled = low * scaler
             high_scaled = high * scaler
             
-            if debug:
-                print(f"[DEBUG] Checking {param_name}: value={param_value:.6e}, range=[{low_scaled:.6e}, {high_scaled:.6e}]")
+            # Check for additional_values (e.g., R_odt can have 1e9 as additional value)
+            additional_values = getattr(param_def, 'additional_values', [])
             
-            # Check if value is within bounds
-            if not (low_scaled <= param_value <= high_scaled):
-                out_of_range_params.append(f"{param_name}={param_value:.6e} (range: [{low_scaled:.6e}, {high_scaled:.6e}])")
+            if debug:
+                print(f"[DEBUG] Checking {param_name}: value={param_value:.6e}, range=[{low_scaled:.6e}, {high_scaled:.6e}], additional={additional_values}")
+            
+            # Check if value is within bounds OR in additional_values
+            is_in_range = low_scaled <= param_value <= high_scaled
+            is_in_additional = False
+            
+            if additional_values:
+                # Check additional values (they don't need scaling in the definition, but compare with tolerance)
+                for add_val in additional_values:
+                    if isinstance(param_value, (int, float)) and isinstance(add_val, (int, float)):
+                        if abs(param_value - add_val) < max(abs(add_val) * 1e-9, 1e-10):  # Relative tolerance
+                            is_in_additional = True
+                            break
+                    elif param_value == add_val:
+                        is_in_additional = True
+                        break
+            
+            if not (is_in_range or is_in_additional):
+                if additional_values:
+                    add_vals_str = [f'{v:.6e}' if isinstance(v, (int, float)) else str(v) for v in additional_values]
+                    out_of_range_params.append(f"{param_name}={param_value:.6e} (range: [{low_scaled:.6e}, {high_scaled:.6e}], additional: {add_vals_str})")
+                else:
+                    out_of_range_params.append(f"{param_name}={param_value:.6e} (range: [{low_scaled:.6e}, {high_scaled:.6e}])")
                 if debug:
                     print(f"[DEBUG] OUT OF RANGE: {param_name}={param_value:.6e}")
     
