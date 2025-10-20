@@ -319,6 +319,9 @@ class ContourDataModule(LightningDataModule):
                     contour_data_filtered, boundaries, processor, config_keys
                 )
                 
+                # Perform data sanity checks
+                self._validate_data_quality(variable_data, eye_widths, name)
+                
                 rank_zero_info(f"{name}| sequences {sequence_data.shape} | variables {len(variable_data)} | eye_width {eye_widths.shape}")
                 
                 # Create train/val/test splits
@@ -601,6 +604,157 @@ class ContourDataModule(LightningDataModule):
             pin_memory=True
         )
 
+    def _validate_data_quality(
+        self,
+        variable_data: Dict[str, np.ndarray],
+        eye_widths: np.ndarray,
+        dataset_name: str
+    ):
+        """
+        Perform comprehensive data quality checks to identify issues that could cause GP training failures.
+        
+        This function checks for:
+        - NaN/Inf values
+        - Duplicate samples
+        - Zero variance in variables or targets
+        - Extremely small ranges that could cause numerical issues
+        """
+        rank_zero_info(f"\n{'='*60}")
+        rank_zero_info(f"DATA QUALITY CHECKS for '{dataset_name}'")
+        rank_zero_info(f"{'='*60}")
+        
+        issues_found = []
+        
+        # Check eye widths (targets)
+        rank_zero_info(f"\n[Target Data] Eye Widths:")
+        eye_widths_flat = eye_widths.flatten()
+        
+        if np.any(np.isnan(eye_widths_flat)):
+            n_nan = np.sum(np.isnan(eye_widths_flat))
+            issues_found.append(f"Found {n_nan} NaN values in eye_widths")
+            rank_zero_info(f"  ⚠️  WARNING: {n_nan} NaN values found!")
+        
+        if np.any(np.isinf(eye_widths_flat)):
+            n_inf = np.sum(np.isinf(eye_widths_flat))
+            issues_found.append(f"Found {n_inf} Inf values in eye_widths")
+            rank_zero_info(f"  ⚠️  WARNING: {n_inf} Inf values found!")
+        
+        valid_eye_widths = eye_widths_flat[~np.isnan(eye_widths_flat) & ~np.isinf(eye_widths_flat)]
+        if len(valid_eye_widths) > 0:
+            ew_std = np.std(valid_eye_widths)
+            ew_mean = np.mean(valid_eye_widths)
+            ew_min = np.min(valid_eye_widths)
+            ew_max = np.max(valid_eye_widths)
+            
+            rank_zero_info(f"  Mean: {ew_mean:.6f}, Std: {ew_std:.6f}")
+            rank_zero_info(f"  Range: [{ew_min:.6f}, {ew_max:.6f}]")
+            
+            if ew_std < 1e-6:
+                issues_found.append(f"Eye widths have near-zero variance (std={ew_std:.2e})")
+                rank_zero_info(f"  ⚠️  WARNING: Very low variance (std={ew_std:.2e}) - all targets nearly identical!")
+        
+        # Check each variable
+        rank_zero_info(f"\n[Variable Data] Checking {len(variable_data)} variables:")
+        
+        for var_name, var_values in variable_data.items():
+            var_flat = var_values.flatten()
+            var_issues = []
+            
+            # Check for NaN/Inf
+            n_nan = np.sum(np.isnan(var_flat))
+            n_inf = np.sum(np.isinf(var_flat))
+            
+            if n_nan > 0:
+                var_issues.append(f"{n_nan} NaN")
+                issues_found.append(f"Variable '{var_name}' has {n_nan} NaN values")
+            
+            if n_inf > 0:
+                var_issues.append(f"{n_inf} Inf")
+                issues_found.append(f"Variable '{var_name}' has {n_inf} Inf values")
+            
+            # Get valid values
+            valid_values = var_flat[~np.isnan(var_flat) & ~np.isinf(var_flat)]
+            
+            if len(valid_values) > 0:
+                var_std = np.std(valid_values)
+                var_mean = np.mean(valid_values)
+                var_min = np.min(valid_values)
+                var_max = np.max(valid_values)
+                var_range = var_max - var_min
+                
+                # Check for zero/near-zero variance
+                if var_std < 1e-10:
+                    var_issues.append("ZERO VARIANCE")
+                    issues_found.append(f"Variable '{var_name}' has zero variance - all values are {var_mean:.6f}")
+                elif var_std < 1e-6:
+                    var_issues.append(f"Low variance (std={var_std:.2e})")
+                
+                # Check for very small range
+                if var_range < 1e-10:
+                    var_issues.append("Zero range")
+                
+                # Report statistics
+                issue_str = f" [{', '.join(var_issues)}]" if var_issues else ""
+                rank_zero_info(f"  {var_name}: mean={var_mean:.6f}, std={var_std:.6f}, range=[{var_min:.6f}, {var_max:.6f}]{issue_str}")
+            else:
+                rank_zero_info(f"  {var_name}: ⚠️  NO VALID VALUES (all NaN/Inf)")
+                issues_found.append(f"Variable '{var_name}' has no valid values")
+        
+        # Check for duplicate samples (combining all variable values)
+        rank_zero_info(f"\n[Duplicate Detection]:")
+        
+        # Stack all variables into a feature matrix
+        feature_list = []
+        for var_name in sorted(variable_data.keys()):
+            var_values = variable_data[var_name]
+            # Flatten to [n_samples]
+            if var_values.ndim > 1:
+                # Take first dimension as samples, flatten rest
+                var_flat = var_values.reshape(var_values.shape[0], -1).mean(axis=1)
+            else:
+                var_flat = var_values
+            feature_list.append(var_flat)
+        
+        if feature_list:
+            features = np.column_stack(feature_list)
+            
+            # Find duplicates
+            unique_features, indices, counts = np.unique(
+                features, axis=0, return_index=True, return_counts=True
+            )
+            
+            n_duplicates = np.sum(counts > 1)
+            n_total_duplicate_rows = np.sum(counts[counts > 1])
+            
+            rank_zero_info(f"  Total samples: {len(features)}")
+            rank_zero_info(f"  Unique samples: {len(unique_features)}")
+            
+            if n_duplicates > 0:
+                rank_zero_info(f"  ⚠️  WARNING: Found {n_duplicates} duplicate sample groups ({n_total_duplicate_rows} total duplicates)")
+                issues_found.append(f"Found {n_duplicates} groups of duplicate samples")
+                
+                # Show first few duplicate groups
+                dup_groups = counts[counts > 1][:3]
+                rank_zero_info(f"  First few duplicate counts: {dup_groups}")
+            else:
+                rank_zero_info(f"  ✓ No duplicates found")
+        
+        # Final summary
+        rank_zero_info(f"\n{'='*60}")
+        if issues_found:
+            rank_zero_info(f"⚠️  FOUND {len(issues_found)} POTENTIAL ISSUES:")
+            for i, issue in enumerate(issues_found, 1):
+                rank_zero_info(f"  {i}. {issue}")
+            rank_zero_info(f"\n💡 These issues may cause 'Matrix not positive definite' errors in GP training!")
+            rank_zero_info(f"   Recommendations:")
+            rank_zero_info(f"   - Remove duplicate samples")
+            rank_zero_info(f"   - Remove constant/near-constant variables")
+            rank_zero_info(f"   - Handle NaN/Inf values")
+            rank_zero_info(f"   - Consider data normalization if variance is very high/low")
+        else:
+            rank_zero_info(f"✓ No critical data quality issues detected")
+        rank_zero_info(f"{'='*60}\n")
+    
     def _combine_datasets(self, dataset_dict: Dict[str, ContourDataset]) -> Dataset:
         """Combine multiple datasets into one."""
         from torch.utils.data import ConcatDataset
