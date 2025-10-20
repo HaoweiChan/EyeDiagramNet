@@ -16,6 +16,7 @@ def main():
     parser.add_argument("--remove-block-size-1", action="store_true", help="Remove samples with block size 1 direction patterns (clean command only).")
     parser.add_argument("--remove-duplicates", action="store_true", help="Remove samples with duplicate configuration values (clean command only).")
     parser.add_argument("--keep-contaminated", action="store_true", help="Keep contaminated samples (clean command only, default: remove contaminated).")
+    parser.add_argument("--param-set", type=str, help="Parameter set name to validate boundary configs against (e.g., MIX_PARAMS, DDR_PARAMS) (clean/analyze commands).")
     parser.add_argument("--max_files", type=int, help="Max number of files to process (analyze/validate commands only).")
     parser.add_argument("--max_samples", type=int, help="Max number of samples per file (analyze/validate commands only).")
 
@@ -71,6 +72,10 @@ def main():
         print("By default, contaminated samples (config values are strings) will be removed.")
         print("Use --keep-contaminated to preserve them for inspection.\n")
         
+        if args.param_set:
+            print(f"Parameter set validation enabled: {args.param_set}")
+            print(f"Samples with boundary configs outside {args.param_set} ranges will be removed.\n")
+        
         total_before, total_removed = 0, 0
         remove_contaminated = not args.keep_contaminated  # Default is to remove contaminated
         
@@ -81,7 +86,8 @@ def main():
                     block_size=args.block_size, 
                     remove_block_size_1=args.remove_block_size_1,
                     remove_duplicates=args.remove_duplicates,
-                    remove_contaminated=remove_contaminated
+                    remove_contaminated=remove_contaminated,
+                    param_set_name=args.param_set
                 )
                 total_before += n_before
                 total_removed += n_removed
