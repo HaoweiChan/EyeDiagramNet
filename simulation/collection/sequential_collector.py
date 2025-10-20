@@ -30,13 +30,6 @@ from tqdm import tqdm
 from pathlib import Path
 from typing import Dict, List, Tuple, Any
 
-# --- Thread limit argument parsing ---
-# Must be done at module level, before heavy libraries are imported.
-_parser = argparse.ArgumentParser(add_help=False)
-_parser.add_argument("--num-threads", type=int, default=None, help="Explicit number of BLAS/OMP threads to use.")
-_thread_args, _remaining_argv = _parser.parse_known_args()
-
-
 # Optimize BLAS threads for single-process execution - use all available cores
 def optimize_blas_for_sequential(num_threads: int = None):
     """Set optimal BLAS thread count for sequential processing - use all cores"""
@@ -64,8 +57,8 @@ def optimize_blas_for_sequential(num_threads: int = None):
     
     return optimal_threads
 
-# Call optimization before importing heavy numerical libraries
-optimize_blas_for_sequential(num_threads=_thread_args.num_threads)
+# BLAS optimization will be called in main() after parsing args
+# This allows us to use the centralized argparser
 
 # Now import numerical libraries with optimized settings
 from common.signal_utils import read_snp
@@ -135,10 +128,12 @@ class SNPCache:
 class SequentialCollector:
     """High-performance sequential data collector using all cores"""
     
-    def __init__(self, config: Dict[str, Any], debug: bool = False):
+    def __init__(self, config: Dict[str, Any], debug: bool = False, fixed_configs: List[Any] = None):
         self.config = config
         self.debug = debug
         self.snp_cache = SNPCache()
+        self.fixed_configs = fixed_configs  # Pre-sampled configs if using --fixed-config
+        self.fixed_config_index = 0  # Track which config to use next
         self.stats = {
             "total_simulations": 0,
             "completed_simulations": 0,
@@ -193,11 +188,39 @@ class SequentialCollector:
             return False
         
         # Convert config to tuple for comparison
-        config_values, _ = config.to_list(return_keys=True)
+        config_keys, config_values = config.to_list(return_keys=True)
         config_tuple = tuple(config_values)
         
         return config_tuple in existing_configs
 
+    def _get_next_config(self, combined_params):
+        """
+        Get the next configuration to use for simulation.
+        
+        If using fixed configs, returns the next one from the pre-sampled list.
+        Otherwise, samples randomly from the parameter space.
+        
+        Returns:
+            config: Configuration object
+            None: If no more configs available (fixed mode) or parameter space exhausted
+        """
+        if self.fixed_configs:
+            # Use pre-sampled fixed configurations
+            if self.fixed_config_index >= len(self.fixed_configs):
+                print(f"[FIXED CONFIG] Exhausted all {len(self.fixed_configs)} pre-sampled configs")
+                return None
+            
+            config = self.fixed_configs[self.fixed_config_index]
+            self.fixed_config_index += 1
+            
+            if self.debug and self.fixed_config_index % 10 == 0:
+                print(f"[FIXED CONFIG] Using config {self.fixed_config_index}/{len(self.fixed_configs)}")
+            
+            return config
+        else:
+            # Random sampling (original behavior)
+            return combined_params.sample()
+    
     def _sample_unique_config(self, combined_params, existing_configs: set):
         """
         Sample a configuration that doesn't already exist in the data.
@@ -206,6 +229,10 @@ class SequentialCollector:
             config: A unique configuration object
             None: If parameter space is exhausted (should skip collection)
         """
+        # If using fixed configs, just get the next one (no duplicate checking needed)
+        if self.fixed_configs:
+            return self._get_next_config(combined_params)
+        
         if not self.check_duplicates:
             return combined_params.sample()
         
@@ -247,7 +274,7 @@ class SequentialCollector:
         """
         try:
             # Get config values and keys for display
-            config_values, config_keys = combined_config.to_list(return_keys=True)
+            config_keys, config_values = combined_config.to_list(return_keys=True)
             config_dict = dict(zip(config_keys, config_values))
             
             # Format the comprehensive error report
@@ -312,7 +339,8 @@ Metadata Error: {meta_error}
     def collect_data(self, trace_pattern_key: str, trace_pattern: str, vertical_dirs: List[str], 
                     output_dir: Path, param_types: List[str], max_samples: int, 
                     enable_direction: bool = False, enable_inductance: bool = False, shuffle: bool = False,
-                    simulator_type: str = 'sbr', use_optimized: bool = False, block_size: int = None) -> Dict[str, Any]:
+                    simulator_type: str = 'sbr', use_optimized: bool = False, block_size: int = None, 
+                    fixed_config: bool = False) -> Dict[str, Any]:
         """
         Collect eye width simulation data using optimized sequential processing
         
@@ -389,6 +417,21 @@ Metadata Error: {meta_error}
         
         # Apply inductance modification if needed
         combined_params = modify_params_for_inductance(combined_params, enable_inductance)
+        
+        # Pre-sample fixed configurations if requested (overrides self.fixed_configs from __init__)
+        if fixed_config and not self.fixed_configs:
+            print(f"\n[FIXED CONFIG] Pre-sampling {max_samples} configurations...")
+            self.fixed_configs = []
+            for i in range(max_samples):
+                config_sample = combined_params.sample()
+                self.fixed_configs.append(config_sample)
+                if self.debug and (i + 1) % 10 == 0:
+                    print(f"[FIXED CONFIG] Sampled {i + 1}/{max_samples} configs")
+            print(f"[FIXED CONFIG] Pre-sampled {len(self.fixed_configs)} fixed configurations")
+            print(f"[FIXED CONFIG] Each trace file will be simulated with ALL {len(self.fixed_configs)} fixed configs")
+            print(f"[FIXED CONFIG] Total simulations = {len(trace_snps)} trace files × {len(self.fixed_configs)} configs = {len(trace_snps) * len(self.fixed_configs)} simulations")
+            # Reset index for this collection run
+            self.fixed_config_index = 0
         
         # Calculate total simulations needed
         total_simulations = 0
@@ -491,6 +534,12 @@ Metadata Error: {meta_error}
                            enable_direction: bool, pbar: tqdm, param_types: List[str], max_samples: int,
                            simulator_type: str, use_optimized: bool, block_size: int = None):
         """Process a single trace file with optimized sequential processing"""
+        
+        # Reset fixed config index for this trace file (so all files use the same fixed configs)
+        if self.fixed_configs:
+            self.fixed_config_index = 0
+            if self.debug:
+                print(f"[FIXED CONFIG] Reset index to 0 for {trace_snp.name} - will use all {len(self.fixed_configs)} fixed configs")
         
         # INITIAL RACE CONDITION CHECK: Verify quota not already filled by other parallel jobs
         try:
@@ -693,7 +742,7 @@ Metadata Error: {meta_error}
             line_ew[line_ew >= 99.9] = -0.1
             
             # Create a structured dataclass instance for the result
-            config_values, config_keys = combined_config.to_list(return_keys=True)
+            config_keys, config_values = combined_config.to_list(return_keys=True)
             result = SimulationResult(
                 config_values=config_values,
                 config_keys=config_keys,
@@ -747,13 +796,12 @@ def main():
     print("EyeDiagramNet - Optimized Sequential Data Collector")
     print("=" * 60)
     
-    # Parse arguments, excluding the --num-threads argument which has already been processed.
+    # Parse arguments using centralized argparser
     parser = build_argparser()
-    parser.add_argument('--shuffle', action='store_true', help='Shuffle the work items before processing')
-    parser.add_argument('--simulator-type', type=str, default='sbr', choices=['sbr', 'der'], help='Type of simulator to use')
-    parser.add_argument('--use-optimized', action='store_true', help='Use optimized SBR simulation functions.')
-    parser.add_argument('--block-size', type=int, default=None, help='Fixed block size for direction generation.')
-    args = parser.parse_args(_remaining_argv)
+    args = parser.parse_args()
+    
+    # Apply BLAS thread optimization after parsing args
+    optimize_blas_for_sequential(num_threads=args.num_threads)
     
     # Load configuration
     try:
@@ -796,6 +844,9 @@ def main():
 
     # Handle use_optimized logic
     use_optimized = args.use_optimized or config.get('runner', {}).get('use_optimized', False)
+    
+    # Handle fixed-config logic
+    fixed_config = args.fixed_config or config['boundary'].get('fixed_config', False)
 
     debug = args.debug if args.debug else config.get('debug', False)
     
@@ -805,7 +856,7 @@ def main():
     batch_size = runner_config.get('batch_size', 50)  # Larger batches for all-core processing
     
     # Display configuration (same style as parallel_collector.py)
-    print(f"Using configuration:")
+    print(f"\nUsing configuration:")
     print(f"  Trace pattern: {trace_pattern_key} -> {trace_pattern}")
     print(f"  Vertical dirs: {vertical_dirs}")
     print(f"  Output dir: {output_dir}")
@@ -814,6 +865,7 @@ def main():
     print(f"  Enable direction: {enable_direction}")
     print(f"  Enable inductance: {enable_inductance}")
     print(f"  Shuffle work items: {shuffle}")
+    print(f"  Fixed config: {fixed_config}")
     print(f"  Debug mode: {debug}")
     print(f"  Batch size: {batch_size}")
     print(f"  Processing mode: Sequential (using all cores)")
@@ -822,7 +874,7 @@ def main():
     if block_size is not None:
         print(f"  Fixed block size: {block_size}")
     
-    # Create collector
+    # Create collector (fixed configs will be generated inside collect_data if needed)
     collector = SequentialCollector(config, debug=debug)
     
     try:
@@ -839,7 +891,8 @@ def main():
             shuffle=shuffle,
             simulator_type=simulator_type,
             use_optimized=use_optimized,
-            block_size=block_size
+            block_size=block_size,
+            fixed_config=fixed_config
         )
         
         print(f"\nCollection completed successfully!")

@@ -32,9 +32,10 @@ python -m tests.data_analyzer.main analyze /path/to/your/pickle_data
 **What it does:**
 -   Loads all pickle files and aggregates the data.
 -   Calculates statistics for eye-widths, direction block sizes, and file sample counts.
+-   **WARNING: Analyzes contaminated configurations** - detects samples where config values are parameter names (strings) instead of numeric values.
 -   **Analyzes duplicate configurations** within each file and across all files.
 -   Generates and saves plots for eye-width distributions (`eye_width_distributions.png`).
--   Generates and saves a detailed text summary (`training_data_summary.txt`) including duplication analysis.
+-   Generates and saves a detailed text summary (`training_data_summary.txt`) including contamination and duplication analysis.
 -   All outputs are saved to a timestamped directory inside `tests/`, for example `tests/analyzer_output_20231027_123456/`.
 
 ---
@@ -71,14 +72,51 @@ python -m tests.data_analyzer.main clean /path/to/your/pickle_data [options]
         python -m tests.data_analyzer.main clean ./data --remove-duplicates
         ```
 
-You can combine these options. For example, to only keep samples with block size 2, remove block size 1 patterns, and remove duplicates:
+-   `--keep-contaminated`:
+    -   **By default, contaminated samples (where config values are strings) are removed.**
+    -   Use this flag to keep contaminated samples if you want to inspect them manually.
+    -   **Example:**
+        ```bash
+        python tests/analyze_pickle_data.py ./data clean --keep-contaminated
+        ```
+
+You can combine these options. For example, to only keep samples with block size 2, remove block size 1 patterns, remove duplicates, and remove contaminated samples:
 ```bash
 python -m tests.data_analyzer.main clean ./data --block_size 2 --remove-block-size-1 --remove-duplicates
 ```
 
 ---
 
-### 3. `validate`
+### 3. `delete-contaminated`
+
+This command **deletes entire pickle files** that contain contaminated config data (where config values are parameter names instead of numeric values). This is useful for removing files that were generated with the buggy `to_list()` return order.
+
+**WARNING:** This command permanently deletes files. Always run with `--dry-run` first to see what would be deleted!
+
+**Usage (Dry Run - Safe):**
+```bash
+python tests/analyze_pickle_data.py /path/to/your/pickle_data delete-contaminated
+```
+or
+```bash
+python tests/analyze_pickle_data.py /path/to/your/pickle_data delete-contaminated --dry-run
+```
+
+**Usage (Actually Delete Files):**
+```bash
+python tests/analyze_pickle_data.py /path/to/your/pickle_data delete-contaminated --force
+```
+
+**What it does:**
+-   Scans all pickle files for contaminated config data.
+-   A file is considered contaminated if **ANY** sample has config values that are strings.
+-   In dry-run mode (default), only reports what would be deleted without actually deleting.
+-   With `--force` flag, permanently deletes all contaminated files.
+-   Provides detailed statistics about contamination and deletion.
+
+---
+
+### 4. `validate`
 
 This command validates the eye-width data in the pickle files by re-running the simulation for a subset of samples and comparing the results. This is useful for verifying data integrity and the consistency of the simulation engine.
 

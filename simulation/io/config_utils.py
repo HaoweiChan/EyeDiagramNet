@@ -69,4 +69,24 @@ def build_argparser():
         '--block_size', type=int, default=None,
         help="Fixed block size for direction generation (optional, overrides random selection)"
     )
+    parser.add_argument(
+        '--shuffle', action='store_true',
+        help="Shuffle work items before processing (sequential/parallel collectors)"
+    )
+    parser.add_argument(
+        '--simulator-type', type=str, default='sbr', choices=['sbr', 'der'],
+        help="Type of simulator to use (default: sbr)"
+    )
+    parser.add_argument(
+        '--use-optimized', action='store_true',
+        help="Use optimized SBR simulation functions (SBR only)"
+    )
+    parser.add_argument(
+        '--fixed-config', action='store_true',
+        help="Pre-sample fixed configurations before collection starts (ensures all files use same config set)"
+    )
+    parser.add_argument(
+        '--num-threads', type=int, default=None,
+        help="Explicit number of BLAS/OMP threads to use (sequential collector only)"
+    )
     return parser 

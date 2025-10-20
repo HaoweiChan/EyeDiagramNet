@@ -7,6 +7,15 @@ from typing import List
 from common.pickle_utils import DataWriter, load_pickle_data
 from common.parameters import SampleResult as SimulationResult
 
+# Try to import direction_utils, handle potential ImportError
+try:
+    from simulation.io.direction_utils import get_valid_block_sizes
+except ImportError:
+    print("Warning: Could not import get_valid_block_sizes from simulation.io.direction_utils.")
+    print("Direction validation might not work as expected.")
+    def get_valid_block_sizes(n_lines):
+        # Fallback function if import fails
+        return {1} # Default to a safe value
 
 def estimate_block_size(direction_array: np.ndarray) -> int:
     """Estimate the smallest consecutive run length (block size) in a 0/1 array."""
@@ -31,7 +40,38 @@ def detect_block_size_1_patterns(directions: list) -> bool:
     block_lengths = np.diff(all_indices)
     return np.any(block_lengths == 1)
 
-def remove_duplicate_configs(results: List[SimulationResult], precision: int = 8) -> List[SimulationResult]:
+
+def remove_contaminated_configs(results: List[SimulationResult]) -> List[SimulationResult]:
+    """
+    Remove samples where config values are actually parameter names (strings).
+    These are invalid samples that resulted from the to_list() return order bug.
+    """
+    if not results:
+        return results
+    
+    valid_results = []
+    
+    for result in results:
+        is_valid = True
+        
+        # Check if config_values contains strings (should be numeric)
+        if result.config_values and isinstance(result.config_values[0], str):
+            is_valid = False
+        
+        # Check if config_values match config_keys (indicating they're swapped)
+        if is_valid and result.config_keys and result.config_values:
+            if len(result.config_keys) == len(result.config_values):
+                # Check if the values are actually the keys
+                if all(isinstance(v, str) and v in result.config_keys for v in result.config_values):
+                    is_valid = False
+        
+        if is_valid:
+            valid_results.append(result)
+    
+    return valid_results
+
+
+def remove_duplicate_configs(results: List[SimulationResult]) -> List[SimulationResult]:
     """Remove samples with duplicate configuration values, keeping only the first occurrence."""
     if not results:
         return results
@@ -40,22 +80,17 @@ def remove_duplicate_configs(results: List[SimulationResult], precision: int = 8
     unique_results = []
     
     for result in results:
-        try:
-            # Round float values to handle precision issues
-            rounded_values = [round(v, precision) if isinstance(v, float) else v for v in result.config_values]
-            config_tuple = tuple(rounded_values)
-            
-            if config_tuple not in seen_configs:
-                seen_configs.add(config_tuple)
-                unique_results.append(result)
-        except (TypeError, ValueError) as e:
-            # If config values aren't hashable, keep the result (safer than dropping it)
-            print(f"Warning: Could not hash config values for duplicate checking: {e}")
+        # Create a tuple of config values for comparison
+        config_tuple = tuple(result.config_values)
+        
+        if config_tuple not in seen_configs:
+            seen_configs.add(config_tuple)
             unique_results.append(result)
-            
+    
     return unique_results
 
-def clean_pickle_file_inplace(pfile: Path, block_size: int = None, remove_block_size_1: bool = False, remove_duplicates: bool = False) -> tuple[int, int]:
+def clean_pickle_file_inplace(pfile: Path, block_size: int = None, remove_block_size_1: bool = False, 
+                             remove_duplicates: bool = False, remove_contaminated: bool = True) -> tuple[int, int]:
     """
     Filters samples in a pickle file based on direction block size and/or duplicate configurations.
     The file is overwritten in-place with the cleaned data, preserving the original format.
@@ -66,6 +101,7 @@ def clean_pickle_file_inplace(pfile: Path, block_size: int = None, remove_block_
         block_size: Only keep samples with this specific direction block size
         remove_block_size_1: Remove samples with block size 1 direction patterns
         remove_duplicates: Remove samples with duplicate configuration values (keeps first occurrence)
+        remove_contaminated: Remove samples where config values are strings (DEFAULT: True)
     
     Note: If the input file uses legacy format (snp_txs/snp_rxs), it will be 
     automatically converted to the new format (snp_drvs/snp_odts) when saved.
@@ -86,23 +122,14 @@ def clean_pickle_file_inplace(pfile: Path, block_size: int = None, remove_block_
 
     if n_samples_before == 0:
         return 0, 0
-    
-    if block_size is not None:
-        print(f"  Will filter for block_size = {block_size}")
-    if remove_block_size_1:
-        print(f"  Will remove block_size_1 patterns")
-    if remove_duplicates:
-        print(f"  Will remove duplicate configurations")
 
-    # Apply duplicate removal first if requested
+    # Apply contamination removal first (CRITICAL - these are invalid samples)
+    if remove_contaminated:
+        results = remove_contaminated_configs(results)
+    
+    # Apply duplicate removal if requested
     if remove_duplicates:
-        print(f"  Before duplicate removal: {len(results)} samples")
-        # Debug: check how many duplicates we detect
-        from .analysis import detect_duplicate_configs
-        dup_stats = detect_duplicate_configs(results)
-        print(f"  Detected duplicates: {dup_stats['duplicate_count']} samples in {len(dup_stats['duplicate_groups'])} groups")
         results = remove_duplicate_configs(results)
-        print(f"  After duplicate removal: {len(results)} samples")
     
     # Filter the list of dataclasses
     valid_results: List[SimulationResult] = []
@@ -153,3 +180,82 @@ def clean_pickle_file_inplace(pfile: Path, block_size: int = None, remove_block_
         print(f"Note: Converted {pfile.name} from legacy format (snp_txs/snp_rxs) to new format (snp_drvs/snp_odts)")
 
     return n_samples_before, num_removed
+
+
+def delete_contaminated_files(pickle_files_list: list[Path], dry_run: bool = True) -> dict:
+    """
+    Delete pickle files that contain contaminated config data.
+    A file is considered contaminated if ANY sample has config values that are strings.
+    
+    Args:
+        pickle_files_list: List of pickle file paths to check
+        dry_run: If True, only report what would be deleted without actually deleting
+    
+    Returns:
+        Dictionary with deletion statistics
+    """
+    from common.pickle_utils import load_pickle_data
+    from .analysis import detect_contaminated_configs
+    
+    contaminated_files = []
+    deletion_stats = {
+        'total_files_checked': len(pickle_files_list),
+        'contaminated_files_found': 0,
+        'files_deleted': 0,
+        'total_samples_affected': 0,
+        'errors': []
+    }
+    
+    # Identify contaminated files
+    for pfile in pickle_files_list:
+        try:
+            results = load_pickle_data(pfile)
+            if results:
+                file_stats = detect_contaminated_configs(results)
+                
+                if file_stats['contaminated_count'] > 0:
+                    contaminated_files.append({
+                        'path': pfile,
+                        'name': pfile.name,
+                        'total_samples': file_stats['total_samples'],
+                        'contaminated_count': file_stats['contaminated_count']
+                    })
+                    deletion_stats['total_samples_affected'] += file_stats['total_samples']
+        except Exception as e:
+            deletion_stats['errors'].append(f"Error checking {pfile.name}: {e}")
+    
+    deletion_stats['contaminated_files_found'] = len(contaminated_files)
+    
+    if not contaminated_files:
+        print("✅ No contaminated files found!")
+        return deletion_stats
+    
+    # Report contaminated files
+    print(f"\n⚠️  Found {len(contaminated_files)} contaminated files:")
+    for file_info in contaminated_files:
+        cont_rate = file_info['contaminated_count'] / file_info['total_samples'] * 100
+        print(f"  - {file_info['name']}: {file_info['contaminated_count']}/{file_info['total_samples']} "
+              f"contaminated samples ({cont_rate:.1f}%)")
+    
+    if dry_run:
+        print(f"\n🔍 DRY RUN MODE: No files were deleted.")
+        print(f"   Run with dry_run=False to actually delete these files.")
+        return deletion_stats
+    
+    # Delete contaminated files
+    print(f"\n🗑️  Deleting {len(contaminated_files)} contaminated files...")
+    for file_info in contaminated_files:
+        try:
+            file_info['path'].unlink()
+            deletion_stats['files_deleted'] += 1
+            print(f"  ✅ Deleted: {file_info['name']}")
+        except Exception as e:
+            error_msg = f"Failed to delete {file_info['name']}: {e}"
+            deletion_stats['errors'].append(error_msg)
+            print(f"  ❌ {error_msg}")
+    
+    print(f"\n✅ Deletion complete: {deletion_stats['files_deleted']}/{len(contaminated_files)} files deleted")
+    if deletion_stats['errors']:
+        print(f"⚠️  {len(deletion_stats['errors'])} errors occurred")
+    
+    return deletion_stats

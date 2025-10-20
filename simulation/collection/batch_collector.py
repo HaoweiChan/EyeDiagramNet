@@ -151,7 +151,7 @@ class EyeWidthSimulatePipeline:
                 line_ew[line_ew >= 99.9] = -0.1
 
                 # Create a structured dataclass instance for the result
-                config_values, config_keys = config.to_list(return_keys=True)
+                config_keys, config_values = config.to_list(return_keys=True)
                 result_to_add = SimulationResult(
                     config_values=config_values,
                     config_keys=config_keys,

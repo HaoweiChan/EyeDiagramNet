@@ -9,6 +9,7 @@ from dataclasses import dataclass, field, fields
 
 from .network_utils import s2y, y2s, s2z, z2s, generate_test_pattern
 
+
 # ===============================================
 # PERFORMANCE OPTIMIZATION FUNCTIONS (PHASE 1)
 # ===============================================
@@ -61,7 +62,6 @@ def calculate_waveform_optimized(test_patterns, response_matrices, n_perUI_intrp
             waveform[pt, :, output_line_idx] = np.sum(convs, axis=0)
     
     return waveform
-
 
 def get_line_sbr_optimized(ntwk, params):
     """
@@ -147,7 +147,6 @@ def get_line_sbr_optimized(ntwk, params):
         time_sbr = np.hstack((time_vec_reshape, sbr_one_line))
         line_sbrs.append(time_sbr)
     return line_sbrs
-
 
 def process_pulse_responses_optimized(line_sbrs, params, num_lines):
     """
@@ -325,7 +324,6 @@ class TrapezoidalPulse:
         factor1 = exp_term1 * A * L * sinc_term1
         factor2 = exp_term2 * Ap * Lp * sinc_term2
         return factor1 * factor2
-
 
 @dataclass
 class TransientParams:
@@ -1282,7 +1280,6 @@ def snp_eyewidth_simulation(config, snp_files=None, directions=None, use_optimiz
         # Re-raise with enhanced context
         raise RuntimeError(error_msg) from e
 
-
 def main():
     try:
         from common.parameters import SampleResult
@@ -1321,7 +1318,6 @@ def main():
     result = simulator.calculate_eyewidth()
     print(f"Eye width results: {result}")
     return result
-
 
 if __name__ == "__main__":
     main() 

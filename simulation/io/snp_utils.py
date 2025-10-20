@@ -7,24 +7,61 @@ from itertools import product
 from skrf.network import Network
 
 def parse_snps(snp_dir):
-    """Parse SNP files from directory, supporting both .snp and .npz formats"""
+    """
+    Parse SNP files from directory, supporting both .snp and .npz formats.
+    Handles file names with special characters and quoted names.
+    """
     snp_dir = Path(snp_dir)
     
     # Check for npz subdirectory first
     if (snp_dir / 'npz').exists():
         snp_dir = snp_dir / "npz"
-        suffix = '*.npz'
+        file_type = 'npz'
     elif (snp_dir / 'snp').exists():
         snp_dir = snp_dir / "snp"
-        suffix = '*.s*p'
+        file_type = 'snp'
     else:
         # Check what files exist in the directory
         if len(list(snp_dir.glob("*.npz"))):
-            suffix = '*.npz'
+            file_type = 'npz'
         else:
-            suffix = '*.s*p'
+            file_type = 'snp'
     
-    return list(snp_dir.glob(suffix))
+    # Use iterdir() to handle files with special characters
+    # This is more robust than glob() for files with special symbols
+    snp_files = []
+    try:
+        for file_path in snp_dir.iterdir():
+            if not file_path.is_file():
+                continue
+            
+            # Get the file name and strip encapsulating quotes if present
+            file_name = file_path.name
+            if file_name.startswith("'") and file_name.endswith("'"):
+                # Rename file to remove quotes
+                new_name = file_name[1:-1]
+                new_path = file_path.parent / new_name
+                try:
+                    file_path.rename(new_path)
+                    file_path = new_path
+                    print(f"Renamed file: {file_name} -> {new_name}")
+                except Exception as e:
+                    print(f"Warning: Could not rename {file_name}: {e}")
+            
+            # Check if file matches expected type (case-insensitive)
+            suffix_lower = file_path.suffix.lower()
+            if file_type == 'npz':
+                if suffix_lower == '.npz':
+                    snp_files.append(file_path)
+            else:
+                # Match .snp or .s*p pattern (e.g., .s2p, .s4p, .s96p, etc.)
+                if suffix_lower == '.snp' or (suffix_lower.startswith('.s') and suffix_lower.endswith('p')):
+                    snp_files.append(file_path)
+    except Exception as e:
+        print(f"Error reading directory {snp_dir}: {e}")
+        return []
+    
+    return sorted(snp_files)
 
 def generate_thru_snp(reference_trace_snp_file, base_output_dir, trace_pattern_key):
     """
