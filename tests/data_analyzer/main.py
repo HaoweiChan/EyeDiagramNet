@@ -15,8 +15,8 @@ def main():
     parser.add_argument("--block_size", type=int, help="Only keep samples with this block size (clean command only).")
     parser.add_argument("--remove-block-size-1", action="store_true", help="Remove samples with block size 1 direction patterns (clean command only).")
     parser.add_argument("--remove-duplicates", action="store_true", help="Remove samples with duplicate configuration values (clean command only).")
+    parser.add_argument("--remove-legacy", action="store_true", help="Remove samples using legacy parameter naming (snp_tx/snp_rx) (clean command only).")
     parser.add_argument("--keep-contaminated", action="store_true", help="Keep contaminated samples (clean command only, default: remove contaminated).")
-    parser.add_argument("--param-set", type=str, help="Parameter set name to validate boundary configs against (e.g., MIX_PARAMS, DDR_PARAMS) (clean/analyze commands).")
     parser.add_argument("--max_files", type=int, help="Max number of files to process (analyze/validate commands only).")
     parser.add_argument("--max_samples", type=int, help="Max number of samples per file (analyze/validate commands only).")
 
@@ -59,10 +59,15 @@ def main():
         print("Analyzing duplications...")
         duplication_stats = analysis.analyze_duplications_across_files(pickle_files)
         
+        # Analyze out-of-range boundary parameters
+        print("Analyzing out-of-range boundary parameters...")
+        out_of_range_stats = analysis.analyze_out_of_range_across_files(pickle_files)
+        
         analysis_results = {
             'file_stats': file_stats,
             'contamination_stats': contamination_stats,
-            'duplication_stats': duplication_stats
+            'duplication_stats': duplication_stats,
+            'out_of_range_stats': out_of_range_stats
         }
         analysis.plot_eye_width_distributions(all_results, output_dir)
         analysis.generate_summary_report(pickle_dir, pickle_files, all_results, analysis_results, output_dir)
@@ -70,38 +75,65 @@ def main():
     elif args.command == "clean":
         print("\nCleaning pickle files...")
         print("By default, contaminated samples (config values are strings) will be removed.")
+        print("Boundary parameters will be validated against param sets defined in each file.")
         print("Use --keep-contaminated to preserve them for inspection.\n")
         
-        if args.param_set:
-            print(f"Parameter set validation enabled: {args.param_set}")
-            print(f"Samples with boundary configs outside {args.param_set} ranges will be removed.\n")
-        
-        total_before, total_removed = 0, 0
+        total_before, total_removed, total_out_of_range = 0, 0, 0
         remove_contaminated = not args.keep_contaminated  # Default is to remove contaminated
+        all_out_of_range_details = []
+        
+        total_legacy = 0
         
         for pfile in pickle_files:
             try:
-                n_before, n_removed = cleaning.clean_pickle_file_inplace(
+                n_before, n_removed, stats = cleaning.clean_pickle_file_inplace(
                     pfile, 
                     block_size=args.block_size, 
                     remove_block_size_1=args.remove_block_size_1,
                     remove_duplicates=args.remove_duplicates,
                     remove_contaminated=remove_contaminated,
-                    param_set_name=args.param_set
+                    remove_legacy=args.remove_legacy
                 )
                 total_before += n_before
                 total_removed += n_removed
+                total_out_of_range += stats['out_of_range_count']
+                total_legacy += stats['legacy_count']
+                
                 if n_removed > 0:
                     print(f"Cleaned {pfile.name}: removed {n_removed}/{n_before} samples.")
+                
+                # Show out-of-range details if any
+                if stats['out_of_range_count'] > 0:
+                    print(f"  └─ Out-of-range samples: {stats['out_of_range_count']}")
+                    for idx, param_types, out_of_range_params in stats['out_of_range_details'][:3]:
+                        print(f"     Sample {idx} (param_types={param_types}):")
+                        for param_desc in out_of_range_params[:2]:
+                            print(f"       - {param_desc}")
+                    if len(stats['out_of_range_details']) > 3:
+                        print(f"     ... and {len(stats['out_of_range_details']) - 3} more")
+                    all_out_of_range_details.append((pfile.name, stats['out_of_range_details']))
+                
+                # Show legacy removal count if any
+                if stats['legacy_count'] > 0:
+                    print(f"  └─ Legacy format samples: {stats['legacy_count']}")
             except Exception as e:
                 print(f"Error cleaning {pfile.name}: {e}")
         
+        total_in_range = total_before - total_out_of_range - total_legacy
+        
         print(f"\n=== Cleaning Summary ===")
         print(f"Total samples before: {total_before}")
+        print(f"Samples within param set ranges: {total_in_range}")
         print(f"Total samples removed: {total_removed}")
+        print(f"  └─ Out-of-range samples: {total_out_of_range}")
+        if args.remove_legacy:
+            print(f"  └─ Legacy format samples: {total_legacy}")
         print(f"Total samples remaining: {total_before - total_removed}")
         if total_removed > 0:
-            print(f"Removal rate: {(total_removed / total_before * 100):.1f}%")
+            in_range_rate = (total_in_range / total_before * 100) if total_before > 0 else 0
+            removal_rate = (total_removed / total_before * 100) if total_before > 0 else 0
+            print(f"In-range rate: {in_range_rate:.1f}%")
+            print(f"Removal rate: {removal_rate:.1f}%")
             print(f"\n✅ Cleaning complete! Backups saved with .bak extension.")
 
     elif args.command == "validate":

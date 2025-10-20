@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import List
 
 from common.parameters import SampleResult as SimulationResult
+from .cleaning import estimate_block_size, validate_boundary_parameters
 
 # Try to import seaborn, make it optional
 try:
@@ -23,8 +24,6 @@ except ImportError:
     print("Warning: Could not import get_valid_block_sizes from simulation.io.direction_utils.")
     def get_valid_block_sizes(n_lines):
         return {1}
-
-from .cleaning import estimate_block_size
 
 
 def detect_contaminated_configs(results: List[SimulationResult]) -> dict:
@@ -158,6 +157,66 @@ def analyze_contamination_across_files(pickle_files_list: list[Path]) -> dict:
         'files_with_contamination_count': len(contaminated_files)
     }
 
+def analyze_out_of_range_across_files(pickle_files_list: list[Path]) -> dict:
+    """Analyze samples with out-of-range boundary parameters across all pickle files."""
+    file_out_of_range_stats = {}
+    total_out_of_range = 0
+    total_samples = 0
+    files_with_out_of_range = []
+    
+    from common.pickle_utils import load_pickle_data
+    
+    for pfile in pickle_files_list:
+        try:
+            results = load_pickle_data(pfile)
+            if results:
+                out_of_range_samples = []
+                for idx, result in enumerate(results):
+                    # Use param_types from the result itself
+                    if hasattr(result, 'param_types') and result.param_types:
+                        is_valid, out_of_range_params = validate_boundary_parameters(result, result.param_types)
+                        if not is_valid:
+                            out_of_range_samples.append({
+                                'sample_index': idx,
+                                'param_types': result.param_types,
+                                'out_of_range_params': out_of_range_params[:3]  # Show first 3
+                            })
+                
+                file_out_of_range_stats[str(pfile)] = {
+                    'total_samples': len(results),
+                    'out_of_range_count': len(out_of_range_samples),
+                    'out_of_range_samples': out_of_range_samples[:5]  # Show first 5 examples
+                }
+                
+                total_samples += len(results)
+                total_out_of_range += len(out_of_range_samples)
+                
+                if len(out_of_range_samples) > 0:
+                    files_with_out_of_range.append({
+                        'file': pfile.name,
+                        'path': str(pfile),
+                        'out_of_range_count': len(out_of_range_samples),
+                        'total_samples': len(results),
+                        'out_of_range_rate': len(out_of_range_samples) / len(results) * 100
+                    })
+        except Exception as e:
+            file_out_of_range_stats[str(pfile)] = {
+                'error': str(e),
+                'total_samples': 0,
+                'out_of_range_count': 0,
+                'out_of_range_samples': []
+            }
+    
+    total_in_range = total_samples - total_out_of_range
+    
+    return {
+        'file_stats': file_out_of_range_stats,
+        'total_samples_across_files': total_samples,
+        'total_out_of_range_across_files': total_out_of_range,
+        'total_in_range_across_files': total_in_range,
+        'files_with_out_of_range': files_with_out_of_range,
+        'files_with_out_of_range_count': len(files_with_out_of_range)
+    }
 
 def analyze_duplications_across_files(pickle_files_list: list[Path]) -> dict:
     """Analyze duplications in config values across all pickle files."""
@@ -426,6 +485,46 @@ def generate_summary_report(pickle_dir: Path, pickle_files: list, all_results: L
             report.append(f"  Files with high duplication (>10%): {', '.join(high_dup_files[:5])}")
             if len(high_dup_files) > 5:
                 report.append(f"    ... and {len(high_dup_files) - 5} more")
+        
+        report.append("")
+    
+    # Out-of-range boundary parameter analysis
+    if analysis_results.get('out_of_range_stats'):
+        oor_stats = analysis_results['out_of_range_stats']
+        report.append("⚠️  OUT-OF-RANGE BOUNDARY PARAMETERS:")
+        report.append(f"  Files with out-of-range samples: {oor_stats['files_with_out_of_range_count']}/{len(pickle_files)}")
+        report.append(f"  Total samples: {oor_stats['total_samples_across_files']}")
+        report.append(f"  Samples within param set ranges: {oor_stats['total_in_range_across_files']}")
+        report.append(f"  Samples out-of-range: {oor_stats['total_out_of_range_across_files']}")
+        
+        if oor_stats['total_samples_across_files'] > 0:
+            in_range_percentage = (oor_stats['total_in_range_across_files'] / 
+                                  oor_stats['total_samples_across_files'] * 100)
+            oor_percentage = (oor_stats['total_out_of_range_across_files'] / 
+                            oor_stats['total_samples_across_files'] * 100)
+            report.append(f"  In-range rate: {in_range_percentage:.2f}%")
+            report.append(f"  Out-of-range rate: {oor_percentage:.2f}%")
+        
+        # Report files with out-of-range samples
+        if oor_stats['files_with_out_of_range']:
+            report.append(f"\n  ⚠️  FILES WITH OUT-OF-RANGE SAMPLES (outside param set bounds):")
+            for file_info in oor_stats['files_with_out_of_range'][:10]:
+                report.append(f"    - {file_info['file']}: {file_info['out_of_range_count']}/{file_info['total_samples']} "
+                            f"samples ({file_info['out_of_range_rate']:.1f}%)")
+                
+                # Show sample details from file_stats
+                file_path = file_info['path']
+                if file_path in oor_stats['file_stats']:
+                    file_details = oor_stats['file_stats'][file_path]
+                    for sample_info in file_details.get('out_of_range_samples', [])[:2]:
+                        report.append(f"       Sample {sample_info['sample_index']} (param_types={sample_info['param_types']}):")
+                        for param_desc in sample_info.get('out_of_range_params', [])[:2]:
+                            report.append(f"         • {param_desc}")
+            
+            if len(oor_stats['files_with_out_of_range']) > 10:
+                report.append(f"    ... and {len(oor_stats['files_with_out_of_range']) - 10} more files with out-of-range samples")
+            
+            report.append(f"\n  ⚠️  RECOMMENDED ACTION: Use 'clean' command to remove these out-of-range samples!")
         
         report.append("")
 

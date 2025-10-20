@@ -36,8 +36,9 @@ python -m tests.data_analyzer.main analyze /path/to/your/pickle_data
 -   Calculates statistics for eye-widths, direction block sizes, and file sample counts.
 -   **WARNING: Analyzes contaminated configurations** - detects samples where config values are parameter names (strings) instead of numeric values.
 -   **Analyzes duplicate configurations** within each file and across all files.
+-   **Analyzes out-of-range boundary parameters** - detects samples where config values fall outside the valid ranges defined by their param_types (automatically extracted from each file).
 -   Generates and saves plots for eye-width distributions (`eye_width_distributions.png`).
--   Generates and saves a detailed text summary (`training_data_summary.txt`) including contamination and duplication analysis.
+-   Generates and saves a detailed text summary (`training_data_summary.txt`) including contamination, duplication, and out-of-range analysis.
 -   All outputs are saved to a timestamped directory inside `tests/`, for example `tests/analyzer_output_20231027_123456/`.
 
 ---
@@ -48,8 +49,11 @@ This command performs in-place cleaning of the pickle files by **removing proble
 
 **What gets cleaned by default:**
 - ✅ **Contaminated samples** (where config values are strings instead of numbers) - automatically removed
+- ✅ **Out-of-range boundary parameters** (where config values fall outside the valid param set ranges) - automatically removed
 - ✅ **Duplicate configurations** (optional with `--remove-duplicates`)
 - ✅ **Invalid block size patterns** (optional with `--block_size` or `--remove-block-size-1`)
+
+**Note:** Parameter set validation is automatic - the tool reads `param_types` from each pickle file and validates against the corresponding parameter sets defined in `PARAM_SETS_MAP`.
 
 **Usage:**
 ```bash
@@ -87,10 +91,18 @@ python -m tests.data_analyzer.main clean /path/to/your/pickle_data [options]
         python -m tests.data_analyzer.main clean ./data --keep-contaminated
         ```
 
+-   `--remove-legacy`:
+    -   Removes samples that use legacy parameter naming conventions (e.g., `R_tx`, `R_rx`, `C_tx`, `C_rx`, `L_tx`, `L_rx`).
+    -   Modern samples use the updated naming (e.g., `R_drv`, `R_odt`, `C_drv`, `C_odt`, `L_drv`, `L_odt`).
+    -   **Example:**
+        ```bash
+        python -m tests.data_analyzer.main clean ./data --remove-legacy
+        ```
+
 **Combined Example:**
-To clean all issues at once (remove contaminated samples, duplicates, and block size 1 patterns):
+To clean all issues at once (remove contaminated samples, duplicates, legacy format, and block size 1 patterns):
 ```bash
-python -m tests.data_analyzer.main clean ./data --remove-block-size-1 --remove-duplicates
+python -m tests.data_analyzer.main clean ./data --remove-block-size-1 --remove-duplicates --remove-legacy
 ```
 
 **Important Notes:**
