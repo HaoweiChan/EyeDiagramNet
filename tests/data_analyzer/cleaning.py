@@ -80,13 +80,14 @@ def remove_duplicate_configs(results: List[SimulationResult]) -> List[Simulation
     
     return unique_results
 
-def validate_boundary_parameters(result: SimulationResult, param_set_names: List[str]) -> tuple[bool, List[str]]:
+def validate_boundary_parameters(result: SimulationResult, param_set_names: List[str], debug: bool = False) -> tuple[bool, List[str]]:
     """
     Validate that boundary parameters in a sample are within the parameter set ranges.
     
     Args:
         result: SimulationResult dataclass containing config_keys, config_values, and param_types
         param_set_names: List of parameter set names from the sample's param_types
+        debug: If True, print debug information
         
     Returns:
         tuple: (is_valid, list of out-of-range parameter descriptions)
@@ -110,20 +111,46 @@ def validate_boundary_parameters(result: SimulationResult, param_set_names: List
         elif hasattr(param_set, '_params'):
             combined_param_defs.update(param_set._params)
     
+    if not combined_param_defs:
+        if debug:
+            print(f"[DEBUG] No parameter definitions found for param_set_names: {param_set_names}")
+        return True, []
+    
     # Convert config_keys and config_values to a dict
     config_dict = dict(zip(result.config_keys, result.config_values))
+    
+    if debug:
+        print(f"[DEBUG] Validating {len(config_dict)} parameters")
+        print(f"[DEBUG] Config dict: {config_dict}")
     
     # For each parameter in the config, check if it's within the param_set bounds
     for param_name, param_value in config_dict.items():
         # Skip if parameter is not defined in the combined param sets
         if param_name not in combined_param_defs:
+            if debug:
+                print(f"[DEBUG] Parameter '{param_name}' not in param set definitions, skipping")
             continue
         
         param_def = combined_param_defs[param_name]
         
         # Get bounds based on parameter type
-        if hasattr(param_def, 'low') and hasattr(param_def, 'high'):
-            # LinearParameter
+        # Check for DiscreteParameter first (has 'values' attribute)
+        if hasattr(param_def, 'values') and param_def.values is not None:
+            # DiscreteParameter
+            values = param_def.values
+            if debug:
+                print(f"[DEBUG] Checking {param_name}: value={param_value}, allowed={values}")
+            if param_value not in values:
+                # For discrete parameters with large values (like 1e9), use scientific notation
+                if isinstance(param_value, (int, float)) and abs(param_value) >= 1e6:
+                    out_of_range_params.append(f"{param_name}={param_value:.6e} (allowed: {[f'{v:.6e}' if isinstance(v, (int, float)) and abs(v) >= 1e6 else v for v in values]})")
+                else:
+                    out_of_range_params.append(f"{param_name}={param_value} (allowed: {values})")
+                if debug:
+                    print(f"[DEBUG] OUT OF RANGE: {param_name}={param_value}")
+                
+        elif hasattr(param_def, 'low') and hasattr(param_def, 'high') and param_def.low is not None and param_def.high is not None:
+            # LinearParameter or LogParameter
             low = param_def.low
             high = param_def.high
             scaler = getattr(param_def, 'scaler', 1.0)
@@ -132,17 +159,18 @@ def validate_boundary_parameters(result: SimulationResult, param_set_names: List
             low_scaled = low * scaler
             high_scaled = high * scaler
             
+            if debug:
+                print(f"[DEBUG] Checking {param_name}: value={param_value:.6e}, range=[{low_scaled:.6e}, {high_scaled:.6e}]")
+            
             # Check if value is within bounds
             if not (low_scaled <= param_value <= high_scaled):
                 out_of_range_params.append(f"{param_name}={param_value:.6e} (range: [{low_scaled:.6e}, {high_scaled:.6e}])")
-                
-        elif hasattr(param_def, 'values'):
-            # DiscreteParameter
-            values = param_def.values
-            if param_value not in values:
-                out_of_range_params.append(f"{param_name}={param_value} (allowed: {values})")
+                if debug:
+                    print(f"[DEBUG] OUT OF RANGE: {param_name}={param_value:.6e}")
     
     is_valid = len(out_of_range_params) == 0
+    if debug:
+        print(f"[DEBUG] Validation result: is_valid={is_valid}, out_of_range_count={len(out_of_range_params)}")
     return is_valid, out_of_range_params
 
 def clean_pickle_file_inplace(pfile: Path, block_size: int = None, remove_block_size_1: bool = False, 
