@@ -7,6 +7,7 @@ from typing import List
 from common.pickle_utils import DataWriter, load_pickle_data
 from common.parameters import SampleResult as SimulationResult
 
+
 # Try to import direction_utils, handle potential ImportError
 try:
     from simulation.io.direction_utils import get_valid_block_sizes
@@ -16,6 +17,7 @@ except ImportError:
     def get_valid_block_sizes(n_lines):
         # Fallback function if import fails
         return {1} # Default to a safe value
+
 
 def estimate_block_size(direction_array: np.ndarray) -> int:
     """Estimate the smallest consecutive run length (block size) in a 0/1 array."""
@@ -27,6 +29,7 @@ def estimate_block_size(direction_array: np.ndarray) -> int:
     ends = np.r_[change_idx, arr.size - 1]
     run_lengths = ends - starts + 1
     return int(run_lengths.min())
+
 
 def detect_block_size_1_patterns(directions: list) -> bool:
     """Detect if a direction pattern contains block size 1."""
@@ -69,7 +72,6 @@ def remove_contaminated_configs(results: List[SimulationResult]) -> List[Simulat
             valid_results.append(result)
     
     return valid_results
-
 
 def remove_duplicate_configs(results: List[SimulationResult]) -> List[SimulationResult]:
     """Remove samples with duplicate configuration values, keeping only the first occurrence."""
@@ -182,80 +184,3 @@ def clean_pickle_file_inplace(pfile: Path, block_size: int = None, remove_block_
     return n_samples_before, num_removed
 
 
-def delete_contaminated_files(pickle_files_list: list[Path], dry_run: bool = True) -> dict:
-    """
-    Delete pickle files that contain contaminated config data.
-    A file is considered contaminated if ANY sample has config values that are strings.
-    
-    Args:
-        pickle_files_list: List of pickle file paths to check
-        dry_run: If True, only report what would be deleted without actually deleting
-    
-    Returns:
-        Dictionary with deletion statistics
-    """
-    from common.pickle_utils import load_pickle_data
-    from .analysis import detect_contaminated_configs
-    
-    contaminated_files = []
-    deletion_stats = {
-        'total_files_checked': len(pickle_files_list),
-        'contaminated_files_found': 0,
-        'files_deleted': 0,
-        'total_samples_affected': 0,
-        'errors': []
-    }
-    
-    # Identify contaminated files
-    for pfile in pickle_files_list:
-        try:
-            results = load_pickle_data(pfile)
-            if results:
-                file_stats = detect_contaminated_configs(results)
-                
-                if file_stats['contaminated_count'] > 0:
-                    contaminated_files.append({
-                        'path': pfile,
-                        'name': pfile.name,
-                        'total_samples': file_stats['total_samples'],
-                        'contaminated_count': file_stats['contaminated_count']
-                    })
-                    deletion_stats['total_samples_affected'] += file_stats['total_samples']
-        except Exception as e:
-            deletion_stats['errors'].append(f"Error checking {pfile.name}: {e}")
-    
-    deletion_stats['contaminated_files_found'] = len(contaminated_files)
-    
-    if not contaminated_files:
-        print("✅ No contaminated files found!")
-        return deletion_stats
-    
-    # Report contaminated files
-    print(f"\n⚠️  Found {len(contaminated_files)} contaminated files:")
-    for file_info in contaminated_files:
-        cont_rate = file_info['contaminated_count'] / file_info['total_samples'] * 100
-        print(f"  - {file_info['name']}: {file_info['contaminated_count']}/{file_info['total_samples']} "
-              f"contaminated samples ({cont_rate:.1f}%)")
-    
-    if dry_run:
-        print(f"\n🔍 DRY RUN MODE: No files were deleted.")
-        print(f"   Run with dry_run=False to actually delete these files.")
-        return deletion_stats
-    
-    # Delete contaminated files
-    print(f"\n🗑️  Deleting {len(contaminated_files)} contaminated files...")
-    for file_info in contaminated_files:
-        try:
-            file_info['path'].unlink()
-            deletion_stats['files_deleted'] += 1
-            print(f"  ✅ Deleted: {file_info['name']}")
-        except Exception as e:
-            error_msg = f"Failed to delete {file_info['name']}: {e}"
-            deletion_stats['errors'].append(error_msg)
-            print(f"  ❌ {error_msg}")
-    
-    print(f"\n✅ Deletion complete: {deletion_stats['files_deleted']}/{len(contaminated_files)} files deleted")
-    if deletion_stats['errors']:
-        print(f"⚠️  {len(deletion_stats['errors'])} errors occurred")
-    
-    return deletion_stats

@@ -5,6 +5,7 @@ from pathlib import Path
 
 from common.pickle_utils import load_pickle_data
 
+
 # Try to import simulation functions for comparison
 try:
     # First try to import from legacy module, fall back to current module
@@ -25,6 +26,7 @@ except ImportError as e:
     legacy_snp_eyewidth_simulation = None
     SampleResult = dict
     USE_LEGACY_FORMAT = False
+
 
 def reconstruct_config(data, sample_idx):
     """Reconstruct configuration from pickle data."""

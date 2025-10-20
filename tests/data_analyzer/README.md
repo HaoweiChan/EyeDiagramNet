@@ -18,6 +18,8 @@ python -m tests.data_analyzer.main {analyze,clean,validate} <path_to_pickle_dir>
 
 There are three main commands available: `analyze`, `clean`, and `validate`.
 
+**Important Note:** The `clean` command removes problematic **records/samples** from pickle files (keeping the file and valid samples), rather than deleting entire files. This preserves valuable simulation results while cleaning out contaminated or duplicate data.
+
 ---
 
 ### 1. `analyze`
@@ -42,7 +44,12 @@ python -m tests.data_analyzer.main analyze /path/to/your/pickle_data
 
 ### 2. `clean`
 
-This command performs in-place cleaning of the pickle files. It can remove samples based on several criteria. A backup of each modified file is created with a `.bak` extension.
+This command performs in-place cleaning of the pickle files by **removing problematic samples/records** while preserving the files and their valid data. A backup of each modified file is created with a `.bak` extension.
+
+**What gets cleaned by default:**
+- ✅ **Contaminated samples** (where config values are strings instead of numbers) - automatically removed
+- ✅ **Duplicate configurations** (optional with `--remove-duplicates`)
+- ✅ **Invalid block size patterns** (optional with `--block_size` or `--remove-block-size-1`)
 
 **Usage:**
 ```bash
@@ -73,50 +80,28 @@ python -m tests.data_analyzer.main clean /path/to/your/pickle_data [options]
         ```
 
 -   `--keep-contaminated`:
-    -   **By default, contaminated samples (where config values are strings) are removed.**
+    -   **By default, contaminated samples (where config values are strings) are automatically removed.**
     -   Use this flag to keep contaminated samples if you want to inspect them manually.
     -   **Example:**
         ```bash
         python -m tests.data_analyzer.main clean ./data --keep-contaminated
         ```
 
-You can combine these options. For example, to only keep samples with block size 2, remove block size 1 patterns, remove duplicates, and remove contaminated samples:
+**Combined Example:**
+To clean all issues at once (remove contaminated samples, duplicates, and block size 1 patterns):
 ```bash
-python -m tests.data_analyzer.main clean ./data --block_size 2 --remove-block-size-1 --remove-duplicates
+python -m tests.data_analyzer.main clean ./data --remove-block-size-1 --remove-duplicates
 ```
+
+**Important Notes:**
+- This command **does NOT delete files** - it only removes bad records/samples from within files
+- Valid samples remain in the file, preserving your valuable simulation results
+- A `.bak` backup is created for each modified file
+- The command provides a summary showing how many samples were removed
 
 ---
 
-### 3. `delete-contaminated`
-
-This command **deletes entire pickle files** that contain contaminated config data (where config values are parameter names instead of numeric values). This is useful for removing files that were generated with the buggy `to_list()` return order.
-
-**WARNING:** This command permanently deletes files. Always run with `--dry-run` first to see what would be deleted!
-
-**Usage (Dry Run - Safe):**
-```bash
-python -m tests.data_analyzer.main delete-contaminated /path/to/your/pickle_data
-```
-or
-```bash
-python -m tests.data_analyzer.main delete-contaminated /path/to/your/pickle_data --dry-run
-```
-
-**Usage (Actually Delete Files):**
-```bash
-python -m tests.data_analyzer.main delete-contaminated /path/to/your/pickle_data --force
-```
-
-**What it does:**
--   Scans all pickle files for contaminated config data.
--   A file is considered contaminated if **ANY** sample has config values that are strings.
--   In dry-run mode (default), only reports what would be deleted without actually deleting.
--   With `--force` flag, permanently deletes all contaminated files.
--   Provides detailed statistics about contamination and deletion.
-
----
-
-### 4. `validate`
+### 3. `validate`
 
 This command validates the eye-width data in the pickle files by re-running the simulation for a subset of samples and comparing the results. This is useful for verifying data integrity and the consistency of the simulation engine.
 

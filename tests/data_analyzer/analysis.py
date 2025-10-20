@@ -115,7 +115,6 @@ def detect_duplicate_configs(results: List[SimulationResult]) -> dict:
         'duplicate_groups': duplicate_groups
     }
 
-
 def analyze_contamination_across_files(pickle_files_list: list[Path]) -> dict:
     """Analyze contaminated config values across all pickle files."""
     file_contamination_stats = {}
@@ -196,7 +195,6 @@ def analyze_duplications_across_files(pickle_files_list: list[Path]) -> dict:
                                    if isinstance(stats, dict) and stats.get('duplicate_count', 0) > 0)
     }
 
-
 def detect_legacy_format_files(pickle_files_list: list[Path]) -> dict:
     """Detect which pickle files use legacy naming conventions."""
     legacy_stats = {
@@ -234,7 +232,6 @@ def detect_legacy_format_files(pickle_files_list: list[Path]) -> dict:
 warnings.filterwarnings('ignore')
 plt.style.use('default')
 plt.rcParams['figure.figsize'] = (12, 8)
-
 
 def is_numeric_list(data: list) -> bool:
     """Check if a list contains numeric data (non-string)."""
