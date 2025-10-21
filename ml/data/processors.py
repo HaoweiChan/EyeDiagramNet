@@ -109,42 +109,40 @@ class ContourProcessor:
         self.var_width_map = {}
         self.var_length_map = {}
 
-    def locate_files(self, data_dir: Union[str, Path]) -> Tuple[Path, Path]:
+    def locate_files(self, data_dir: Union[str, Path]) -> Tuple[List[Path], List[Path]]:
         """Locate *_sequence_input.csv and *_variations_variable.csv files with matching prefix."""
         data_path = Path(data_dir)
-        
+
         # Find all sequence and variation files
         sequence_files = list(data_path.glob("*_sequence_input.csv"))
         variation_files = list(data_path.glob("*_variations_variable.csv"))
-        
+
         if not sequence_files:
             raise FileNotFoundError(f"No *_sequence_input.csv files found in {data_path}")
         if not variation_files:
             raise FileNotFoundError(f"No *_variations_variable.csv files found in {data_path}")
-        
+
         # Extract prefixes
         seq_prefixes = {f.name.replace("_sequence_input.csv", ""): f for f in sequence_files}
         var_prefixes = {f.name.replace("_variations_variable.csv", ""): f for f in variation_files}
-        
+
         # Find matching prefixes
         common_prefixes = set(seq_prefixes.keys()) & set(var_prefixes.keys())
-        
+
         if not common_prefixes:
             raise FileNotFoundError(
                 f"No matching sequence/variation file pairs found in {data_path}. "
                 f"Sequence prefixes: {list(seq_prefixes.keys())}, "
                 f"Variation prefixes: {list(var_prefixes.keys())}"
             )
-        
-        # Use the first matching prefix (or you could add logic to select a specific one)
-        prefix = sorted(common_prefixes)[0]
-        sequence_file = seq_prefixes[prefix]
-        variation_file = var_prefixes[prefix]
-        
-        if len(common_prefixes) > 1:
-            rank_zero_info(f"Multiple matching file pairs found. Using prefix: '{prefix}'")
-        
-        return sequence_file, variation_file
+
+        # Get all matching file pairs
+        sequence_files_matched = [seq_prefixes[prefix] for prefix in sorted(common_prefixes)]
+        variation_files_matched = [var_prefixes[prefix] for prefix in sorted(common_prefixes)]
+
+        rank_zero_info(f"Found {len(common_prefixes)} matching file pair(s)")
+
+        return sequence_files_matched, variation_files_matched
 
     def parse_sequence(self, sequence_path: Path) -> pd.DataFrame:
         """Parse sequence.csv file and discover geometric feature columns."""
@@ -376,27 +374,40 @@ class ContourProcessor:
 
     def process(self, data_dir: Union[str, Path]) -> Tuple[np.ndarray, List[int]]:
         """Process sequence and variation files to create resolved contour data."""
-        sequence_file, variation_file = self.locate_files(data_dir)
-        
-        sequence_df = self.parse_sequence(sequence_file)
-        variation_df = self.parse_variation(variation_file)
-        
-        # Sync features between sequence and variation files
-        self._sync_variation_features(variation_df)
-        
+        sequence_files, variation_files = self.locate_files(data_dir)
+
+        # Use the first sequence file (typically there's only one)
+        sequence_df = self.parse_sequence(sequence_files[0])
+
+        # Parse all variation files and concatenate them
+        variation_dfs = []
+        for variation_file in variation_files:
+            variation_df = self.parse_variation(variation_file)
+            variation_dfs.append(variation_df)
+
+        # Concatenate all variation dataframes
+        if variation_dfs:
+            combined_variation_df = pd.concat(variation_dfs, ignore_index=True)
+        else:
+            combined_variation_df = pd.DataFrame()
+
+        # Sync features between sequence and variation files (using first variation file for structure)
+        if variation_dfs:
+            self._sync_variation_features(variation_dfs[0])
+
         resolved_cases = []
         case_ids = []
-        
-        for _, var_row in variation_df.iterrows():
+
+        for _, var_row in combined_variation_df.iterrows():
             case_id = int(var_row['case_id'])
             resolved_case = self.resolve_case(sequence_df, var_row)
             resolved_cases.append(resolved_case)
             case_ids.append(case_id)
-        
+
         # Stack all cases
         resolved_data = np.stack(resolved_cases) if resolved_cases else np.array([])
-        
-        rank_zero_info(f"Processed {len(resolved_cases)} cases with shape: {resolved_data.shape}")
+
+        rank_zero_info(f"Processed {len(resolved_cases)} cases from {len(variation_files)} variation file(s) with shape: {resolved_data.shape}")
         return resolved_data, case_ids
     
     def get_feature_info(self) -> Dict[str, int]:
