@@ -545,7 +545,14 @@ def generate_summary_report(pickle_dir: Path, pickle_files: list, all_results: L
             config_dict = dict(zip(result.config_keys, result.config_values))
             report.append(f"    Sample {i+1}:")
             for key, value in config_dict.items():
-                report.append(f"      {key}: {value}")
+                # Use scientific notation for very small or very large numbers
+                if isinstance(value, (int, float)):
+                    if abs(value) < 0.001 or abs(value) > 1000 or (abs(value) > 0 and abs(value) < 1e-6):
+                        report.append(f"      {key}: {value:.2e}")
+                    else:
+                        report.append(f"      {key}: {value}")
+                else:
+                    report.append(f"      {key}: {value}")
             if i < 2:  # Add separator between samples
                 report.append("")
         
@@ -555,7 +562,14 @@ def generate_summary_report(pickle_dir: Path, pickle_files: list, all_results: L
             for j, key in enumerate(config_keys):
                 values = [result.config_values[j] for result in all_results]
                 values_array = np.array(values)
-                report.append(f"    {key}: [{np.min(values_array):.6f}, {np.max(values_array):.6f}]")
+                min_val = np.min(values_array)
+                max_val = np.max(values_array)
+                
+                # Use scientific notation for very small or very large numbers
+                if abs(min_val) < 0.001 or abs(max_val) > 1000 or (abs(min_val) > 0 and abs(min_val) < 1e-6):
+                    report.append(f"    {key}: [{min_val:.2e}, {max_val:.2e}]")
+                else:
+                    report.append(f"    {key}: [{min_val:.6f}, {max_val:.6f}]")
         
         report.append("")
 

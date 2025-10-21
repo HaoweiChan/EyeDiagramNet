@@ -163,13 +163,13 @@ def validate_boundary_parameters(result: SimulationResult, param_set_names: List
                     break
             
             if not is_valid:
-                # For discrete parameters with large values (like 1e9), use scientific notation
-                if isinstance(param_value, (int, float)) and abs(param_value) >= 1e6:
-                    out_of_range_params.append(f"{param_name}={param_value:.6e} (allowed: {[f'{v:.6e}' if isinstance(v, (int, float)) and abs(v) >= 1e6 else v for v in values]})")
-                else:
-                    out_of_range_params.append(f"{param_name}={param_value} (allowed: {values})")
-                if debug:
-                    print(f"[DEBUG] OUT OF RANGE: {param_name}={param_value}")
+                 # For discrete parameters with large values (like 1e9), use scientific notation
+                 if isinstance(param_value, (int, float)) and abs(param_value) >= 1e6:
+                     out_of_range_params.append(f"{param_name}={param_value:.2e} (allowed: {[f'{v:.2e}' if isinstance(v, (int, float)) and abs(v) >= 1e6 else v for v in values]})")
+                 else:
+                     out_of_range_params.append(f"{param_name}={param_value} (allowed: {values})")
+                 if debug:
+                     print(f"[DEBUG] OUT OF RANGE: {param_name}={param_value}")
                 
         elif hasattr(param_def, 'low') and hasattr(param_def, 'high') and param_def.low is not None and param_def.high is not None:
             # LinearParameter or LogParameter
@@ -185,7 +185,7 @@ def validate_boundary_parameters(result: SimulationResult, param_set_names: List
             additional_values = getattr(param_def, 'additional_values', [])
             
             if debug:
-                print(f"[DEBUG] Checking {param_name}: value={param_value:.6e}, range=[{low_scaled:.6e}, {high_scaled:.6e}], additional={additional_values}")
+                 print(f"[DEBUG] Checking {param_name}: value={param_value:.2e}, range=[{low_scaled:.2e}, {high_scaled:.2e}], additional={additional_values}")
             
             # Check if value is within bounds OR in additional_values
             is_in_range = low_scaled <= param_value <= high_scaled
@@ -203,13 +203,13 @@ def validate_boundary_parameters(result: SimulationResult, param_set_names: List
                         break
             
             if not (is_in_range or is_in_additional):
-                if additional_values:
-                    add_vals_str = [f'{v:.6e}' if isinstance(v, (int, float)) else str(v) for v in additional_values]
-                    out_of_range_params.append(f"{param_name}={param_value:.6e} (range: [{low_scaled:.6e}, {high_scaled:.6e}], additional: {add_vals_str})")
-                else:
-                    out_of_range_params.append(f"{param_name}={param_value:.6e} (range: [{low_scaled:.6e}, {high_scaled:.6e}])")
-                if debug:
-                    print(f"[DEBUG] OUT OF RANGE: {param_name}={param_value:.6e}")
+                 if additional_values:
+                     add_vals_str = [f'{v:.2e}' if isinstance(v, (int, float)) else str(v) for v in additional_values]
+                     out_of_range_params.append(f"{param_name}={param_value:.2e} (range: [{low_scaled:.2e}, {high_scaled:.2e}], additional: {add_vals_str})")
+                 else:
+                     out_of_range_params.append(f"{param_name}={param_value:.2e} (range: [{low_scaled:.2e}, {high_scaled:.2e}])")
+                 if debug:
+                     print(f"[DEBUG] OUT OF RANGE: {param_name}={param_value:.2e}")
     
     is_valid = len(out_of_range_params) == 0
     if debug:
