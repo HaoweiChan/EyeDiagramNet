@@ -126,8 +126,8 @@ class ContourProcessor:
         seq_prefixes = {f.name.replace("_sequence_input.csv", ""): f for f in sequence_files}
         var_prefixes = {f.name.replace("_variations_variable.csv", ""): f for f in variation_files}
 
-        # Find matching prefixes
-        common_prefixes = set(seq_prefixes.keys()) & set(var_prefixes.keys())
+        # Find matching prefixes - handle cases where variation files have additional parameters
+        common_prefixes = self._find_matching_prefixes(seq_prefixes, var_prefixes)
 
         if not common_prefixes:
             raise FileNotFoundError(
@@ -137,8 +137,24 @@ class ContourProcessor:
             )
 
         # Get all matching file pairs
-        sequence_files_matched = [seq_prefixes[prefix] for prefix in sorted(common_prefixes)]
-        variation_files_matched = [var_prefixes[prefix] for prefix in sorted(common_prefixes)]
+        sequence_files_matched = []
+        variation_files_matched = []
+
+        for seq_prefix in sorted(common_prefixes):
+            sequence_files_matched.append(seq_prefixes[seq_prefix])
+
+            # Find corresponding variation files for this sequence prefix
+            seq_variation_files = []
+            for var_prefix in var_prefixes.keys():
+                if var_prefix == seq_prefix or var_prefix.startswith(seq_prefix + '_'):
+                    seq_variation_files.append(var_prefixes[var_prefix])
+
+            if seq_variation_files:
+                variation_files_matched.extend(seq_variation_files)
+            else:
+                # Fallback: use the original logic if no matches found
+                if seq_prefix in var_prefixes:
+                    variation_files_matched.append(var_prefixes[seq_prefix])
 
         rank_zero_info(f"Found {len(common_prefixes)} matching file pair(s)")
 
@@ -260,6 +276,28 @@ class ContourProcessor:
             rank_zero_info(f"  WARNING: Unused variation {prefix} features: {unmapped_var_final}")
         
         return mapping
+
+    def _find_matching_prefixes(self, seq_prefixes: Dict[str, Path], var_prefixes: Dict[str, Path]) -> List[str]:
+        """Find matching prefixes between sequence and variation files.
+
+        Handles cases where variation files have longer prefixes that start with sequence prefixes.
+        For example: seq='UCle_pattern2_cowos-s_8mil', var='UCle_pattern2_cowos-s_8mil_L=1800um_Wgr=2um'
+        """
+        common_prefixes = []
+
+        for seq_prefix in seq_prefixes.keys():
+            # First try exact match
+            if seq_prefix in var_prefixes:
+                common_prefixes.append(seq_prefix)
+                continue
+
+            # Try to find variation files that start with the sequence prefix
+            for var_prefix in var_prefixes.keys():
+                if var_prefix.startswith(seq_prefix + '_'):
+                    common_prefixes.append(seq_prefix)
+                    break
+
+        return common_prefixes
 
     def resolve_case(self, sequence_df: pd.DataFrame, variation_row: pd.Series) -> np.ndarray:
         """Resolve a single case by combining sequence multipliers with variation values."""
