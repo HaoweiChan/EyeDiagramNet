@@ -7,6 +7,45 @@ from lightning.pytorch.utilities.rank_zero import rank_zero_info
 from common.parameters import convert_legacy_param_names, to_new_param_name
 
 
+def _extract_param_suffix_from_pkl_name(pkl_stem: str) -> str:
+    """Extract parameter suffix from pickle filename.
+    
+    Examples:
+        "UCle_pattern2_cowos-s_8mil_L=1800um_Wgr=2um-1" -> "L=1800um_Wgr=2um"
+        "UCle_pattern2_cowos-s_8mil_L=1800um_Wgr=3p5um-10" -> "L=1800um_Wgr=3p5um"
+        "simple_name-5" -> ""
+    
+    Args:
+        pkl_stem: Pickle filename without extension
+        
+    Returns:
+        Parameter suffix string or empty string if no parameters found
+    """
+    # Split by dash to separate the case number suffix
+    parts = pkl_stem.rsplit("-", 1)
+    if len(parts) == 2:
+        base_name = parts[0]
+    else:
+        base_name = pkl_stem
+    
+    # Split by underscore and look for parts with "=" (parameter assignments)
+    underscore_parts = base_name.split("_")
+    
+    # Find where parameters start (first part containing "=")
+    param_start_idx = None
+    for i, part in enumerate(underscore_parts):
+        if "=" in part:
+            param_start_idx = i
+            break
+    
+    if param_start_idx is not None:
+        # Join all parameter parts
+        param_suffix = "_".join(underscore_parts[param_start_idx:])
+        return param_suffix
+    
+    return ""
+
+
 @dataclass
 class SimulationResult:
     """
@@ -206,22 +245,22 @@ def load_pickle_directory(label_dir: Path, dataset_name: str) -> dict:
                 continue
 
             # Try multiple methods to extract case ID
-            key = None
+            base_key = None
             
             # Method 1: Try to extract from snp_horiz path 
             try:
-                key = int(Path(snp_horiz_path).stem.replace("-", "_").split("_")[-1].split(".")[0])
+                base_key = int(Path(snp_horiz_path).stem.replace("-", "_").split("_")[-1].split(".")[0])
             except (ValueError, IndexError):
                 pass
             
             # Method 2: If method 1 fails, try to extract from pickle filename
-            if key is None:
+            if base_key is None:
                 try:
                     # Extract number from pickle filename
                     filename_parts = pkl_file.stem.replace("-", "_").split("_")
                     for part in reversed(filename_parts):
                         try:
-                            key = int(part)
+                            base_key = int(part)
                             break
                         except ValueError:
                             continue
@@ -229,13 +268,24 @@ def load_pickle_directory(label_dir: Path, dataset_name: str) -> dict:
                     pass
             
             # Method 3: If both methods fail, use a hash of the filename as fallback
-            if key is None:
+            if base_key is None:
                 import hashlib
-                key = int(hashlib.md5(pkl_file.name.encode()).hexdigest()[:8], 16)
+                base_key = int(hashlib.md5(pkl_file.name.encode()).hexdigest()[:8], 16)
                 rank_zero_info(f"Warning: Could not parse case ID from '{snp_horiz_path}' or '{pkl_file.name}'. "
-                      f"Using hash-based key: {key}")
+                      f"Using hash-based key: {base_key}")
             
-            # Check for duplicate keys
+            # Extract parameter suffix from pickle filename to create unique key
+            # Format: "...L=1800um_Wgr=2um-1.pkl" -> extract "L=1800um_Wgr=2um"
+            pkl_stem = pkl_file.stem  # Remove .pkl extension
+            param_suffix = _extract_param_suffix_from_pkl_name(pkl_stem)
+            
+            # Create unique key using base_key + param_suffix
+            if param_suffix:
+                key = f"{base_key}_{param_suffix}"
+            else:
+                key = base_key
+            
+            # Check for duplicate keys (should be rare now with unique suffixes)
             if key in labels:
                 rank_zero_info(f"Warning: Duplicate key {key} found for file {pkl_file.name}. "
                       f"Previous file will be overwritten.")
@@ -302,5 +352,13 @@ def load_pickle_directory(label_dir: Path, dataset_name: str) -> dict:
     
     # Print summary
     rank_zero_info(f"Successfully processed {processed_files} pickle files, skipped {skipped_files} files")
+    
+    # Check if we have any string keys (indicating unique case IDs with suffixes)
+    has_string_keys = any(isinstance(k, str) for k in labels.keys())
+    if has_string_keys:
+        rank_zero_info(f"Created {len(labels)} unique pickle keys with parameter suffixes")
+        # Show sample keys
+        sample_keys = list(labels.keys())[:3]
+        rank_zero_info(f"Sample pickle keys: {sample_keys}")
     
     return labels
