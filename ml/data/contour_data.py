@@ -284,8 +284,21 @@ class ContourDataModule(LightningDataModule):
                 labels = load_pickle_directory(self.label_dir, name)
                 
                 # Filter data to only include cases with labels
+                # Handle both integer and string case IDs (string format: "case_id_suffix")
                 label_keys = set(labels.keys())
-                keep_idx = [i for i, cid in enumerate(case_ids) if cid in label_keys]
+                keep_idx = []
+                for i, cid in enumerate(case_ids):
+                    # Check direct match first
+                    if cid in label_keys:
+                        keep_idx.append(i)
+                    # If cid is a string with suffix (e.g., "1_L=1800um_Wgr=2um"), try extracting base case_id
+                    elif isinstance(cid, str) and "_" in cid:
+                        try:
+                            base_case_id = int(cid.split("_")[0])
+                            if base_case_id in label_keys:
+                                keep_idx.append(i)
+                        except (ValueError, IndexError):
+                            pass
                 
                 if not keep_idx:
                     rank_zero_info(f"No matching labels for {name}; skipping.")
@@ -293,8 +306,31 @@ class ContourDataModule(LightningDataModule):
                 
                 contour_data_filtered = contour_data[keep_idx]
                 case_ids_filtered = [case_ids[i] for i in keep_idx]
-                sorted_keys = case_ids_filtered
-                sorted_vals = [labels[k] for k in sorted_keys]
+                
+                # Build sorted_keys and sorted_vals, handling string case IDs with suffixes
+                sorted_keys = []
+                sorted_vals = []
+                has_string_case_ids = any(isinstance(cid, str) for cid in case_ids_filtered)
+                
+                for cid in case_ids_filtered:
+                    # Try direct lookup first
+                    if cid in labels:
+                        sorted_keys.append(cid)
+                        sorted_vals.append(labels[cid])
+                    # If cid is string with suffix, extract base case_id for label lookup
+                    elif isinstance(cid, str) and "_" in cid:
+                        try:
+                            base_case_id = int(cid.split("_")[0])
+                            if base_case_id in labels:
+                                sorted_keys.append(cid)  # Keep full case_id with suffix
+                                sorted_vals.append(labels[base_case_id])  # Use base case_id for label lookup
+                        except (ValueError, IndexError):
+                            pass
+                
+                if has_string_case_ids:
+                    rank_zero_info(f"Processing {len(sorted_keys)} cases with unique case IDs (format: case_id_suffix)")
+                    sample_keys = sorted_keys[:min(3, len(sorted_keys))]
+                    rank_zero_info(f"Sample unique case IDs: {sample_keys}")
                 
                 # Align data by selecting entries with consistent length
                 lengths = [len(v[0]) for v in sorted_vals if v and v[0] is not None]

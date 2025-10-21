@@ -410,18 +410,75 @@ class ContourProcessor:
         else:
             return [0.0, 0.0, 0.0]
 
-    def process(self, data_dir: Union[str, Path]) -> Tuple[np.ndarray, List[int]]:
-        """Process sequence and variation files to create resolved contour data."""
+    def _extract_parameter_suffix(self, variation_file: Path) -> str:
+        """Extract parameter suffix from variation filename for unique case ID creation.
+        
+        Example:
+            Input: "UCle_pattern2_cowos-s_8mil_L=1800um_Wgr=2um_variations_variable.csv"
+            Output: "L=1800um_Wgr=2um"
+        
+        Args:
+            variation_file: Path to variation file
+            
+        Returns:
+            Parameter suffix string (e.g., "L=1800um_Wgr=2um")
+        """
+        filename = variation_file.name
+        
+        # Remove the "_variations_variable.csv" suffix
+        if "_variations_variable.csv" in filename:
+            base_part = filename.replace("_variations_variable.csv", "")
+            
+            # Split by underscore and find where parameters start (after base pattern)
+            # Base pattern is typically "prefix_pattern_type_layer" (e.g., "UCle_pattern2_cowos-s_8mil")
+            # Parameters come after that (e.g., "L=1800um_Wgr=2um")
+            parts = base_part.split("_")
+            
+            # Look for the first part that contains "=" (indicates parameter)
+            param_start_idx = None
+            for i, part in enumerate(parts):
+                if "=" in part:
+                    param_start_idx = i
+                    break
+            
+            if param_start_idx is not None:
+                # Join all parts from the parameter start
+                suffix = "_".join(parts[param_start_idx:])
+            else:
+                # No parameters found, use empty suffix
+                suffix = ""
+        else:
+            suffix = ""
+        
+        return suffix
+
+    def process(self, data_dir: Union[str, Path]) -> Tuple[np.ndarray, List[Union[int, str]]]:
+        """Process sequence and variation files to create resolved contour data.
+        
+        Returns:
+            Tuple of (resolved_data, case_ids) where case_ids are strings formatted as 
+            "case_id_suffix" when multiple variation files exist, or integers when only one file exists.
+        """
         sequence_files, variation_files = self.locate_files(data_dir)
 
         # Use the first sequence file (typically there's only one)
         sequence_df = self.parse_sequence(sequence_files[0])
 
-        # Parse all variation files and concatenate them
+        # Extract parameter suffixes from variation filenames for unique case ID creation
+        variation_file_suffixes = {}
+        for variation_file in variation_files:
+            suffix = self._extract_parameter_suffix(variation_file)
+            variation_file_suffixes[variation_file] = suffix
+
+        # Parse all variation files and track their source file
         variation_dfs = []
+        variation_sources = []  # Track which file each row came from
+        
         for variation_file in variation_files:
             variation_df = self.parse_variation(variation_file)
             variation_dfs.append(variation_df)
+            # Store the file path for each row in this dataframe
+            variation_sources.extend([variation_file] * len(variation_df))
 
         # Concatenate all variation dataframes
         if variation_dfs:
@@ -435,9 +492,20 @@ class ContourProcessor:
 
         resolved_cases = []
         case_ids = []
+        use_suffixes = len(variation_files) > 1  # Only add suffixes if multiple variation files
 
-        for _, var_row in combined_variation_df.iterrows():
-            case_id = int(var_row['case_id'])
+        for idx, var_row in enumerate(combined_variation_df.iterrows()):
+            _, var_row = var_row  # Unpack tuple from iterrows
+            original_case_id = int(var_row['case_id'])
+            
+            # Create unique case ID if multiple variation files
+            if use_suffixes:
+                source_file = variation_sources[idx]
+                suffix = variation_file_suffixes[source_file]
+                case_id = f"{original_case_id}_{suffix}"
+            else:
+                case_id = original_case_id
+            
             resolved_case = self.resolve_case(sequence_df, var_row)
             resolved_cases.append(resolved_case)
             case_ids.append(case_id)
@@ -445,7 +513,15 @@ class ContourProcessor:
         # Stack all cases
         resolved_data = np.stack(resolved_cases) if resolved_cases else np.array([])
 
-        rank_zero_info(f"Processed {len(resolved_cases)} cases from {len(variation_files)} variation file(s) with shape: {resolved_data.shape}")
+        if use_suffixes:
+            rank_zero_info(f"Processed {len(resolved_cases)} cases from {len(variation_files)} variation file(s) with shape: {resolved_data.shape}")
+            rank_zero_info(f"Created unique case IDs with suffixes from variation file parameters")
+            # Show sample case IDs for verification
+            sample_case_ids = case_ids[:min(3, len(case_ids))]
+            rank_zero_info(f"Sample case IDs: {sample_case_ids}")
+        else:
+            rank_zero_info(f"Processed {len(resolved_cases)} cases from {len(variation_files)} variation file(s) with shape: {resolved_data.shape}")
+        
         return resolved_data, case_ids
     
     def get_feature_info(self) -> Dict[str, int]:
