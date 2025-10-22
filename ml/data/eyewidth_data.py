@@ -639,7 +639,7 @@ class InferenceTraceSeqEWDataloader(LightningDataModule):
         
         # Validate dimensions match
         validate_boundary_dimensions(boundary_values, scalers, self.config_keys)
-        rank_zero_info(f"✓ Boundary dimensions validated: {len(boundary_values)} parameters")
+        rank_zero_info(f"Boundary dimensions validated: {len(boundary_values)} parameters")
 
         # Handle SNP loading based on ignore_snp flag
         if self.ignore_snp:

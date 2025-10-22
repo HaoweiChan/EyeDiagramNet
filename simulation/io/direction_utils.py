@@ -118,7 +118,7 @@ if __name__ == "__main__":
                 n_blocks = n_lines // block_size
                 assert n_blocks % 2 == 0, f"Block size {block_size} results in odd number of blocks: {n_blocks}"
         
-        print("  ✓ All block size tests passed!")
+        print("  All block size tests passed!")
         
         # Test generate_directions function
         print("\nTesting generate_directions function:")
@@ -140,7 +140,7 @@ if __name__ == "__main__":
             assert len(directions) == n_lines, f"Expected length {n_lines}, got: {len(directions)}"
             print(f"  n_lines={n_lines}: length={len(directions)}, unique_values={np.unique(directions)}")
         
-        print("  ✓ All direction generation tests passed!")
+        print("  All direction generation tests passed!")
         
         # Test consistency
         print("\nTesting consistency:")
@@ -153,7 +153,7 @@ if __name__ == "__main__":
         directions2 = generate_directions(48, enable_direction=True)
         
         assert np.array_equal(directions1, directions2), "Results should be identical with same seed"
-        print(f"  ✓ Consistency test passed: {directions1[:10]}...")
+        print(f"  Consistency test passed: {directions1[:10]}...")
         
         # Test that different seeds produce different results
         np.random.seed(42)
@@ -163,7 +163,7 @@ if __name__ == "__main__":
         directions2 = generate_directions(48, enable_direction=True)
         
         assert not np.array_equal(directions1, directions2), "Results should be different with different seeds"
-        print(f"  ✓ Randomness test passed: different results with different seeds")
+        print(f"  Randomness test passed: different results with different seeds")
         
         print("\n" + "=" * 50)
         print("All tests passed! Direction generation utilities are working correctly.")

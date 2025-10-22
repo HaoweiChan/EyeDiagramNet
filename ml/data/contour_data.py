@@ -679,12 +679,12 @@ class ContourDataModule(LightningDataModule):
         if np.any(np.isnan(eye_widths_flat)):
             n_nan = np.sum(np.isnan(eye_widths_flat))
             issues_found.append(f"Found {n_nan} NaN values in eye_widths")
-            rank_zero_info(f"  ⚠️  WARNING: {n_nan} NaN values found!")
+            rank_zero_info(f"  WARNING: {n_nan} NaN values found!")
         
         if np.any(np.isinf(eye_widths_flat)):
             n_inf = np.sum(np.isinf(eye_widths_flat))
             issues_found.append(f"Found {n_inf} Inf values in eye_widths")
-            rank_zero_info(f"  ⚠️  WARNING: {n_inf} Inf values found!")
+            rank_zero_info(f"  WARNING: {n_inf} Inf values found!")
         
         valid_eye_widths = eye_widths_flat[~np.isnan(eye_widths_flat) & ~np.isinf(eye_widths_flat)]
         if len(valid_eye_widths) > 0:
@@ -698,7 +698,7 @@ class ContourDataModule(LightningDataModule):
             
             if ew_std < 1e-6:
                 issues_found.append(f"Eye widths have near-zero variance (std={ew_std:.2e})")
-                rank_zero_info(f"  ⚠️  WARNING: Very low variance (std={ew_std:.2e}) - all targets nearly identical!")
+                rank_zero_info(f"  WARNING: Very low variance (std={ew_std:.2e}) - all targets nearly identical!")
         
         # Check each variable
         rank_zero_info(f"\n[Variable Data] Checking {len(variable_data)} variables:")
@@ -750,7 +750,7 @@ class ContourDataModule(LightningDataModule):
                     is_valid = False
                 
                 # Report statistics
-                status = "✓ VALID" if is_valid else "✗ EXCLUDED"
+                status = "[VALID]" if is_valid else "[EXCLUDED]"
                 issue_str = f" [{', '.join(var_issues)}]" if var_issues else f" [{status}]"
                 rank_zero_info(f"  {var_name}: mean={var_mean:.6f}, std={var_std:.6f}, range=[{var_min:.6f}, {var_max:.6f}]{issue_str}")
                 
@@ -758,7 +758,7 @@ class ContourDataModule(LightningDataModule):
                 if is_valid:
                     valid_variables.append(var_name)
             else:
-                rank_zero_info(f"  {var_name}: ⚠️  NO VALID VALUES (all NaN/Inf) - EXCLUDED")
+                rank_zero_info(f"  {var_name}: NO VALID VALUES (all NaN/Inf) - EXCLUDED")
                 issues_found.append(f"Variable '{var_name}' has no valid values")
                 is_valid = False
         
@@ -793,36 +793,101 @@ class ContourDataModule(LightningDataModule):
             rank_zero_info(f"  Unique samples: {len(unique_features)}")
             
             if n_duplicates > 0:
-                rank_zero_info(f"  ⚠️  WARNING: Found {n_duplicates} duplicate sample groups ({n_total_duplicate_rows} total duplicates)")
+                rank_zero_info(f"  WARNING: Found {n_duplicates} duplicate sample groups ({n_total_duplicate_rows} total duplicates)")
                 issues_found.append(f"Found {n_duplicates} groups of duplicate samples (after filtering constant variables)")
                 
                 # Show first few duplicate groups
                 dup_groups = counts[counts > 1][:3]
                 rank_zero_info(f"  First few duplicate counts: {dup_groups}")
             else:
-                rank_zero_info(f"  ✓ No duplicates found")
+                rank_zero_info(f"  No duplicates found")
         
-        # Final summary
+        # Final summary with categorization
         rank_zero_info(f"\n{'='*60}")
         rank_zero_info(f"VALIDATION SUMMARY:")
-        rank_zero_info(f"  Valid variables for GP: {len(valid_variables)}/{len(variable_data)}")
-        rank_zero_info(f"  Excluded variables: {len(variable_data) - len(valid_variables)}")
         
-        if len(variable_data) > len(valid_variables):
-            excluded = [v for v in variable_data.keys() if v not in valid_variables]
-            rank_zero_info(f"  Excluded list: {excluded}")
+        # Categorize valid and excluded variables
+        boundary_vars = [v for v in variable_data.keys() if any(x in v for x in ['R_', 'C_', 'L_', 'pulse', 'bits', 'vmask'])]
+        spatial_vars = [v for v in variable_data.keys() if any(x in v for x in ['W_', 'H_', 'L_l'])]
+        other_vars = [v for v in variable_data.keys() if v not in boundary_vars and v not in spatial_vars]
+        
+        valid_boundary = [v for v in valid_variables if v in boundary_vars]
+        valid_spatial = [v for v in valid_variables if v in spatial_vars]
+        valid_other = [v for v in valid_variables if v in other_vars]
+        
+        excluded_boundary = [v for v in boundary_vars if v not in valid_variables]
+        excluded_spatial = [v for v in spatial_vars if v not in valid_variables]
+        excluded_other = [v for v in other_vars if v not in valid_variables]
+        
+        rank_zero_info(f"  Valid variables for GP: {len(valid_variables)}/{len(variable_data)}")
+        rank_zero_info(f"    - Boundary params: {len(valid_boundary)} valid, {len(excluded_boundary)} excluded")
+        if valid_boundary:
+            rank_zero_info(f"      Valid: {valid_boundary}")
+        if excluded_boundary:
+            rank_zero_info(f"      Excluded: {excluded_boundary}")
+        rank_zero_info(f"    - Spatial params: {len(valid_spatial)} valid, {len(excluded_spatial)} excluded")
+        if valid_spatial:
+            rank_zero_info(f"      Valid: {valid_spatial}")
+        if excluded_spatial:
+            rank_zero_info(f"      Excluded: {excluded_spatial}")
+        if other_vars:
+            rank_zero_info(f"    - Other params: {len(valid_other)} valid, {len(excluded_other)} excluded")
+            if valid_other:
+                rank_zero_info(f"      Valid: {valid_other}")
+            if excluded_other:
+                rank_zero_info(f"      Excluded: {excluded_other}")
         
         if issues_found:
-            rank_zero_info(f"\n⚠️  FOUND {len(issues_found)} ISSUES (auto-filtered):")
+            rank_zero_info(f"\nFOUND {len(issues_found)} ISSUES (auto-filtered):")
             for i, issue in enumerate(issues_found, 1):
                 rank_zero_info(f"  {i}. {issue}")
-            rank_zero_info(f"\n💡 Problematic variables have been automatically excluded from GP training.")
+            rank_zero_info(f"\nProblematic variables have been automatically excluded from GP training.")
+            
+            # Check if only boundary variables were excluded (expected with --fixed-config)
+            if excluded_boundary and not excluded_spatial:
+                rank_zero_info(f"\nNOTE: Boundary parameters excluded due to zero variance.")
+                rank_zero_info(f"   This is expected when using --fixed-config for data collection.")
+                rank_zero_info(f"   GP model will train on spatial variables ({len(valid_spatial)} variables) to learn contour relationships.")
         else:
-            rank_zero_info(f"\n✓ No critical data quality issues detected")
+            rank_zero_info(f"\nNo critical data quality issues detected")
         
         if len(valid_variables) == 0:
-            rank_zero_info(f"\n❌ ERROR: No valid variables remaining after filtering!")
-            rank_zero_info(f"   Cannot proceed with GP training.")
+            rank_zero_info(f"\nERROR: No valid variables remaining after filtering!")
+            rank_zero_info(f"   Cannot proceed with GP training - need at least 1 variable with variation.")
+            rank_zero_info(f"\nDEBUGGING INFO:")
+            rank_zero_info(f"   Total variables checked: {len(variable_data)}")
+            rank_zero_info(f"   Variable names: {list(variable_data.keys())}")
+            
+            # Categorize variables by type (heuristic based on naming)
+            boundary_vars = [v for v in variable_data.keys() if any(x in v for x in ['R_', 'C_', 'L_', 'pulse', 'bits', 'vmask'])]
+            spatial_vars = [v for v in variable_data.keys() if any(x in v for x in ['W_', 'H_', 'L_l'])]
+            other_vars = [v for v in variable_data.keys() if v not in boundary_vars and v not in spatial_vars]
+            
+            rank_zero_info(f"\nVariable Categories:")
+            rank_zero_info(f"   Boundary params: {boundary_vars}")
+            rank_zero_info(f"   Spatial params: {spatial_vars}")
+            rank_zero_info(f"   Other params: {other_vars}")
+            
+            # Check variance for each category
+            zero_var_boundary = [v for v in boundary_vars if v in variable_data and 
+                                np.std(variable_data[v].flatten()[~np.isnan(variable_data[v].flatten()) & ~np.isinf(variable_data[v].flatten())]) < 1e-10]
+            zero_var_spatial = [v for v in spatial_vars if v in variable_data and 
+                               np.std(variable_data[v].flatten()[~np.isnan(variable_data[v].flatten()) & ~np.isinf(variable_data[v].flatten())]) < 1e-10]
+            
+            if zero_var_boundary and zero_var_spatial:
+                rank_zero_info(f"\nALL variables have zero variance:")
+                rank_zero_info(f"   Boundary (zero variance): {zero_var_boundary}")
+                rank_zero_info(f"   Spatial (zero variance): {zero_var_spatial}")
+                rank_zero_info(f"\nPOSSIBLE CAUSES:")
+                rank_zero_info(f"   1. Dataset has only 1 unique sample")
+                rank_zero_info(f"   2. Wrong dataset/directory loaded")
+                rank_zero_info(f"   3. Data processing error")
+            elif zero_var_boundary and not zero_var_spatial:
+                rank_zero_info(f"\nBoundary variables have zero variance (expected with --fixed-config):")
+                rank_zero_info(f"   Fixed boundary params: {zero_var_boundary}")
+                rank_zero_info(f"   BUT: Spatial variables ALSO excluded!")
+                rank_zero_info(f"\nLIKELY CAUSE: Spatial variables also have issues")
+                rank_zero_info(f"   Check if spatial data was generated with variation")
         
         rank_zero_info(f"{'='*60}\n")
         

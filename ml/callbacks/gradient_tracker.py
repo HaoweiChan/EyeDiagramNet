@@ -129,11 +129,11 @@ class GradientTracker(Callback):
             # Add warning if this might indicate a problem
             if len(unused_params) > total_params * 0.1:  # More than 10% unused
                 rank_zero_info(
-                    f"⚠️  Warning: {len(unused_params)/total_params:.1%} of parameters "
+                    f"Warning: {len(unused_params)/total_params:.1%} of parameters "
                     f"are not receiving gradients - this might indicate model architecture issues"
                 )
         else:
-            rank_zero_info(f"Step {trainer.global_step} - All {total_params} parameters received gradients ✅")
+            rank_zero_info(f"Step {trainer.global_step} - All {total_params} parameters received gradients")
             
     def on_fit_start(self, trainer: Trainer, pl_module: LightningModule) -> None:
         """Log callback initialization."""

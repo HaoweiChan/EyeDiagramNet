@@ -552,7 +552,7 @@ if __name__ == "__main__":
         print(f"Y2S - Relative error: {rel_error_ys:.2e}")
         assert rel_error_ys < 1e-12, f"Y2S conversion error too large: {rel_error_ys}"
         
-        print("✓ All network parameter conversion tests passed!")
+        print("All network parameter conversion tests passed!")
     
     def test_linear_algebra_functions():
         """Test linear algebra utility functions."""
@@ -600,7 +600,7 @@ if __name__ == "__main__":
         print(f"rsolve verification - Relative error: {verify_error:.2e}")
         assert verify_error < 1e-12, f"rsolve verification failed: {verify_error}"
         
-        print("✓ Linear algebra function tests passed!")
+        print("Linear algebra function tests passed!")
     
     def test_nudging_functions():
         """Test matrix nudging functions against scikit-rf."""
@@ -661,9 +661,9 @@ if __name__ == "__main__":
         
         # The implementations should be very similar but may have minor differences
         if nudge_rel_error < 1e-12:
-            print("✓ Perfect match with scikit-rf nudge_eig!")
+            print("Perfect match with scikit-rf nudge_eig!")
         elif nudge_rel_error < 1e-6:
-            print("✓ Excellent match with scikit-rf nudge_eig (minor numerical differences)")
+            print("Excellent match with scikit-rf nudge_eig (minor numerical differences)")
         else:
             print("Note: Different nudging strategies may produce different but equally valid results")
         
@@ -675,7 +675,7 @@ if __name__ == "__main__":
             print(f"Matrix {i}: Cond numbers - Original: {cond_orig:.2e}, Ours: {cond_ours:.2e}, scikit-rf: {cond_skrf:.2e}")
             assert cond_ours < cond_orig * 0.1, f"Our nudging didn't improve conditioning enough for matrix {i}"
         
-        print("✓ Matrix nudging function tests passed!")
+        print("Matrix nudging function tests passed!")
     
     def test_roundtrip_conversions():
         """Test roundtrip parameter conversions for consistency."""
@@ -714,7 +714,7 @@ if __name__ == "__main__":
         print(f"S->Y->S roundtrip relative error: {roundtrip_error_y:.2e}")
         assert roundtrip_error_y < 1e-12, f"S->Y->S roundtrip error too large: {roundtrip_error_y}"
         
-        print("✓ All roundtrip conversion tests passed!")
+        print("All roundtrip conversion tests passed!")
     
     def test_numba_performance():
         """Test runtime performance with and without numba."""
@@ -791,19 +791,19 @@ if __name__ == "__main__":
             
             # Performance comparison
             speedup = python_time / numba_time
-            print(f"\n📊 Performance Summary:")
+            print(f"\nPerformance Summary:")
             print(f"Numba time:      {numba_time:.4f}s")
             print(f"Python time:     {python_time:.4f}s")
             print(f"Speedup factor:  {speedup:.2f}x")
             
             if speedup > 2.0:
-                print(f"🚀 Numba provides significant speedup ({speedup:.1f}x faster)!")
+                print(f"Numba provides significant speedup ({speedup:.1f}x faster)!")
             elif speedup > 1.2:
-                print(f"✅ Numba provides moderate speedup ({speedup:.1f}x faster)")
+                print(f"Numba provides moderate speedup ({speedup:.1f}x faster)")
             elif speedup > 0.8:
-                print(f"⚖️  Numba performance similar to Python (±20%)")
+                print(f"Numba performance similar to Python (±20%)")
             else:
-                print(f"⚠️  Numba is slower than Python ({1/speedup:.1f}x slower)")
+                print(f"WARNING: Numba is slower than Python ({1/speedup:.1f}x slower)")
                 print("   This could be due to compilation overhead or small dataset size")
             
             # Additional analysis
@@ -818,7 +818,7 @@ if __name__ == "__main__":
             python_time = time.perf_counter() - start_time
             print(f"Pure Python rsolve time: {python_time:.4f} seconds")
         
-        print("✓ Numba performance tests completed!")
+        print("Numba performance tests completed!")
         
         # Additional test: Performance scaling with problem size
         if NUMBA_AVAILABLE:
@@ -854,17 +854,17 @@ if __name__ == "__main__":
                 speedup = python_time / numba_time
                 print(f"{nfreq:3d}x{nports}x{nports}      | {numba_time:8.4f}s | {python_time:9.4f}s | {speedup:6.2f}x")
         
-        print("✓ Performance scaling analysis completed!")
+        print("Performance scaling analysis completed!")
         
         if NUMBA_AVAILABLE:
-            print(f"\n🎯 NUMBA PERFORMANCE CONCLUSIONS:")
-            print(f"✅ Numba provides consistent 3-7x speedup across problem sizes")
-            print(f"✅ Speedup is most significant for smaller matrices (6-7x)")
-            print(f"✅ Still provides good speedup for larger problems (3-4x)")
-            print(f"✅ Results are numerically identical to pure Python")
-            print(f"💡 Recommendation: Keep numba enabled for production use")
+            print(f"\nNUMBA PERFORMANCE CONCLUSIONS:")
+            print(f"- Numba provides consistent 3-7x speedup across problem sizes")
+            print(f"- Speedup is most significant for smaller matrices (6-7x)")
+            print(f"- Still provides good speedup for larger problems (3-4x)")
+            print(f"- Results are numerically identical to pure Python")
+            print(f"RECOMMENDATION: Keep numba enabled for production use")
         else:
-            print(f"ℹ️  Install numba for 3-7x performance improvement: pip install numba")
+            print(f"INFO: Install numba for 3-7x performance improvement: pip install numba")
     
     def run_all_tests():
         """Run all test functions."""
@@ -879,11 +879,11 @@ if __name__ == "__main__":
             test_numba_performance()
             
             print("\n" + "=" * 60)
-            print("🎉 ALL TESTS PASSED! Functions match scikit-rf behavior.")
+            print("ALL TESTS PASSED! Functions match scikit-rf behavior.")
             print("=" * 60)
             
         except Exception as e:
-            print(f"\n❌ TEST FAILED: {e}")
+            print(f"\nTEST FAILED: {e}")
             import traceback
             traceback.print_exc()
             sys.exit(1)
