@@ -829,6 +829,9 @@ class GaussianProcessModule(LightningModule):
         self.likelihood = None
         self.input_dim = None
         
+        # Variable scaler for numerical stability (loaded from datamodule in setup)
+        self.var_scaler = None
+        
         # Store variable names for consistent ordering
         self.variable_names = None
         
@@ -849,9 +852,14 @@ class GaussianProcessModule(LightningModule):
         self.validation_step_outputs = []
     
     def setup(self, stage: Optional[str] = None):
-        """Initialize GP model with first batch of data."""
-        # Model will be initialized on first batch in training_step
-        pass
+        """Initialize GP model and retrieve scaler from datamodule."""
+        # Retrieve variable scaler from datamodule for inference
+        if hasattr(self.trainer, 'datamodule') and hasattr(self.trainer.datamodule, 'var_scaler'):
+            self.var_scaler = self.trainer.datamodule.var_scaler
+            rank_zero_info("Loaded variable scaler from datamodule for GP inference")
+        else:
+            self.var_scaler = None
+            rank_zero_info("Warning: No variable scaler found in datamodule. GP predictions may be numerically unstable.")
     
     def _initialize_gp_model(self, x: torch.Tensor, y: torch.Tensor):
         """Initialize GP model with first batch of data."""
@@ -1010,15 +1018,17 @@ class GaussianProcessModule(LightningModule):
                 # Store outputs for plotting
                 self._collect_step_outputs(predictions, y, uncertainties, variables)
         
-        # Plot contours periodically during validation
-        if stage == "val" and batch_idx == 0 and self.save_contour_plots:
-            self._plot_contours_if_needed(variables)
-        
         return loss
     
     def on_validation_epoch_end(self):
         """Compute epoch-level validation metrics and generate contour plots."""
         log_metrics = self.compute_metrics("val")
+        
+        # Generate contour plots
+        if self.validation_step_outputs:
+            # Use variables from first validation batch for fixed values
+            first_batch_vars = self.validation_step_outputs[0]['variables']
+            self._plot_contours_if_needed(first_batch_vars)
         
         # Clear outputs
         self.validation_step_outputs.clear()
@@ -1042,32 +1052,146 @@ class GaussianProcessModule(LightningModule):
     def _plot_contours_if_needed(self, variables: Dict[str, torch.Tensor]):
         """Plot contours during validation."""
         if not self.logger:
+            rank_zero_info("Warning: No logger available for contour plotting")
             return
         
         try:
             # Get contour pair (reuse ContourModule logic)
             contour_pair = self._get_contour_pair_for_plotting()
             if contour_pair is None:
+                rank_zero_info("Warning: No valid contour pair found for plotting")
                 return
             
             var1_name, var2_name = contour_pair
+            rank_zero_info(f"Plotting contour for {var1_name} vs {var2_name}")
             
-            # Get fixed values (use first sample from batch)
+            # Get fixed values (use first sample from batch or validation outputs)
             fixed_vars = {}
             for name, tensor in variables.items():
                 if name in self.registry:
-                    fixed_vars[name] = tensor[0].item() if tensor.dim() > 0 else tensor.item()
+                    if isinstance(tensor, torch.Tensor):
+                        fixed_vars[name] = tensor[0].item() if tensor.dim() > 0 else tensor.item()
+                    else:
+                        # Already a scalar value
+                        fixed_vars[name] = tensor
             
-            # Generate contour plot
-            fig = self._plot_contour(var1_name, var2_name, fixed_vars)
+            # Prepare error data from validation outputs
+            error_data = self._prepare_error_data(var1_name, var2_name)
+            
+            # Generate contour plot with error analysis
+            fig = self._plot_contour(var1_name, var2_name, fixed_vars, error_data=error_data)
             
             if fig is not None:
                 plot_name = f'contours_gp/{var1_name}_vs_{var2_name}'
                 self.logger.experiment.add_image(plot_name, image_to_buffer(fig), self.current_epoch)
                 plt.close(fig)
+                rank_zero_info(f"Successfully logged contour plot: {plot_name}")
+            else:
+                rank_zero_info(f"Warning: _plot_contour returned None for {var1_name} vs {var2_name}")
                 
         except Exception as e:
             rank_zero_info(f"Error in GP contour plotting: {e}")
+            import traceback
+            rank_zero_info(traceback.format_exc())
+    
+    def _prepare_error_data(self, var1_name: str, var2_name: str) -> Optional[Dict]:
+        """Prepare error data from validation outputs for error analysis plot."""
+        if not self.validation_step_outputs:
+            rank_zero_info(f"Warning: No validation_step_outputs available for error data")
+            return None
+        
+        try:
+            # Collect all validation data
+            var1_values = []
+            var2_values = []
+            errors = []
+            
+            rank_zero_info(f"Preparing error data from {len(self.validation_step_outputs)} validation batches")
+            
+            for step_output in self.validation_step_outputs:
+                predictions = step_output['predictions']
+                targets = step_output['targets']
+                variables = step_output['variables']
+                
+                # Check if both variables are present in this batch
+                if var1_name not in variables or var2_name not in variables:
+                    rank_zero_info(f"Warning: {var1_name} or {var2_name} not found in batch variables: {list(variables.keys())}")
+                    continue
+                
+                # Extract variable values
+                var1_vals = variables[var1_name].numpy()
+                var2_vals = variables[var2_name].numpy()
+                
+                # Compute errors (predictions - targets)
+                batch_errors = (predictions - targets).numpy()
+                
+                # Flatten and collect
+                var1_values.extend(var1_vals.flatten())
+                var2_values.extend(var2_vals.flatten())
+                errors.extend(batch_errors.flatten())
+            
+            if len(errors) > 0:
+                rank_zero_info(f"Collected {len(errors)} error samples for {var1_name} vs {var2_name}")
+                return {
+                    'var1_values': np.array(var1_values),
+                    'var2_values': np.array(var2_values),
+                    'errors': np.array(errors)
+                }
+            else:
+                rank_zero_info(f"Warning: No error samples collected for {var1_name} vs {var2_name}")
+                return None
+                
+        except Exception as e:
+            rank_zero_info(f"Warning: Could not prepare error data: {e}")
+            import traceback
+            rank_zero_info(traceback.format_exc())
+            return None
+    
+    def _prepare_train_data(self, var1_name: str, var2_name: str) -> Optional[Dict]:
+        """Prepare training data points for visualization."""
+        if not hasattr(self, 'training_data') or self.training_data is None:
+            # Try to get from GP model's training data
+            if self.gp_model is not None and hasattr(self.gp_model, 'train_inputs'):
+                try:
+                    # Get training inputs
+                    train_x = self.gp_model.train_inputs[0].cpu().numpy()
+                    
+                    # Find indices for var1 and var2
+                    if self.variable_names is None:
+                        return None
+                    
+                    try:
+                        var1_idx = self.variable_names.index(var1_name)
+                        var2_idx = self.variable_names.index(var2_name)
+                    except ValueError:
+                        return None
+                    
+                    # Extract variable values
+                    var1_vals = train_x[:, var1_idx]
+                    var2_vals = train_x[:, var2_idx]
+                    
+                    # Inverse transform to get unscaled values
+                    if self.var_scaler is not None:
+                        # Create full tensor with all variables at zero, then set var1 and var2
+                        full_data = np.zeros((len(var1_vals), len(self.variable_names)))
+                        full_data[:, var1_idx] = var1_vals
+                        full_data[:, var2_idx] = var2_vals
+                        
+                        # Inverse transform
+                        unscaled = self.var_scaler.inverse_transform(torch.from_numpy(full_data)).numpy()
+                        var1_vals = unscaled[:, var1_idx]
+                        var2_vals = unscaled[:, var2_idx]
+                    
+                    return {
+                        'var1_values': var1_vals,
+                        'var2_values': var2_vals
+                    }
+                    
+                except Exception as e:
+                    rank_zero_info(f"Warning: Could not prepare training data: {e}")
+                    return None
+        
+        return None
     
     def _get_contour_pair_for_plotting(self) -> Optional[Tuple[str, str]]:
         """Get contour pair for plotting (same logic as ContourModule)."""
@@ -1086,15 +1210,36 @@ class GaussianProcessModule(LightningModule):
             if valid_pairs:
                 return random.choice(valid_pairs)
         else:
-            # Randomly sample from all variables with bounds
-            variables_with_bounds = [
-                name for name in self.registry.variable_names
-                if self.registry.get_bounds(name) is not None
-            ]
+            # Auto-select variables: prefer spatial variables over boundary variables
+            spatial_vars = []
+            boundary_vars = []
             
-            if len(variables_with_bounds) >= 2:
-                var1_name, var2_name = random.sample(variables_with_bounds, 2)
-                rank_zero_info(f"GP auto-selected contour pair: {var1_name} vs {var2_name}")
+            for name in self.registry.variable_names:
+                if self.registry.get_bounds(name) is not None:
+                    var_info = self.registry.get_variable(name)
+                    if var_info and var_info.var_type == 'spatial':
+                        spatial_vars.append(name)
+                    else:
+                        # Treat as boundary if not explicitly spatial
+                        boundary_vars.append(name)
+            
+            # Prefer two spatial variables
+            if len(spatial_vars) >= 2:
+                var1_name, var2_name = random.sample(spatial_vars, 2)
+                rank_zero_info(f"GP auto-selected spatial variables: {var1_name} vs {var2_name}")
+                return (var1_name, var2_name)
+            
+            # Mix spatial and boundary if only one spatial
+            if len(spatial_vars) == 1 and len(boundary_vars) >= 1:
+                var1_name = spatial_vars[0]
+                var2_name = random.choice(boundary_vars)
+                rank_zero_info(f"GP auto-selected mixed variables: {var1_name} (spatial) vs {var2_name} (boundary)")
+                return (var1_name, var2_name)
+            
+            # Fall back to boundary variables only
+            if len(boundary_vars) >= 2:
+                var1_name, var2_name = random.sample(boundary_vars, 2)
+                rank_zero_info(f"GP auto-selected boundary variables: {var1_name} vs {var2_name}")
                 return (var1_name, var2_name)
         
         return None
@@ -1104,9 +1249,10 @@ class GaussianProcessModule(LightningModule):
         var1_name: str,
         var2_name: str,
         fixed_variables: Dict[str, float],
+        error_data: Optional[Dict] = None,
         resolution: int = 20
     ) -> Optional[plt.Figure]:
-        """Generate contour plot using GP predictions."""
+        """Generate contour plot using GP predictions with error analysis."""
         try:
             # Get variable bounds
             var1_bounds = self.registry.get_bounds(var1_name)
@@ -1133,6 +1279,10 @@ class GaussianProcessModule(LightningModule):
                 else:
                     x_test[:, i] = fixed_variables.get(var_name, 0.0)
             
+            # Scale inputs for GP numerical stability
+            if self.var_scaler is not None:
+                x_test = self.var_scaler.transform(x_test)
+            
             # Predict
             self.gp_model.eval()
             self.likelihood.eval()
@@ -1142,7 +1292,10 @@ class GaussianProcessModule(LightningModule):
                 predictions = output.mean.cpu().numpy().reshape(resolution, resolution)
                 uncertainties = output.variance.sqrt().cpu().numpy().reshape(resolution, resolution)
             
-            # Create plot using visualization module
+            # Prepare training data for visualization
+            train_data = self._prepare_train_data(var1_name, var2_name)
+            
+            # Create plot using visualization module with uncertainty and error analysis
             fig = plot_contour_2d(
                 var1_name=var1_name,
                 var2_name=var2_name,
@@ -1150,7 +1303,9 @@ class GaussianProcessModule(LightningModule):
                 var2_grid=torch.from_numpy(var2_mesh),
                 predictions=torch.from_numpy(predictions),
                 spec_threshold=self.spec_threshold,
-                error_data=None  # GP doesn't have validation error data like ContourModule
+                error_data=error_data,
+                uncertainty_grid=torch.from_numpy(uncertainties),
+                train_data=train_data
             )
             
             return fig
@@ -1173,6 +1328,10 @@ class GaussianProcessModule(LightningModule):
             Tuple of (predictions, uncertainties)
         """
         x = self._variables_dict_to_tensor(variables)
+        
+        # Scale inputs for GP numerical stability
+        if self.var_scaler is not None:
+            x = self.var_scaler.transform(x)
         
         self.gp_model.eval()
         self.likelihood.eval()
@@ -1234,10 +1393,14 @@ class GaussianProcessModule(LightningModule):
         """Compute and log metrics for the given stage."""
         log_metrics = {}
         for key, metric in self.metrics[stage].items():
-            log_metrics[f'{stage}/{key}'] = metric.compute()
+            try:
+                log_metrics[f'{stage}/{key}'] = metric.compute()
+            except ValueError as e:
+                # Handle cases where metric cannot be computed (e.g., insufficient samples during sanity check)
+                rank_zero_info(f"Warning: Could not compute {stage}/{key}: {e}")
             metric.reset()
         
-        if self.logger is not None:
+        if self.logger is not None and log_metrics:
             self.logger.log_metrics(log_metrics, self.current_epoch)
         
         if stage == "val":

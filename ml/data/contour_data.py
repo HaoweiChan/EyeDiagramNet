@@ -232,6 +232,9 @@ class ContourDataModule(LightningDataModule):
         self.test_size = test_size
         self.scaler_path = scaler_path
         
+        # Variable scaler for numerical stability in GP training
+        self.var_scaler = None
+        
         # Random subspace parameters
         self.enable_random_subspace = enable_random_subspace
         self.min_active_variables = min_active_variables
@@ -245,17 +248,24 @@ class ContourDataModule(LightningDataModule):
 
     def setup(self, stage: Optional[str] = None, nan: int = -1):
         """Setup datasets by converting contour data to variable-token format."""
-        # Initialize scalers
-        fit_scaler = True
+        # Initialize variable scaler for GP numerical stability
+        fit_var_scaler = True
         try:
             if self.scaler_path is None:
                 raise FileNotFoundError("No scaler path provided")
-            self.seq_scaler, self.fix_scaler = torch.load(self.scaler_path, weights_only=False)
-            rank_zero_info(f"Loaded scalers from {self.scaler_path}")
-            fit_scaler = False
+            
+            # Try loading variable scaler
+            scaler_file = Path(self.scaler_path)
+            if scaler_file.exists():
+                self.var_scaler = torch.load(self.scaler_path, weights_only=False)
+                rank_zero_info(f"Loaded variable scaler from {self.scaler_path}")
+                fit_var_scaler = False
+            else:
+                raise FileNotFoundError(f"Scaler file not found: {self.scaler_path}")
+                
         except (FileNotFoundError, AttributeError, EOFError) as e:
             if stage in ["test", "predict"] or stage is None:
-                error_msg = f"Cannot find or load scaler file for {stage or 'test/predict'} mode"
+                error_msg = f"Cannot find variable scaler for {stage or 'test/predict'} mode"
                 if self.scaler_path:
                     error_msg += f" at path: {self.scaler_path}"
                 else:
@@ -264,9 +274,9 @@ class ContourDataModule(LightningDataModule):
                 rank_zero_info(f"ERROR: {error_msg}")
                 raise FileNotFoundError(error_msg)
             
-            self.seq_scaler = MinMaxScaler(nan=nan)
-            self.fix_scaler = MinMaxScaler(nan=nan)
-            rank_zero_info("Could not find scalers on disk, creating new ones for training.")
+            # Create new scaler for training
+            self.var_scaler = MinMaxScaler(nan=nan)
+            rank_zero_info("Creating new variable scaler for GP training")
 
         # Process contour data from sequence.csv and variation.csv files
         if isinstance(self.data_dirs, list):
@@ -449,6 +459,86 @@ class ContourDataModule(LightningDataModule):
                 rank_zero_info(f"Failed to process {name}: {e}")
                 rank_zero_info(f"Full traceback:\n{traceback.format_exc()}")
                 continue
+        
+        # Fit variable scaler on all training data for GP numerical stability
+        if fit_var_scaler and len(self.train_dataset) > 0:
+            rank_zero_info("Fitting variable scaler on training data...")
+            for name, dataset in self.train_dataset.items():
+                # Collect all variable values into a matrix (n_samples, n_variables)
+                var_names = list(dataset.variable_data.keys())
+                if len(var_names) == 0:
+                    continue
+                
+                # Stack all variables: each variable shape (n_samples,) -> matrix (n_samples, n_variables)
+                var_list = []
+                for var_name in var_names:
+                    var_values = dataset.variable_data[var_name]
+                    # Flatten to (n_samples,) if needed
+                    if var_values.dim() > 1:
+                        var_values = var_values.reshape(-1)
+                    var_list.append(var_values.unsqueeze(1))
+                
+                var_matrix = torch.cat(var_list, dim=1)  # (n_samples, n_variables)
+                self.var_scaler.partial_fit(var_matrix)
+                rank_zero_info(f"Fitted scaler on {name}: {var_matrix.shape}")
+            
+            rank_zero_info(f"Variable scaler fitted on {len(self.train_dataset)} datasets")
+        
+        # Transform all datasets using the fitted scaler
+        if self.var_scaler is not None and len(self.train_dataset) > 0:
+            rank_zero_info("Transforming datasets with fitted scaler...")
+            for name in list(self.train_dataset.keys()):
+                self.train_dataset[name] = self._transform_dataset(self.train_dataset[name])
+                if name in self.val_dataset:
+                    self.val_dataset[name] = self._transform_dataset(self.val_dataset[name])
+                if name in self.test_dataset:
+                    self.test_dataset[name] = self._transform_dataset(self.test_dataset[name])
+            rank_zero_info("All datasets scaled to [0,1] range for GP numerical stability")
+        
+        # Save the fitted scaler for future use (test/predict stages)
+        if fit_var_scaler and self.var_scaler is not None and self.scaler_path:
+            scaler_file = Path(self.scaler_path)
+            scaler_file.parent.mkdir(parents=True, exist_ok=True)
+            torch.save(self.var_scaler, self.scaler_path)
+            rank_zero_info(f"Saved fitted variable scaler to {self.scaler_path}")
+    
+    def _transform_dataset(self, dataset: ContourDataset) -> ContourDataset:
+        """Transform variable data in a ContourDataset using the fitted scaler."""
+        if self.var_scaler is None:
+            return dataset
+        
+        # Get variable names in consistent order
+        var_names = list(dataset.variable_data.keys())
+        if len(var_names) == 0:
+            return dataset
+        
+        # Stack all variables into a matrix (n_samples, n_variables)
+        var_list = []
+        for var_name in var_names:
+            var_values = dataset.variable_data[var_name]
+            # Flatten to (n_samples,) if needed
+            if var_values.dim() > 1:
+                var_values = var_values.reshape(-1)
+            var_list.append(var_values.unsqueeze(1))
+        
+        var_matrix = torch.cat(var_list, dim=1)  # (n_samples, n_variables)
+        
+        # Transform using fitted scaler
+        var_matrix_scaled = self.var_scaler.transform(var_matrix)
+        
+        # Unstack back to dict format
+        scaled_variable_data = {}
+        for i, var_name in enumerate(var_names):
+            original_shape = dataset.variable_data[var_name].shape
+            scaled_values = var_matrix_scaled[:, i]
+            # Reshape back to original shape
+            if len(original_shape) > 1:
+                scaled_values = scaled_values.reshape(original_shape)
+            scaled_variable_data[var_name] = scaled_values
+        
+        # Update dataset's variable_data
+        dataset.variable_data = scaled_variable_data
+        return dataset
     
     def _convert_to_variable_format(
         self, 

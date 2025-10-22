@@ -262,10 +262,12 @@ def plot_contour_2d(
     var2_grid: torch.Tensor,
     predictions: torch.Tensor,
     spec_threshold: float = None,
-    error_data: dict = None
+    error_data: dict = None,
+    uncertainty_grid: torch.Tensor = None,
+    train_data: dict = None
 ) -> plt.Figure:
     """
-    Generate a 2D contour plot for two variables.
+    Generate a 2D contour plot for two variables with predictions, uncertainty, and errors.
     
     Args:
         var1_name: Name of first variable
@@ -274,20 +276,36 @@ def plot_contour_2d(
         var2_grid: Grid values for second variable  
         predictions: Predicted values on the grid
         spec_threshold: Optional specification threshold to highlight
-        error_data: Optional dict with 'var1_values', 'var2_values', 'errors' for error plotting
+        error_data: Optional dict with 'var1_values', 'var2_values', 'errors' for validation data
+        uncertainty_grid: Optional predicted uncertainties on the grid
+        train_data: Optional dict with 'var1_values', 'var2_values' for training data points
     
     Returns:
         matplotlib Figure object
     """
     try:
-        # Determine figure layout
-        if error_data is not None and len(error_data.get('errors', [])) > 0:
-            # Create side-by-side subplots for prediction and error
-            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+        # Determine figure layout based on available data
+        has_uncertainty = uncertainty_grid is not None
+        has_error = error_data is not None and len(error_data.get('errors', [])) > 0
+        
+        if has_uncertainty and has_error:
+            # Three subplots: prediction, uncertainty, error
+            fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(18, 5))
+            axes = [ax1, ax2, ax3]
+        elif has_error:
+            # Two subplots: prediction and error
+            fig, (ax1, ax3) = plt.subplots(1, 2, figsize=(12, 5))
+            ax2 = None
+            axes = [ax1, ax3]
+        elif has_uncertainty:
+            # Two subplots: prediction and uncertainty
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+            ax3 = None
             axes = [ax1, ax2]
         else:
             # Single subplot for prediction only
-            fig, ax1 = plt.subplots(1, 1, figsize=(8, 6))
+            fig, ax1 = plt.subplots(1, 1, figsize=(6, 5))
+            ax2 = ax3 = None
             axes = [ax1]
         
         # Convert to numpy
@@ -315,14 +333,46 @@ def plot_contour_2d(
             )
             ax1.clabel(cs_spec, fmt='Spec', inline=True, fontsize=10)
         
+        # Overlay training data points (if available)
+        if train_data is not None and 'var1_values' in train_data and 'var2_values' in train_data:
+            train_var1 = np.array(train_data['var1_values'])
+            train_var2 = np.array(train_data['var2_values'])
+            ax1.scatter(train_var1, train_var2, c='white', s=50, marker='o',
+                       edgecolors='black', linewidth=1.5, alpha=0.8,
+                       label=f'Training Data (n={len(train_var1)})')
+            ax1.legend(loc='best', framealpha=0.9)
+        
         # Formatting for prediction subplot
         ax1.set_xlabel(f'{var1_name}')
         ax1.set_ylabel(f'{var2_name}')
         ax1.set_title(f'Predictions: {var1_name} vs {var2_name}')
         ax1.grid(True, alpha=0.3)
         
+        # === MIDDLE SUBPLOT: UNCERTAINTY (if available) ===
+        if ax2 is not None and uncertainty_grid is not None:
+            try:
+                unc_np = uncertainty_grid.cpu().numpy()
+                
+                # Create uncertainty contour plot
+                cs_unc = ax2.contourf(var1_np, var2_np, unc_np.T, levels=20, 
+                                     cmap='YlOrRd', alpha=0.8)
+                fig.colorbar(cs_unc, ax=ax2, label='Prediction Uncertainty (Std Dev)')
+                
+                # Add contour lines
+                cs_unc_lines = ax2.contour(var1_np, var2_np, unc_np.T, 
+                                          levels=10, colors='black', alpha=0.5, linewidths=1.0)
+                
+                # Formatting for uncertainty subplot
+                ax2.set_xlabel(f'{var1_name}')
+                ax2.set_ylabel(f'{var2_name}')
+                ax2.set_title(f'Model Uncertainty: {var1_name} vs {var2_name}')
+                ax2.grid(True, alpha=0.3)
+                
+            except Exception as e:
+                print(f"Warning: Could not plot uncertainty: {e}")
+        
         # === RIGHT SUBPLOT: ERRORS (if available) ===
-        if error_data is not None and len(error_data.get('errors', [])) > 0:
+        if ax3 is not None and error_data is not None and len(error_data.get('errors', [])) > 0:
             try:
                 from scipy.interpolate import griddata
                 
@@ -348,42 +398,49 @@ def plot_contour_2d(
                     )
                     
                     # Create error contour plot
-                    cs_err = ax2.contourf(var1_np, var2_np, error_grid.T, levels=20, 
+                    cs_err = ax3.contourf(var1_np, var2_np, error_grid.T, levels=20, 
                                         cmap='RdYlBu_r', alpha=0.8)
-                    fig.colorbar(cs_err, ax=ax2, label='Prediction Error')
+                    fig.colorbar(cs_err, ax=ax3, label='Prediction Error')
                     
                     # Add contour lines for error
-                    cs_err_lines = ax2.contour(var1_np, var2_np, error_grid.T, 
+                    cs_err_lines = ax3.contour(var1_np, var2_np, error_grid.T, 
                                              levels=10, colors='black', alpha=0.5, linewidths=1.0)
                     
                     # Add zero error line (perfect prediction)
                     zero_levels = [0.0] if np.any(error_grid >= 0) and np.any(error_grid <= 0) else []
                     if zero_levels:
-                        ax2.contour(var1_np, var2_np, error_grid.T, levels=zero_levels, 
+                        ax3.contour(var1_np, var2_np, error_grid.T, levels=zero_levels, 
                                   colors='green', linewidths=2, linestyles='--')
                     
-                    # Overlay actual data points
-                    scatter = ax2.scatter(var1_err, var2_err, c=errors, s=30, 
-                                        cmap='RdYlBu_r', edgecolors='black', linewidth=0.5)
+                    # Overlay validation data points with error coloring
+                    scatter = ax3.scatter(var1_err, var2_err, c=errors, s=30, 
+                                        cmap='RdYlBu_r', edgecolors='black', linewidth=0.5,
+                                        label=f'Validation Data (n={len(errors)})')
+                    ax3.legend(loc='best', framealpha=0.9)
                     
                 else:
                     # Not enough points for interpolation, just show scatter
-                    scatter = ax2.scatter(var1_err, var2_err, c=errors, s=50,
-                                        cmap='RdYlBu_r', edgecolors='black', linewidth=1.0)
-                    fig.colorbar(scatter, ax=ax2, label='Prediction Error')
-                    ax2.text(0.5, 0.95, f'Too few points ({len(errors)}) for contour', 
-                           transform=ax2.transAxes, ha='center', va='top',
+                    scatter = ax3.scatter(var1_err, var2_err, c=errors, s=50,
+                                        cmap='RdYlBu_r', edgecolors='black', linewidth=1.0,
+                                        label=f'Validation Data (n={len(errors)})')
+                    fig.colorbar(scatter, ax=ax3, label='Prediction Error')
+                    ax3.text(0.5, 0.95, f'Too few points ({len(errors)}) for contour', 
+                           transform=ax3.transAxes, ha='center', va='top',
                            bbox=dict(boxstyle='round', facecolor='yellow', alpha=0.7))
+                    ax3.legend(loc='best', framealpha=0.9)
                 
                 # Formatting for error subplot
-                ax2.set_xlabel(f'{var1_name}')
-                ax2.set_ylabel(f'{var2_name}')  
-                ax2.set_title(f'Prediction Errors: {var1_name} vs {var2_name}')
-                ax2.grid(True, alpha=0.3)
+                ax3.set_xlabel(f'{var1_name}')
+                ax3.set_ylabel(f'{var2_name}')  
+                ax3.set_title(f'Prediction Errors: {var1_name} vs {var2_name}')
+                ax3.grid(True, alpha=0.3)
                 
-                # Match axis ranges
-                ax2.set_xlim(ax1.get_xlim())
-                ax2.set_ylim(ax1.get_ylim())
+                # Match axis ranges across all subplots
+                ax3.set_xlim(ax1.get_xlim())
+                ax3.set_ylim(ax1.get_ylim())
+                if ax2 is not None:
+                    ax2.set_xlim(ax1.get_xlim())
+                    ax2.set_ylim(ax1.get_ylim())
                 
             except ImportError:
                 # scipy not available, show scatter only
