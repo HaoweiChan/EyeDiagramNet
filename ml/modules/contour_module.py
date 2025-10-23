@@ -1141,6 +1141,45 @@ class GaussianProcessModule(LightningModule):
         
         rank_zero_info("Generating final GP contour plots...")
         
+        # Debug: Check what variables are available
+        if self.variable_names is not None:
+            rank_zero_info(f"Available variables for GP contour: {self.variable_names}")
+            
+            # Check which variables have bounds
+            vars_with_bounds = []
+            for var_name in self.variable_names:
+                bounds = self.registry.get_bounds(var_name)
+                if bounds is not None:
+                    vars_with_bounds.append((var_name, bounds))
+                    rank_zero_info(f"  {var_name}: bounds={bounds}")
+                else:
+                    rank_zero_info(f"  {var_name}: NO BOUNDS")
+            
+            # If no variables have bounds, infer from training data
+            if len(vars_with_bounds) < 2 and self.gp_model is not None:
+                rank_zero_info("Not enough variables with bounds. Inferring from training data...")
+                train_x = self.gp_model.train_inputs[0].cpu().numpy()
+                
+                for i, var_name in enumerate(self.variable_names):
+                    var_data = train_x[:, i]
+                    # Inverse transform if scaler exists
+                    if self.var_scaler is not None:
+                        full_data = np.zeros((len(var_data), len(self.variable_names)))
+                        full_data[:, i] = var_data
+                        unscaled = self.var_scaler.inverse_transform(torch.from_numpy(full_data)).numpy()
+                        var_data = unscaled[:, i]
+                    
+                    # Check if variable has variance
+                    if np.std(var_data) > 1e-6:
+                        bounds = (float(np.min(var_data)), float(np.max(var_data)))
+                        self.registry.update_variable_bounds(var_name, bounds)
+                        vars_with_bounds.append((var_name, bounds))
+                        rank_zero_info(f"  Inferred bounds for {var_name}: {bounds}")
+            
+            if len(vars_with_bounds) < 2:
+                rank_zero_info(f"Not enough variables with bounds ({len(vars_with_bounds)}) for contour plotting")
+                return
+        
         # Get contour pair to plot
         contour_pair = self._get_contour_pair_for_plotting()
         if contour_pair is None:
@@ -1148,6 +1187,7 @@ class GaussianProcessModule(LightningModule):
             return
         
         var1_name, var2_name = contour_pair
+        rank_zero_info(f"Selected contour pair: {var1_name} vs {var2_name}")
         
         try:
             # Use default values for fixed variables
@@ -1174,6 +1214,8 @@ class GaussianProcessModule(LightningModule):
         
         except Exception as e:
             rank_zero_info(f"Failed to generate final GP contour plot: {e}")
+            import traceback
+            rank_zero_info(traceback.format_exc())
     
     def _collect_step_outputs(
         self,
