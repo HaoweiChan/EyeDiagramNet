@@ -80,12 +80,14 @@ model:
     
     # Contour plotting configuration
     eval_contour_pairs:
-      - ["W_wg", "W_ws"]  # Waveguide width vs waveguide spacing
-      - ["M_1_cond", "W_wg"]  # Metal conductivity vs waveguide width
-      - ["H_h_ubm", "W_wg"]  # Under bump metal height vs waveguide width
-    # Specific contour variables to plot (null means use eval_contour_pairs)
-    var1_name: null  # e.g., "W_wg1" or null to use from eval_contour_pairs
-    var2_name: null  # e.g., "W_ws" or null to use from eval_contour_pairs
+      - ["W_wg", "W_wgr"]  # Waveguide width vs waveguide gap/routing
+      - ["W_wg", "W_ws"]   # Waveguide width vs waveguide spacing
+      - ["W_wgr", "W_ws"]  # Waveguide gap vs waveguide spacing
+    # Specific contour variables to plot (null means randomly select from eval_contour_pairs)
+    var1_name: null  # e.g., "W_wg" or null to auto-select
+    var2_name: null  # e.g., "W_wgr" or null to auto-select
+    # Note: To plot a specific pair, set both var1_name and var2_name
+    # To generate all pairs, run training multiple times or modify on_fit_end()
     
     # Variable range overrides for contour plotting (optional)
     var_range:
@@ -102,7 +104,12 @@ data:
     # Data processing
     batch_size: 999999  # Full-batch training for Exact GP (set very high)
     test_size: 0.2
-    scaler_path: null
+    scaler_path: saved/scalers/contour_var_scaler.pt  # Path for saving/loading variable scaler
+    
+    # GP-specific settings (different from neural network requirements)
+    enable_random_subspace: false  # Disable perturbations for GP (GPs learn exact training data)
+    min_val_batches: 2  # Lower threshold for GP (GPs need less data than NNs, default=10)
+    force_val_split: false  # Set to true to always create validation split
 
 # Note: optimizer/lr_scheduler CANNOT be configured here for GPs due to:
 # 1. Manual optimization (automatic_optimization = False)

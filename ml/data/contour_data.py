@@ -222,7 +222,10 @@ class ContourDataModule(LightningDataModule):
         enable_random_subspace: bool = True,
         min_active_variables: int = 2,
         max_active_variables: int = 6,
-        perturbation_scale: float = 0.02
+        perturbation_scale: float = 0.02,
+        # Validation split parameters
+        min_val_batches: int = 10,  # Minimum batches for validation (set lower for GP: e.g., 2-3)
+        force_val_split: bool = False  # Force validation split even for small datasets
     ):
         super().__init__()
         self.data_dirs = data_dirs
@@ -240,6 +243,10 @@ class ContourDataModule(LightningDataModule):
         self.min_active_variables = min_active_variables
         self.max_active_variables = max_active_variables
         self.perturbation_scale = perturbation_scale
+        
+        # Validation split parameters
+        self.min_val_batches = min_val_batches
+        self.force_val_split = force_val_split
         
         # Initialize datasets
         self.train_dataset: Dict[str, ContourDataset] = {}
@@ -403,9 +410,13 @@ class ContourDataModule(LightningDataModule):
                 estimated_batch_size = max(1, self.batch_size // max(1, len(data_dirs_dict)))
                 estimated_batches = max(1, total_size // estimated_batch_size)
                 
-                if estimated_batches < 10:
+                # Determine if we should skip validation split
+                skip_val_split = (estimated_batches < self.min_val_batches) and not self.force_val_split
+                
+                if skip_val_split:
                     # Small dataset - use all for training
-                    rank_zero_info(f"Dataset '{name}' too small for validation, using all {total_size} samples for training")
+                    rank_zero_info(f"Dataset '{name}' too small for validation (estimated {estimated_batches} batches < {self.min_val_batches} threshold), using all {total_size} samples for training")
+                    rank_zero_info(f"  Tip: For GP models, you can set min_val_batches=2-3 or force_val_split=True to enable validation with small datasets")
                     seq_tr, seq_val = sequence_data, np.array([])
                     var_tr = variable_data_filtered
                     var_val = {k: np.array([]) for k in variable_data_filtered.keys()}
@@ -414,6 +425,7 @@ class ContourDataModule(LightningDataModule):
                     case_ids_val = []
                 else:
                     # Normal train/val split
+                    rank_zero_info(f"Creating train/val split for '{name}' (estimated {estimated_batches} batches >= {self.min_val_batches} threshold)")
                     train_idx, val_idx = train_test_split(
                         indices, test_size=self.test_size, shuffle=True, random_state=42
                     )
