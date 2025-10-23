@@ -1180,42 +1180,65 @@ class GaussianProcessModule(LightningModule):
                 rank_zero_info(f"Not enough variables with bounds ({len(vars_with_bounds)}) for contour plotting")
                 return
         
-        # Get contour pair to plot
-        contour_pair = self._get_contour_pair_for_plotting()
-        if contour_pair is None:
-            rank_zero_info("No valid contour pair found for final GP plotting")
+        # Generate plots for ALL pairs in eval_contour_pairs if specified
+        pairs_to_plot = []
+        
+        if self.eval_contour_pairs:
+            # Filter to only valid pairs with bounds
+            for pair in self.eval_contour_pairs:
+                var1, var2 = pair
+                if (var1 in self.registry and var2 in self.registry and
+                    self.registry.get_bounds(var1) is not None and
+                    self.registry.get_bounds(var2) is not None):
+                    pairs_to_plot.append((var1, var2))
+                else:
+                    rank_zero_info(f"Skipping pair {pair}: variables not found or missing bounds")
+            
+            rank_zero_info(f"Will generate {len(pairs_to_plot)} contour plots from eval_contour_pairs")
+        else:
+            # Fall back to single auto-selected pair
+            contour_pair = self._get_contour_pair_for_plotting()
+            if contour_pair is not None:
+                pairs_to_plot.append(contour_pair)
+        
+        if not pairs_to_plot:
+            rank_zero_info("No valid contour pairs found for final GP plotting")
             return
         
-        var1_name, var2_name = contour_pair
-        rank_zero_info(f"Selected contour pair: {var1_name} vs {var2_name}")
+        # Generate plots for all pairs
+        fixed_vars = self.registry.get_default_values()
+        plots_saved = 0
         
-        try:
-            # Use default values for fixed variables
-            fixed_vars = self.registry.get_default_values()
+        for var1_name, var2_name in pairs_to_plot:
+            rank_zero_info(f"Generating contour plot: {var1_name} vs {var2_name}")
             
-            # Generate final contour plot with high resolution
-            fig = self._plot_contour(
-                var1_name=var1_name,
-                var2_name=var2_name,
-                fixed_variables=fixed_vars,
-                error_data=None,
-                resolution=50  # Higher resolution for final plot
-            )
+            try:
+                # Generate final contour plot with high resolution
+                fig = self._plot_contour(
+                    var1_name=var1_name,
+                    var2_name=var2_name,
+                    fixed_variables=fixed_vars,
+                    error_data=None,
+                    resolution=50  # Higher resolution for final plot
+                )
+                
+                if fig is not None:
+                    # Save to disk
+                    contour_dir = self._get_contour_output_dir()
+                    if contour_dir is not None:
+                        filename = f"final_gp_contour_{var1_name}_vs_{var2_name}.png"
+                        filepath = contour_dir / filename
+                        fig.savefig(filepath, dpi=300, bbox_inches='tight')
+                        rank_zero_info(f"  ✓ Saved: {filepath}")
+                        plots_saved += 1
+                    plt.close(fig)
+                else:
+                    rank_zero_info(f"  ✗ Failed to generate plot for {var1_name} vs {var2_name}")
             
-            if fig is not None:
-                # Save to disk
-                contour_dir = self._get_contour_output_dir()
-                if contour_dir is not None:
-                    filename = f"final_gp_contour_{var1_name}_vs_{var2_name}.png"
-                    filepath = contour_dir / filename
-                    fig.savefig(filepath, dpi=300, bbox_inches='tight')
-                    rank_zero_info(f"Saved final GP contour plot to {filepath}")
-                plt.close(fig)
+            except Exception as e:
+                rank_zero_info(f"  ✗ Error generating plot for {var1_name} vs {var2_name}: {e}")
         
-        except Exception as e:
-            rank_zero_info(f"Failed to generate final GP contour plot: {e}")
-            import traceback
-            rank_zero_info(traceback.format_exc())
+        rank_zero_info(f"Final GP contour plots complete: {plots_saved}/{len(pairs_to_plot)} saved successfully")
     
     def _collect_step_outputs(
         self,
