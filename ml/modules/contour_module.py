@@ -7,9 +7,11 @@ and evaluation metrics for contour quality assessment.
 Also includes Gaussian Process module for hyperspace eye width prediction.
 """
 
+import os
 import random
 import numpy as np
 import matplotlib.pyplot as plt
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import torch
@@ -127,6 +129,21 @@ class ContourModule(LightningModule):
         # Step outputs for plotting
         self.training_step_outputs = []
         self.validation_step_outputs = []
+
+    def _get_contour_output_dir(self) -> Optional[Path]:
+        """Get the directory for saving contour plots."""
+        if self.logger is None:
+            return None
+        
+        # Get log directory from logger
+        log_dir = Path(self.logger.log_dir) if hasattr(self.logger, 'log_dir') else None
+        if log_dir is None:
+            return None
+        
+        # Create contours subdirectory
+        contour_dir = log_dir / "contours"
+        contour_dir.mkdir(parents=True, exist_ok=True)
+        return contour_dir
     
     def forward(
         self,
@@ -239,6 +256,75 @@ class ContourModule(LightningModule):
         
         # Clear outputs
         self.validation_step_outputs.clear()
+
+    def on_fit_end(self):
+        """Save final contour plots to disk when training is complete."""
+        if not self.save_contour_plots:
+            return
+        
+        rank_zero_info("Generating final contour plots...")
+        
+        # Get contour pair to plot
+        contour_pair = self._get_contour_pair_for_plotting()
+        if contour_pair is None:
+            rank_zero_info("No valid contour pair found for final plotting")
+            return
+        
+        var1_name, var2_name = contour_pair
+        
+        try:
+            # Use default values for fixed variables
+            fixed_vars = self.registry.get_default_values()
+            
+            # Create a dummy sequence token (use zeros as placeholder)
+            # In practice, you might want to use a representative sequence from validation
+            sequence_tokens = torch.zeros(1, 96, device=self.device)  # Adjust size as needed
+            
+            # Get variable ranges
+            var1_bounds = self.registry.get_bounds(var1_name)
+            var2_bounds = self.registry.get_bounds(var2_name)
+            
+            if var1_bounds is None or var2_bounds is None:
+                rank_zero_info(f"Cannot generate final contour: missing bounds for {var1_name} or {var2_name}")
+                return
+            
+            # Generate high-resolution contour for final plot
+            self.model.eval()
+            with torch.no_grad():
+                var1_grid, var2_grid, predictions = self.model.predict_contour_2d(
+                    var1_name=var1_name,
+                    var2_name=var2_name,
+                    fixed_variables=fixed_vars,
+                    sequence_tokens=sequence_tokens,
+                    var1_range=var1_bounds,
+                    var2_range=var2_bounds,
+                    resolution=self.eval_resolution,
+                    device=self.device
+                )
+            
+            # Create plot
+            fig = plot_contour_2d(
+                var1_name=var1_name,
+                var2_name=var2_name,
+                var1_grid=var1_grid,
+                var2_grid=var2_grid,
+                predictions=predictions,
+                spec_threshold=self.spec_threshold,
+                error_data=None
+            )
+            
+            if fig is not None:
+                # Save to disk
+                contour_dir = self._get_contour_output_dir()
+                if contour_dir is not None:
+                    filename = f"final_contour_{var1_name}_vs_{var2_name}.png"
+                    filepath = contour_dir / filename
+                    fig.savefig(filepath, dpi=300, bbox_inches='tight')
+                    rank_zero_info(f"Saved final contour plot to {filepath}")
+                plt.close(fig)
+        
+        except Exception as e:
+            rank_zero_info(f"Failed to generate final contour plot: {e}")
     
     def _get_contour_pair_for_plotting(self) -> Optional[Tuple[str, str]]:
         """Get the contour pair to plot (either explicit or random from eval_contour_pairs)."""
@@ -850,6 +936,21 @@ class GaussianProcessModule(LightningModule):
         
         # Step outputs for plotting
         self.validation_step_outputs = []
+
+    def _get_contour_output_dir(self) -> Optional[Path]:
+        """Get the directory for saving contour plots."""
+        if self.logger is None:
+            return None
+        
+        # Get log directory from logger
+        log_dir = Path(self.logger.log_dir) if hasattr(self.logger, 'log_dir') else None
+        if log_dir is None:
+            return None
+        
+        # Create contours subdirectory
+        contour_dir = log_dir / "contours"
+        contour_dir.mkdir(parents=True, exist_ok=True)
+        return contour_dir
     
     def setup(self, stage: Optional[str] = None):
         """Initialize GP model and retrieve scaler from datamodule."""
@@ -1032,6 +1133,47 @@ class GaussianProcessModule(LightningModule):
         
         # Clear outputs
         self.validation_step_outputs.clear()
+
+    def on_fit_end(self):
+        """Save final contour plots to disk when training is complete."""
+        if not self.save_contour_plots:
+            return
+        
+        rank_zero_info("Generating final GP contour plots...")
+        
+        # Get contour pair to plot
+        contour_pair = self._get_contour_pair_for_plotting()
+        if contour_pair is None:
+            rank_zero_info("No valid contour pair found for final GP plotting")
+            return
+        
+        var1_name, var2_name = contour_pair
+        
+        try:
+            # Use default values for fixed variables
+            fixed_vars = self.registry.get_default_values()
+            
+            # Generate final contour plot with high resolution
+            fig = self._plot_contour(
+                var1_name=var1_name,
+                var2_name=var2_name,
+                fixed_variables=fixed_vars,
+                error_data=None,
+                resolution=50  # Higher resolution for final plot
+            )
+            
+            if fig is not None:
+                # Save to disk
+                contour_dir = self._get_contour_output_dir()
+                if contour_dir is not None:
+                    filename = f"final_gp_contour_{var1_name}_vs_{var2_name}.png"
+                    filepath = contour_dir / filename
+                    fig.savefig(filepath, dpi=300, bbox_inches='tight')
+                    rank_zero_info(f"Saved final GP contour plot to {filepath}")
+                plt.close(fig)
+        
+        except Exception as e:
+            rank_zero_info(f"Failed to generate final GP contour plot: {e}")
     
     def _collect_step_outputs(
         self,
@@ -1051,6 +1193,9 @@ class GaussianProcessModule(LightningModule):
     
     def _plot_contours_if_needed(self, variables: Dict[str, torch.Tensor]):
         """Plot contours during validation."""
+        if not self.save_contour_plots:
+            return
+        
         if not self.logger:
             rank_zero_info("Warning: No logger available for contour plotting")
             return
